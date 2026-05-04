@@ -1,0 +1,86 @@
+display_name = "kata"
+
+review_guidelines = """
+We are using the latest production version of Go.
+
+Be pragmatic — raising theoretical or highly pedantic concerns produces
+unnecessary code churn and wasted review-fix cycles.
+
+## Trust model — single-user local tool
+
+kata is a single-user local CLI + daemon. The daemon binds to either a
+Unix domain socket or TCP loopback (validated by `requireLoopback` in
+`internal/daemon/endpoint.go`), and the SQLite database is local. Per the
+design spec at `docs/superpowers/specs/2026-04-29-kata-design.md` line 579:
+"None. Loopback TCP / Unix socket only. The OS user is the trust boundary."
+Multi-user auth and agent tokens are explicitly listed as out of scope.
+
+The following are NOT security findings — they reflect the documented trust
+model and should not be raised:
+
+- Missing auth or "unauthenticated destructive endpoints" on daemon API
+  (the only client is the local CLI/TUI; OS-level access control is
+  sufficient).
+- `validateActor` is **audit metadata**, not authorization — every handler
+  uses it the same way. Calling it out as a "missing auth gate" misreads
+  its purpose.
+- "DoS" from request bodies on loopback (bounded by the local user's own
+  inputs, not external attackers).
+- Symlink-following or local file overwrites under the kata data
+  directory (controlled by the local user).
+- "Race conditions" in CLI⇄daemon handoff visible only to a colocated
+  attacker with the same OS-user privileges (correctness concern, not
+  exploit).
+
+## Schema upgrades use JSONL cutover, NOT ALTER-TABLE migrations
+
+`internal/db/migrations/` is a misnomer for this codebase. There is exactly
+one file (`0001_init.sql`) that defines the **current** schema, applied
+only when initializing a fresh DB. The `migrate()` function in
+`internal/db/db.go` returns `ErrSchemaCutoverRequired` for any DB at an
+older schema version BEFORE reading migration files at all — additional
+ALTER-TABLE migration files would never be applied.
+
+Existing older DBs are upgraded by `jsonl.AutoCutover`
+(`internal/jsonl/cutover.go`), invoked automatically from `runDaemon`
+(`cmd/kata/daemon_cmd.go`) when `PeekSchemaVersion < CurrentSchemaVersion`.
+The cutover:
+
+1. Exports the old DB to JSONL via version-aware paths in
+   `internal/jsonl/export.go` (e.g. `exportProjectsV2` for v2/v3 sources
+   that lack the v4 `deleted_at` column).
+2. Imports into a fresh current-schema DB created by `0001_init.sql`.
+3. Atomic backup + rename of the old DB into place.
+
+When bumping the schema version (`currentSchemaVersion`), the correct
+pattern is:
+
+- Add the new column / index to `0001_init.sql` (it defines the current
+  schema).
+- Add a version-aware exporter for the OLD shape (e.g. `exportProjectsV2`)
+  so cutover from older DBs reads via the pre-bump column list.
+- Make the import path tolerant of the missing field (typically `*string`
+  with `omitempty` so the JSONL omission becomes SQL NULL).
+
+Do NOT flag "missing migration file" or recommend a `0002_*.sql` ALTER
+script — that script would never run.
+
+## Project archival convention
+
+Archived projects have `projects.deleted_at != NULL` (column added in v4).
+The filtering convention is intentional and asymmetric:
+
+- Surface-level read paths filter `deleted_at IS NULL` at the query
+  level. Examples: `ListProjects`, `ProjectByIdentity`, `ListAllIssues`
+  (which already joins `projects` and filters `p.deleted_at IS NULL`).
+- Callers needing archived rows use explicit `*IncludingArchived`
+  variants (e.g. `ListProjectsIncludingArchived`,
+  `ProjectByIdentityIncludingArchived`).
+- `ProjectByID` is an exception by design: it returns archived rows so
+  the merge / restore paths can see them. Surface callers (HTTP
+  handlers, CLI) inspect `DeletedAt` themselves.
+
+Do not flag `ProjectByID` for "returning archived projects" or claim
+`ListAllIssues` leaks archived data — verify the actual query and
+existing `*IncludingArchived` variants before raising.
+"""
