@@ -38,6 +38,36 @@ type InstanceResponse struct {
 	}
 }
 
+// ProjectStatsOut is the per-project aggregate returned by GET
+// /api/v1/projects?include=stats. LastEventAt is nil for a project with
+// zero events. Spec §7.2.
+type ProjectStatsOut struct {
+	Open        int        `json:"open"`
+	Closed      int        `json:"closed"`
+	LastEventAt *time.Time `json:"last_event_at"`
+}
+
+// ProjectOut is the API-shape of a project. JSON keys mirror db.Project
+// (internal/db/types.go) exactly so the default response is byte-identical
+// to the previous shape. Spec §1.7.
+//
+// The field set is exhaustively derived from db.Project as of this commit:
+// id, uid, identity, name, created_at, next_issue_number, deleted_at
+// (omitempty). No updated_at — db.Project has none.
+type ProjectOut struct {
+	ID              int64      `json:"id"`
+	UID             string     `json:"uid"`
+	Identity        string     `json:"identity"`
+	Name            string     `json:"name"`
+	CreatedAt       time.Time  `json:"created_at"`
+	NextIssueNumber int64      `json:"next_issue_number"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+
+	// Stats is populated only when the request carries ?include=stats.
+	// Wired in Task 3.
+	Stats *ProjectStatsOut `json:"stats,omitempty"`
+}
+
 // ResolveProjectRequest is POST /api/v1/projects/resolve.
 type ResolveProjectRequest struct {
 	Body struct {
@@ -47,7 +77,7 @@ type ResolveProjectRequest struct {
 
 // ProjectResolveBody is the JSON body field of a successful resolve response.
 type ProjectResolveBody struct {
-	Project       db.Project      `json:"project"`
+	Project       ProjectOut      `json:"project"`
 	Alias         db.ProjectAlias `json:"alias"`
 	WorkspaceRoot string          `json:"workspace_root,omitempty"`
 }
@@ -79,14 +109,14 @@ type InitProjectResponse struct {
 // ListProjectsResponse is GET /api/v1/projects.
 type ListProjectsResponse struct {
 	Body struct {
-		Projects []db.Project `json:"projects"`
+		Projects []ProjectOut `json:"projects"`
 	}
 }
 
 // ShowProjectResponse is GET /api/v1/projects/{id}.
 type ShowProjectResponse struct {
 	Body struct {
-		Project db.Project        `json:"project"`
+		Project ProjectOut        `json:"project"`
 		Aliases []db.ProjectAlias `json:"aliases"`
 	}
 }
@@ -127,7 +157,7 @@ type ResetCounterRequest struct {
 // still has at least one row in the issues table.
 type ResetCounterResponse struct {
 	Body struct {
-		Project db.Project `json:"project"`
+		Project ProjectOut `json:"project"`
 	}
 }
 
@@ -352,7 +382,7 @@ type RemoveProjectRequest struct {
 // event the caller can replay or display.
 type RemoveProjectResponse struct {
 	Body struct {
-		Project db.Project `json:"project"`
+		Project ProjectOut `json:"project"`
 		Event   *db.Event  `json:"event"`
 	}
 }

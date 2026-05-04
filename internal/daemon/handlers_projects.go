@@ -15,6 +15,21 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
+// dbProjectToOut maps a db.Project (internal row) to the API-shape
+// ProjectOut. Stats stays nil — that field is populated only by the
+// list-projects handler when ?include=stats is set (Task 3).
+func dbProjectToOut(p db.Project) api.ProjectOut {
+	return api.ProjectOut{
+		ID:              p.ID,
+		UID:             p.UID,
+		Identity:        p.Identity,
+		Name:            p.Name,
+		CreatedAt:       p.CreatedAt,
+		NextIssueNumber: p.NextIssueNumber,
+		DeletedAt:       p.DeletedAt,
+	}
+}
+
 // registerProjectsHandlers installs project-scoped routes (resolve, init, list,
 // show) on humaAPI. Resolution and init semantics live entirely on the daemon
 // per spec §2.4 so all clients (CLI, TUI, future) see identical behavior.
@@ -55,8 +70,12 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		outs := make([]api.ProjectOut, len(ps))
+		for i, p := range ps {
+			outs[i] = dbProjectToOut(p)
+		}
 		out := &api.ListProjectsResponse{}
-		out.Body.Projects = ps
+		out.Body.Projects = outs
 		return out, nil
 	})
 
@@ -91,7 +110,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		out := &api.ResetCounterResponse{}
-		out.Body.Project = p
+		out.Body.Project = dbProjectToOut(p)
 		return out, nil
 	})
 
@@ -114,7 +133,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		out := &api.ShowProjectResponse{}
-		out.Body.Project = p
+		out.Body.Project = dbProjectToOut(p)
 		out.Body.Aliases = aliases
 		return out, nil
 	})
@@ -186,7 +205,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: project.ID})
 		cfg.Hooks.Enqueue(*evt)
 		out := &api.RemoveProjectResponse{}
-		out.Body.Project = project
+		out.Body.Project = dbProjectToOut(project)
 		out.Body.Event = evt
 		return out, nil
 	})
@@ -246,7 +265,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		out := &api.ShowProjectResponse{}
-		out.Body.Project = p
+		out.Body.Project = dbProjectToOut(p)
 		out.Body.Aliases = aliases
 		return out, nil
 	})
@@ -310,7 +329,7 @@ func resolveByKataToml(ctx context.Context, store *db.DB, disc config.Discovered
 		return nil, false, err
 	}
 	return &api.ProjectResolveBody{
-		Project:       project,
+		Project:       dbProjectToOut(project),
 		Alias:         alias,
 		WorkspaceRoot: disc.WorkspaceRoot,
 	}, true, nil
@@ -345,7 +364,7 @@ func resolveByAlias(ctx context.Context, store *db.DB, disc config.DiscoveredPat
 		return nil, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return &api.ProjectResolveBody{
-		Project:       project,
+		Project:       dbProjectToOut(project),
 		Alias:         alias,
 		WorkspaceRoot: info.RootPath,
 	}, nil
@@ -421,7 +440,7 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	}
 
 	return &api.ProjectResolveBody{
-		Project:       project,
+		Project:       dbProjectToOut(project),
 		Alias:         alias,
 		WorkspaceRoot: dest,
 	}, created, nil

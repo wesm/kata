@@ -258,6 +258,38 @@ func TestListProjectsAndShow(t *testing.T) {
 	assert.Contains(t, string(body2), `"aliases":`)
 }
 
+// TestListProjects_DefaultShape pins the byte-level wire shape of
+// GET /api/v1/projects. A future addition of a field to db.Project
+// (e.g. an internal-only column) must not silently leak onto this
+// response. Spec §7.2.
+func TestListProjects_DefaultShape(t *testing.T) {
+	h := openTestDB(t)
+	_, err := h.db.CreateProject(t.Context(), "github.com/wesm/x", "x")
+	require.NoError(t, err)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts, "/api/v1/projects")
+	var parsed struct {
+		Projects []map[string]any `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &parsed))
+	require.Len(t, parsed.Projects, 1)
+	p := parsed.Projects[0]
+
+	for _, key := range []string{"id", "uid", "identity", "name", "created_at", "next_issue_number"} {
+		_, ok := p[key]
+		assert.True(t, ok, "missing key %q in projects[0]: %s", key, body)
+	}
+	_, hasStats := p["stats"]
+	assert.False(t, hasStats, "stats must not appear in default response: %s", body)
+	_, hasUpdated := p["updated_at"]
+	assert.False(t, hasUpdated, "updated_at must not appear: %s", body)
+	_, hasDeleted := p["deleted_at"]
+	assert.False(t, hasDeleted, "deleted_at must omit on active project: %s", body)
+}
+
 func TestRenameProject_UpdatesNameAndKeepsIdentity(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init", "--quiet")
