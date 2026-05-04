@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,4 +38,65 @@ func (m Model) fetchProjectsWithStats() tea.Cmd {
 		}
 		return projectsLoadedMsg{projects: names, idents: idents, stats: stats}
 	}
+}
+
+// projectsRow is one row of the projects view. Sentinel=true marks the
+// implicit "All projects" entry at index 0; otherwise the row carries a
+// concrete projectID.
+type projectsRow struct {
+	sentinel  bool
+	projectID int64
+	name      string
+	identity  string
+	stats     ProjectStatsSummary
+}
+
+// projectsRows builds the row list rendered by viewProjects. The
+// sentinel row is always at index 0; remaining rows are sorted by
+// last_event_at desc with name asc as the tiebreak. Spec §5.3.
+//
+// The sentinel's totals are client-summed from the per-row stats (spec
+// §1.6) so the "All projects" Open/Closed/Total are guaranteed
+// consistent with the rows on the same frame, and last_event_at is the
+// max across rows.
+func projectsRows(byID map[int64]string, identByID map[int64]string, stats map[int64]ProjectStatsSummary) []projectsRow {
+	rows := []projectsRow{}
+	for id, name := range byID {
+		rows = append(rows, projectsRow{
+			projectID: id,
+			name:      name,
+			identity:  identByID[id],
+			stats:     stats[id],
+		})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		ti, tj := timeOrZero(rows[i].stats.LastEventAt), timeOrZero(rows[j].stats.LastEventAt)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return strings.ToLower(rows[i].name) < strings.ToLower(rows[j].name)
+	})
+	sentinel := projectsRow{sentinel: true, name: "All projects"}
+	var maxT time.Time
+	for _, r := range rows {
+		sentinel.stats.Open += r.stats.Open
+		sentinel.stats.Closed += r.stats.Closed
+		if r.stats.LastEventAt != nil && r.stats.LastEventAt.After(maxT) {
+			maxT = *r.stats.LastEventAt
+		}
+	}
+	if !maxT.IsZero() {
+		sentinel.stats.LastEventAt = &maxT
+	}
+	return append([]projectsRow{sentinel}, rows...)
+}
+
+// timeOrZero unwraps an optional time pointer, returning the zero value
+// for nil. Sort uses this so a project with no events sinks to the end
+// of the descending order.
+func timeOrZero(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
 }
