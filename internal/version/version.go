@@ -45,6 +45,7 @@ func versionFromVCS() string {
 	if len(rev) > shortHashLen {
 		rev = rev[:shortHashLen]
 	}
+	rev = "g" + rev
 	if dirty {
 		rev += dirtySuffix
 	}
