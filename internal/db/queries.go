@@ -165,7 +165,7 @@ ORDER BY p.id`
 		}
 		s := ProjectStats{Open: open, Closed: closed}
 		if ts.Valid {
-			t, err := time.Parse(time.RFC3339Nano, ts.String)
+			t, err := parseSQLiteTimestamp(ts.String)
 			if err != nil {
 				return nil, fmt.Errorf("parse last_event_at %q: %w", ts.String, err)
 			}
@@ -177,6 +177,33 @@ ORDER BY p.id`
 		return nil, fmt.Errorf("rows: %w", err)
 	}
 	return out, nil
+}
+
+// parseSQLiteTimestamp parses a TIMESTAMP-typed column value returned as a
+// driver string. The current schema's strftime('%Y-%m-%dT%H:%M:%fZ','now')
+// produces RFC3339 with millisecond precision and a 'Z' zone, but databases
+// imported from older snapshots may carry SQLite's other supported text
+// layouts ("YYYY-MM-DD HH:MM:SS[.SSS]"). Fall through the layouts in order;
+// surface the original error when none match so a corrupt value still
+// returns an actionable wrap.
+func parseSQLiteTimestamp(s string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+	}
+	var firstErr error
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, s)
+		if err == nil {
+			return t, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return time.Time{}, firstErr
 }
 
 // ProjectHasIssuesError is returned by ResetIssueCounter when the target
@@ -442,7 +469,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	if err := tx.QueryRowContext(ctx,
 		`UPDATE projects
 		 SET next_issue_number = next_issue_number + 1
-		 WHERE id = ?
+		 WHERE id = ? AND deleted_at IS NULL
 		 RETURNING next_issue_number - 1, identity, uid`, p.ProjectID).
 		Scan(&nextNum, &identity, &projectUID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -711,7 +738,7 @@ type ListAllIssuesParams struct {
 // stable "newest first" feed across projects, distinct from the per-project
 // endpoint's updated_at-DESC ordering which leads with recent activity.
 func (d *DB) ListAllIssues(ctx context.Context, p ListAllIssuesParams) ([]Issue, error) {
-	q := issueSelect + ` WHERE i.deleted_at IS NULL`
+	q := issueSelect + ` WHERE i.deleted_at IS NULL AND p.deleted_at IS NULL`
 	var args []any
 	if p.ProjectID > 0 {
 		q += ` AND i.project_id = ?`

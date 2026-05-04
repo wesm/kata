@@ -501,7 +501,10 @@ func TestBatchProjectStats_NoCountInflation(t *testing.T) {
 }
 
 // TestBatchProjectStats_ExcludesSoftDeletedIssues pins that issues with
-// deleted_at != NULL do not count toward Open/Closed. Spec §6.1.
+// deleted_at != NULL do not count toward Open/Closed. SoftDeleteIssue is
+// the right primitive — PurgeIssue would hard-delete the row and the
+// `WHERE deleted_at IS NULL` filter would never get a chance to exercise
+// itself. Spec §6.1.
 func TestBatchProjectStats_ExcludesSoftDeletedIssues(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
@@ -515,12 +518,17 @@ func TestBatchProjectStats_ExcludesSoftDeletedIssues(t *testing.T) {
 		ProjectID: p.ID, Title: "soft", Body: "", Author: "tester",
 	})
 	require.NoError(t, err)
-	_, err = d.PurgeIssue(ctx, soft.ID, "tester", nil)
+	_, _, _, err = d.SoftDeleteIssue(ctx, soft.ID, "tester")
 	require.NoError(t, err)
+	// Sanity: the soft-deleted row still exists with deleted_at set, so
+	// the filter is what's actually doing the work.
+	got, err := d.IssueByID(ctx, soft.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.DeletedAt, "soft-delete must leave row with deleted_at set")
 
 	stats, err := d.BatchProjectStats(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, stats[p.ID].Open, "purged issue must not count")
+	assert.Equal(t, 1, stats[p.ID].Open, "soft-deleted issue must not count")
 }
 
 // TestBatchProjectStats_ExcludesArchivedProjects pins that archived

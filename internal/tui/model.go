@@ -346,13 +346,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if pl, ok := msg.(projectsLoadedMsg); ok {
-		if pl.err == nil && pl.projects != nil {
+		if pl.err != nil {
+			m.toast = &toast{
+				text:      "failed to load projects: " + pl.err.Error(),
+				level:     toastError,
+				expiresAt: m.toastNow().Add(toastNoBindingTTL),
+			}
+			return m, toastExpireCmd(toastNoBindingTTL)
+		}
+		if pl.projects != nil {
 			m.projectsByID = pl.projects
 		}
-		if pl.err == nil && pl.idents != nil {
+		if pl.idents != nil {
 			m.projectIdentByID = pl.idents
 		}
-		if pl.err == nil && pl.stats != nil {
+		if pl.stats != nil {
 			m.projectStats = pl.stats
 		}
 		return m, nil
@@ -2171,10 +2179,18 @@ func (m Model) View() string {
 	// modal would silently disappear and the user would be stuck —
 	// pressing q again would only re-trigger the (invisible) modal.
 	if m.width > 0 && m.width < 80 {
+		// viewProjects renders its own narrow-friendly body; every other
+		// view falls back to the "too narrow" hint. Either way an active
+		// modal/form must layer on top — without that, a quit-confirm
+		// opened at full width would silently disappear under the
+		// projects view after a resize below threshold (mirror of the
+		// roborev #250 incident on the regular narrow path).
+		var body string
 		if m.view == viewProjects {
-			return renderProjects(m)
+			body = renderProjects(m)
+		} else {
+			body = renderTooNarrow(m.width, m.height)
 		}
-		body := renderTooNarrow(m.width, m.height)
 		if m.modal == modalQuitConfirm {
 			return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
 		}

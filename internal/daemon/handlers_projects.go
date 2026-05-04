@@ -194,6 +194,14 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 				"source and target have overlapping issue numbers",
 				"resolve collisions before merging", map[string]any{"numbers": collision.Numbers})
 		}
+		if errors.Is(err, db.ErrProjectMergeArchivedSource) {
+			return nil, api.NewError(409, "project_merge_archived_source",
+				"source project is archived", "", nil)
+		}
+		if errors.Is(err, db.ErrProjectMergeArchivedTarget) {
+			return nil, api.NewError(409, "project_merge_archived_target",
+				"target project is archived", "", nil)
+		}
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
 		}

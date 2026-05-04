@@ -329,7 +329,7 @@ func loadParentRef(ctx context.Context, store *db.DB, issue db.Issue) (*api.Issu
 // (≤10) so the per-group cost is bounded.
 func hydrateIssueOutsCrossProject(ctx context.Context, store *db.DB, issues []db.Issue) ([]api.IssueOut, error) {
 	if len(issues) == 0 {
-		return nil, nil
+		return []api.IssueOut{}, nil
 	}
 	byProject := map[int64][]db.Issue{}
 	for _, iss := range issues {

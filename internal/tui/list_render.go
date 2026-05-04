@@ -865,10 +865,14 @@ func titleForRow(iss Issue, chrome viewChrome, titleW int) string {
 
 // projectPrefix renders the bracketed project name for a list row. Falls
 // back to "[#PID]" when the project lookup misses so the row still tells
-// the user which project rather than appearing nameless.
+// the user which project rather than appearing nameless. The name is
+// sanitized so control characters or ANSI sequences in stored project
+// names cannot corrupt the terminal UI.
 func projectPrefix(projectID int64, byID map[int64]string) string {
-	if name, ok := byID[projectID]; ok && name != "" {
-		return "[" + name + "] "
+	if name, ok := byID[projectID]; ok {
+		if clean := sanitizeForDisplay(name); clean != "" {
+			return "[" + clean + "] "
+		}
 	}
 	return fmt.Sprintf("[#%d] ", projectID)
 }

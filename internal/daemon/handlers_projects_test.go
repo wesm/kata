@@ -651,7 +651,11 @@ func TestListProjects_WithStatsHandlesEmptyProjects(t *testing.T) {
 	body := getBody(t, ts, "/api/v1/projects?include=stats")
 	var parsed struct {
 		Projects []struct {
-			Stats struct {
+			// Pointer so a missing/null "stats" key would decode as nil
+			// — without this, the omitempty path would let the test
+			// pass even if the API stopped emitting stats for empty
+			// projects. The require.NotNil below is the actual contract.
+			Stats *struct {
 				Open        int     `json:"open"`
 				Closed      int     `json:"closed"`
 				LastEventAt *string `json:"last_event_at"`
@@ -660,6 +664,7 @@ func TestListProjects_WithStatsHandlesEmptyProjects(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(body), &parsed))
 	require.Len(t, parsed.Projects, 1)
+	require.NotNil(t, parsed.Projects[0].Stats, "stats must be present even for empty projects")
 	assert.Equal(t, 0, parsed.Projects[0].Stats.Open)
 	assert.Equal(t, 0, parsed.Projects[0].Stats.Closed)
 	assert.Nil(t, parsed.Projects[0].Stats.LastEventAt, "no events → null")
