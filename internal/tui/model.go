@@ -1268,11 +1268,13 @@ func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 // routeFormMutation can drop a stale response that lands after the
 // user closed this form and opened another (jobs 242/244).
 //
-// projectID resolution: from viewDetail we use m.detail.scopePID (the
-// open issue's actual project) so a child-create from a detail opened
-// in all-projects scope still posts to the right project. From
-// viewList we use m.scope.projectID (the list view is gated against
-// all-projects scope at the key handler, so this is non-zero).
+// projectID resolution: when detail is active (stacked viewDetail OR
+// split-layout viewList with the detail pane focused) we use
+// m.detail.scopePID — the open issue's actual project — so a
+// child-create from a detail opened in all-projects scope still posts
+// to the right project. Otherwise we use m.scope.projectID (the list
+// view's "n" handler is gated against all-projects scope, so this is
+// non-zero in that path).
 func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	if len(m.input.fields) < 5 {
 		return m, nil
@@ -1289,8 +1291,12 @@ func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	}
 	m.input.saving = true
 	m.input.err = ""
+	// detailIsActive() covers both stacked (m.view == viewDetail) and
+	// split (m.view == viewList with the detail pane focused) layouts;
+	// without it, "N" from a split-layout detail in all-projects scope
+	// would dispatch a create against m.scope.projectID == 0.
 	pid := m.scope.projectID
-	if m.view == viewDetail {
+	if m.detailIsActive() && m.detail.scopePID != 0 {
 		pid = m.detail.scopePID
 	}
 	return m, dispatchFormCreateIssue(m.api, pid, body, m.input.formGen)
