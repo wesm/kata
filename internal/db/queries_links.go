@@ -165,6 +165,60 @@ func (d *DB) appendParentNumbersForChunk(
 	return nil
 }
 
+// BlockNumbersByIssues returns issue ID -> issue numbers directly blocked by
+// that issue for outgoing "blocks" links inside projectID.
+func (d *DB) BlockNumbersByIssues(
+	ctx context.Context, projectID int64, issueIDs []int64,
+) (map[int64][]int64, error) {
+	out := map[int64][]int64{}
+	if len(issueIDs) == 0 {
+		return out, nil
+	}
+	for i := 0; i < len(issueIDs); i += relationshipChunkSize {
+		end := i + relationshipChunkSize
+		if end > len(issueIDs) {
+			end = len(issueIDs)
+		}
+		if err := d.appendBlockNumbersForChunk(ctx, projectID, issueIDs[i:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) appendBlockNumbersForChunk(
+	ctx context.Context, projectID int64, chunk []int64, out map[int64][]int64,
+) error {
+	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
+	query := `SELECT l.from_issue_id, blocked.number
+	          FROM links l
+	          JOIN issues blocker ON blocker.id = l.from_issue_id
+	          JOIN issues blocked ON blocked.id = l.to_issue_id
+	          WHERE l.project_id = ?
+	            AND blocker.project_id = ?
+	            AND blocked.project_id = ?
+	            AND l.type = 'blocks'
+	            AND blocked.deleted_at IS NULL
+	            AND l.from_issue_id IN (` + placeholders + `)
+	          ORDER BY l.from_issue_id ASC, blocked.number ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("block numbers by issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var blockerID, blockedNumber int64
+		if err := rows.Scan(&blockerID, &blockedNumber); err != nil {
+			return fmt.Errorf("scan block numbers by issues: %w", err)
+		}
+		out[blockerID] = append(out[blockerID], blockedNumber)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate block numbers by issues: %w", err)
+	}
+	return nil
+}
+
 // ChildCountsByParents returns direct-child open/total counts keyed by parent
 // issue ID inside projectID.
 func (d *DB) ChildCountsByParents(

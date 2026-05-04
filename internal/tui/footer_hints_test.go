@@ -17,6 +17,8 @@ func TestQueueHelpRows_ConditionalItems(t *testing.T) {
 		helpItem{key: "space", desc: "expand"})
 	assertHelpItemPresent(t, flattenHelpRows(withChildren.queueHelpRows()),
 		helpItem{key: "N", desc: "child"})
+	assertHelpItemPresent(t, flattenHelpRows(withChildren.queueHelpRows()),
+		helpItem{key: "o", desc: "order"})
 
 	leaf := Model{list: listModel{issues: []Issue{
 		{ProjectID: 7, Number: 1, Title: "leaf", Status: "open"},

@@ -22,7 +22,7 @@ func helpSections(km keymap) []helpSection {
 		{"Queue", []helpItem{
 			r(km.Up), r(km.Down), r(km.PageUp), r(km.PageDown), r(km.Home),
 			r(km.End), r(km.Open), r(km.ExpandCollapse), r(km.NewIssue),
-			r(km.Close), r(km.Reopen),
+			r(km.SortChildren), r(km.Close), r(km.Reopen),
 		}},
 		{"Detail", []helpItem{
 			r(km.NextTab), r(km.PrevTab), r(km.JumpRef), r(km.Back),

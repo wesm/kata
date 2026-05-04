@@ -52,6 +52,7 @@ type listModel struct {
 	err               error
 	loading           bool
 	truncated         bool
+	childSort         childSortMode
 }
 
 const queueWorkingSetLimit = 2000
@@ -108,6 +109,9 @@ func (lm listModel) applyNavKey(
 		return next, nil
 	}
 	if next, ok := lm.applyExpandKey(msg, km); ok {
+		return next, nil
+	}
+	if next, ok := lm.applyChildSortKey(msg, km); ok {
 		return next, nil
 	}
 	if next, cmd, ok := lm.applyFilterKey(msg, km); ok {
@@ -191,7 +195,7 @@ func (lm listModel) targetQueueRow() (queueRow, bool) {
 }
 
 func (lm listModel) visibleRows() []queueRow {
-	return buildQueueRows(lm.issues, lm.filter, lm.expanded)
+	return buildQueueRowsWithSort(lm.issues, lm.filter, lm.expanded, lm.childSort)
 }
 
 // projectIDForRow picks the right project_id for the row's mutation.
@@ -315,6 +319,34 @@ func (lm listModel) toggleExpanded() listModel {
 		delete(lm.expanded, row.key)
 	} else {
 		lm.expanded[row.key] = true
+	}
+	return lm
+}
+
+func (lm listModel) applyChildSortKey(msg tea.KeyMsg, km keymap) (listModel, bool) {
+	if !km.SortChildren.matches(msg) {
+		return lm, false
+	}
+	lm = lm.syncSelection(lm.visibleRows())
+	if lm.childSort == childSortTemporal {
+		lm.childSort = childSortTopological
+	} else {
+		lm.childSort = childSortTemporal
+	}
+	lm.status = "child order: " + lm.childSort.label()
+	return lm.restoreCursorToSelection(), true
+}
+
+func (lm listModel) restoreCursorToSelection() listModel {
+	if lm.selectedNumber == 0 {
+		return lm
+	}
+	for i, row := range lm.visibleRows() {
+		if row.issue.Number == lm.selectedNumber &&
+			(lm.selectedProjectID == 0 || row.issue.ProjectID == lm.selectedProjectID) {
+			lm.cursor = i
+			return lm
+		}
 	}
 	return lm
 }

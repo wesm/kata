@@ -1,5 +1,21 @@
 package tui
 
+import "sort"
+
+type childSortMode int
+
+const (
+	childSortTopological childSortMode = iota
+	childSortTemporal
+)
+
+func (m childSortMode) label() string {
+	if m == childSortTemporal {
+		return "temporal"
+	}
+	return "topological"
+}
+
 type issueKey struct {
 	projectID int64
 	number    int64
@@ -18,7 +34,13 @@ type queueRow struct {
 type expansionSet map[issueKey]bool
 
 func buildQueueRows(issues []Issue, filter ListFilter, expanded expansionSet) []queueRow {
-	state := newQueueBuildState(issues, filter, expanded)
+	return buildQueueRowsWithSort(issues, filter, expanded, childSortTopological)
+}
+
+func buildQueueRowsWithSort(
+	issues []Issue, filter ListFilter, expanded expansionSet, childSort childSortMode,
+) []queueRow {
+	state := newQueueBuildState(issues, filter, expanded, childSort)
 	for _, key := range state.order {
 		iss := state.byKey[key]
 		if iss.ParentNumber != nil && state.hasIssue(issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}) {
@@ -46,13 +68,16 @@ type queueBuildState struct {
 	filterActive     bool
 	revealMatches    bool
 	expanded         expansionSet
+	childSort        childSortMode
 	matched          map[issueKey]bool
 	included         map[issueKey]bool
 	emitted          map[issueKey]bool
 	rows             []queueRow
 }
 
-func newQueueBuildState(issues []Issue, filter ListFilter, expanded expansionSet) *queueBuildState {
+func newQueueBuildState(
+	issues []Issue, filter ListFilter, expanded expansionSet, childSort childSortMode,
+) *queueBuildState {
 	state := &queueBuildState{
 		byKey:            make(map[issueKey]Issue, len(issues)),
 		childrenByParent: make(map[issueKey][]issueKey),
@@ -61,6 +86,7 @@ func newQueueBuildState(issues []Issue, filter ListFilter, expanded expansionSet
 		filterActive:     hasActiveQueueFilter(filter),
 		revealMatches:    hasRevealQueueFilter(filter),
 		expanded:         expanded,
+		childSort:        childSort,
 		matched:          make(map[issueKey]bool, len(issues)),
 		included:         make(map[issueKey]bool, len(issues)),
 		emitted:          make(map[issueKey]bool, len(issues)),
@@ -213,6 +239,9 @@ func (s *queueBuildState) visibleChildKeys(parent issueKey, expanded bool) []iss
 		if !expanded {
 			return nil
 		}
+		if s.childSort == childSortTopological {
+			children = s.topologicalChildKeys(children)
+		}
 		return children
 	}
 	if !expanded {
@@ -224,7 +253,83 @@ func (s *queueBuildState) visibleChildKeys(parent issueKey, expanded bool) []iss
 			out = append(out, child)
 		}
 	}
+	if s.childSort == childSortTopological {
+		out = s.topologicalChildKeys(out)
+	}
 	return out
+}
+
+func (s *queueBuildState) topologicalChildKeys(children []issueKey) []issueKey {
+	if len(children) < 2 {
+		return children
+	}
+	index := make(map[issueKey]int, len(children))
+	byNumber := make(map[int64]issueKey, len(children))
+	for i, key := range children {
+		index[key] = i
+		byNumber[key.number] = key
+	}
+	outgoing := make(map[issueKey][]issueKey, len(children))
+	indegree := make(map[issueKey]int, len(children))
+	for _, key := range children {
+		for _, blockedNumber := range s.byKey[key].Blocks {
+			blockedKey, ok := byNumber[blockedNumber]
+			if !ok || blockedKey == key {
+				continue
+			}
+			outgoing[key] = append(outgoing[key], blockedKey)
+			indegree[blockedKey]++
+		}
+	}
+	for key := range outgoing {
+		sort.SliceStable(outgoing[key], func(i, j int) bool {
+			return index[outgoing[key][i]] < index[outgoing[key][j]]
+		})
+	}
+	ready := make([]issueKey, 0, len(children))
+	for _, key := range children {
+		if indegree[key] == 0 {
+			ready = append(ready, key)
+		}
+	}
+	sorted := make([]issueKey, 0, len(children))
+	emitted := make(map[issueKey]bool, len(children))
+	for len(ready) > 0 {
+		key := ready[0]
+		ready = ready[1:]
+		if emitted[key] {
+			continue
+		}
+		sorted = append(sorted, key)
+		emitted[key] = true
+		for _, blockedKey := range outgoing[key] {
+			indegree[blockedKey]--
+			if indegree[blockedKey] == 0 {
+				ready = insertReadyByOriginalOrder(ready, blockedKey, index)
+			}
+		}
+	}
+	if len(sorted) == len(children) {
+		return sorted
+	}
+	for _, key := range children {
+		if !emitted[key] {
+			sorted = append(sorted, key)
+		}
+	}
+	return sorted
+}
+
+func insertReadyByOriginalOrder(
+	ready []issueKey, key issueKey, index map[issueKey]int,
+) []issueKey {
+	pos := sort.Search(len(ready), func(i int) bool {
+		return index[ready[i]] > index[key]
+	})
+	ready = append(ready, issueKey{})
+	copy(ready[pos+1:], ready[pos:])
+	ready[pos] = key
+	return ready
 }
 
 func (s *queueBuildState) hasIssue(key issueKey) bool {

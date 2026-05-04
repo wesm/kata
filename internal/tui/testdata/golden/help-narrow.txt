@@ -16,6 +16,7 @@ G       last
 enter   open detail
 space   expand/collapse
 n       new issue (form)
+o       toggle child order
 x       close
 r       reopen
 

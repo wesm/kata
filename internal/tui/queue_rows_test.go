@@ -42,6 +42,35 @@ func TestBuildQueueRows_ExpandedShowsDirectChildren(t *testing.T) {
 	}
 }
 
+func TestBuildQueueRows_DefaultsExpandedChildrenToTopologicalOrder(t *testing.T) {
+	issues := []Issue{
+		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 3, Total: 3}},
+		{ProjectID: 7, Number: 2, Title: "blocked child", ParentNumber: int64Ptr(1)},
+		{ProjectID: 7, Number: 3, Title: "blocker child", ParentNumber: int64Ptr(1), Blocks: []int64{2}},
+		{ProjectID: 7, Number: 4, Title: "unrelated child", ParentNumber: int64Ptr(1)},
+	}
+
+	rows := buildQueueRows(issues, ListFilter{}, expansionSet{{projectID: 7, number: 1}: true})
+	assertQueueNumbers(t, rows, []int64{1, 3, 2, 4})
+}
+
+func TestBuildQueueRows_TemporalChildSortPreservesFetchOrder(t *testing.T) {
+	issues := []Issue{
+		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 3, Total: 3}},
+		{ProjectID: 7, Number: 2, Title: "blocked child", ParentNumber: int64Ptr(1)},
+		{ProjectID: 7, Number: 3, Title: "blocker child", ParentNumber: int64Ptr(1), Blocks: []int64{2}},
+		{ProjectID: 7, Number: 4, Title: "unrelated child", ParentNumber: int64Ptr(1)},
+	}
+
+	rows := buildQueueRowsWithSort(
+		issues,
+		ListFilter{},
+		expansionSet{{projectID: 7, number: 1}: true},
+		childSortTemporal,
+	)
+	assertQueueNumbers(t, rows, []int64{1, 2, 3, 4})
+}
+
 func TestBuildQueueRows_FilteredChildAutoShowsAncestorContext(t *testing.T) {
 	issues := []Issue{
 		{ProjectID: 7, Number: 1, Title: "parent"},

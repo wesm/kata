@@ -187,6 +187,23 @@ func TestScenario_LayoutToggle_LFlipsAtSplitEligibleSize(t *testing.T) {
 	}
 }
 
+func TestScenario_ChildSortToggle_OFlipsBetweenTopologicalAndTemporal(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	if m.list.childSort != childSortTopological {
+		t.Fatalf("default child sort = %v, want topological", m.list.childSort)
+	}
+
+	m = pressRune(t, m, 'o')
+	if m.list.childSort != childSortTemporal {
+		t.Fatalf("first o child sort = %v, want temporal", m.list.childSort)
+	}
+
+	m = pressRune(t, m, 'o')
+	if m.list.childSort != childSortTopological {
+		t.Fatalf("second o child sort = %v, want topological", m.list.childSort)
+	}
+}
+
 // TestScenario_LayoutToggle_LStaysAcrossResize: once the user has
 // pressed L, a subsequent WindowSizeMsg cannot revert the layout via
 // pickLayout. Without the lock, "I pinned stacked, then resized" would

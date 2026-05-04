@@ -131,7 +131,6 @@ type ResetCounterResponse struct {
 	}
 }
 
-
 // CreateIssueRequest is POST /api/v1/projects/{id}/issues.
 //
 // IdempotencyKey is read from the Idempotency-Key HTTP header (spec §4.4).
@@ -179,8 +178,9 @@ type ListIssuesRequest struct {
 
 // IssueOut is the wire projection of one row in ListIssuesResponse.
 // It embeds db.Issue (every persistence column flattens to the top
-// level on JSON marshal) and adds Labels — the sibling slice the
-// daemon hydrates per-issue from issue_labels via LabelsByIssues. Kept
+// level on JSON marshal) and adds row metadata the daemon hydrates
+// from relationship tables: labels, parent/child summary, and outgoing
+// blocker edges used by the TUI queue's child ordering. Kept
 // separate from db.Issue so the persistence struct stays free of
 // wire-only state; rolling labels into db.Issue would force every db
 // query path to know whether labels were hydrated, which they aren't
@@ -194,6 +194,7 @@ type IssueOut struct {
 	Labels       []string        `json:"labels,omitempty"`
 	ParentNumber *int64          `json:"parent_number,omitempty"`
 	ChildCounts  *db.ChildCounts `json:"child_counts,omitempty"`
+	Blocks       []int64         `json:"blocks,omitempty"`
 }
 
 // ListIssuesResponse is the list payload. Plan 8 commit 5b: each row

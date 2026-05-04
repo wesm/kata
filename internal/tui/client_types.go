@@ -32,6 +32,7 @@ type Issue struct {
 	Labels       []string     `json:"labels,omitempty"`
 	ParentNumber *int64       `json:"parent_number,omitempty"`
 	ChildCounts  *ChildCounts `json:"child_counts,omitempty"`
+	Blocks       []int64      `json:"blocks,omitempty"`
 }
 
 // ChildCounts is the direct-child aggregate attached to queue/detail rows.

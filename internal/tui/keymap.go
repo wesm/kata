@@ -11,6 +11,7 @@ type keymap struct {
 	Up, Down, PageUp, PageDown, Home, End          key
 	Open, NewIssue, NewChild, Search               key
 	ExpandCollapse                                 key
+	SortChildren                                   key
 	FilterStatus, FilterForm, ClearFilters         key
 	Close, Reopen                                  key
 	NextTab, PrevTab, JumpRef, Back                key
@@ -43,6 +44,7 @@ func newKeymap() keymap {
 		NewIssue:       key{Keys: []string{"n"}, Help: "new issue (form)"},
 		NewChild:       key{Keys: []string{"N"}, Help: "new child"},
 		ExpandCollapse: key{Keys: []string{" "}, Help: "expand/collapse"},
+		SortChildren:   key{Keys: []string{"o"}, Help: "toggle child order"},
 		Search:         key{Keys: []string{"/"}, Help: "search"},
 		FilterStatus:   key{Keys: []string{"s"}, Help: "cycle status filter"},
 		FilterForm:     key{Keys: []string{"f"}, Help: "filter (form)"},

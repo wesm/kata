@@ -534,6 +534,33 @@ func TestListIssues_IncludesHierarchyMetadata(t *testing.T) {
 	assert.Equal(t, parent, *byNumber[child].ParentNumber)
 }
 
+func TestListIssues_IncludesBlockerMetadata(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	blocker := createIssueViaHTTP(t, env, pid, "blocker")
+	blocked := createIssueViaHTTP(t, env, pid, "blocked")
+	postLink(t, env, pid, blocker, "blocks", blocked)
+
+	resp, err := env.HTTP.Get(env.URL +
+		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Issues []struct {
+			Number int64   `json:"number"`
+			Blocks []int64 `json:"blocks,omitempty"`
+		} `json:"issues"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	byNumber := map[int64][]int64{}
+	for _, iss := range out.Issues {
+		byNumber[iss.Number] = iss.Blocks
+	}
+	assert.Equal(t, []int64{blocked}, byNumber[blocker])
+	assert.Empty(t, byNumber[blocked])
+}
+
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, child := setupTwoIssues(t, env)

@@ -308,9 +308,13 @@ func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues
 	if err != nil {
 		return nil, err
 	}
+	blocks, err := store.BlockNumbersByIssues(ctx, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]api.IssueOut, len(issues))
 	for i, iss := range issues {
-		row := api.IssueOut{Issue: iss, Labels: labelsByID[iss.ID]}
+		row := api.IssueOut{Issue: iss, Labels: labelsByID[iss.ID], Blocks: blocks[iss.ID]}
 		if parentNumber, ok := parentNumbers[iss.ID]; ok {
 			row.ParentNumber = &parentNumber
 		}

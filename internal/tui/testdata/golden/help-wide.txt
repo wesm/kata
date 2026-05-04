@@ -16,8 +16,8 @@ G       last                      a              assign owner                ctr
 enter   open detail               A              clear owner                                             
 space   expand/collapse                                                                                  
 n       new issue (form)          Children                                                               
-x       close                     N      new child                                                       
-r       reopen                    ↑↓     move child cursor                                               
-                                  enter  open child                                                      
+o       toggle child order        N      new child                                                       
+x       close                     ↑↓     move child cursor                                               
+r       reopen                    enter  open child                                                      
 
 press ? to return
