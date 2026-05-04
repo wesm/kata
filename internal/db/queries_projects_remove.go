@@ -117,12 +117,15 @@ func (d *DB) RemoveProject(ctx context.Context, p RemoveProjectParams) (Project,
 	return updated, &evt, nil
 }
 
-// DetachAliasParams identifies a single alias to drop. Force overrides the
-// last-alias refusal.
+// DetachAliasParams identifies a single alias to drop. ProjectID scopes the
+// lookup to a specific project so a stale handler preflight cannot resolve
+// to one project_id and then race a reassignment that points alias_id at a
+// different project. Force overrides the last-alias refusal.
 type DetachAliasParams struct {
-	AliasID int64
-	Actor   string
-	Force   bool
+	ProjectID int64
+	AliasID   int64
+	Actor     string
+	Force     bool
 }
 
 // DetachProjectAlias deletes one project_aliases row and emits a
@@ -130,6 +133,10 @@ type DetachAliasParams struct {
 // only alias for its project unless Force=true — the last alias is what
 // connects a workspace path to a project, so dropping it without intent
 // orphans the project from the filesystem.
+//
+// Lookup is keyed on (project_id, alias_id) inside the transaction so a
+// reassignment between handler preflight and this call cannot drop an
+// alias from a different project than the request named.
 func (d *DB) DetachProjectAlias(ctx context.Context, p DetachAliasParams) (ProjectAlias, *Event, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -137,7 +144,8 @@ func (d *DB) DetachProjectAlias(ctx context.Context, p DetachAliasParams) (Proje
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	alias, err := scanAlias(tx.QueryRowContext(ctx, aliasSelect+` WHERE id = ?`, p.AliasID))
+	alias, err := scanAlias(tx.QueryRowContext(ctx,
+		aliasSelect+` WHERE id = ? AND project_id = ?`, p.AliasID, p.ProjectID))
 	if err != nil {
 		return ProjectAlias{}, nil, err
 	}
@@ -156,7 +164,8 @@ func (d *DB) DetachProjectAlias(ctx context.Context, p DetachAliasParams) (Proje
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM project_aliases WHERE id = ?`, alias.ID); err != nil {
+		`DELETE FROM project_aliases WHERE id = ? AND project_id = ?`,
+		alias.ID, alias.ProjectID); err != nil {
 		return ProjectAlias{}, nil, fmt.Errorf("delete alias: %w", err)
 	}
 

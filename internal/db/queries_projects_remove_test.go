@@ -143,7 +143,7 @@ func TestDetachProjectAlias_RemovesOneAndEmitsEvent(t *testing.T) {
 	require.NoError(t, err)
 
 	got, evt, err := d.DetachProjectAlias(ctx, db.DetachAliasParams{
-		AliasID: a2.ID, Actor: "tester",
+		ProjectID: p.ID, AliasID: a2.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, a2.AliasIdentity, got.AliasIdentity)
@@ -174,7 +174,9 @@ func TestDetachProjectAlias_RefusesWhenLast(t *testing.T) {
 	a, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/proj-only", "git", "/tmp/only")
 	require.NoError(t, err)
 
-	_, _, err = d.DetachProjectAlias(ctx, db.DetachAliasParams{AliasID: a.ID, Actor: "tester"})
+	_, _, err = d.DetachProjectAlias(ctx, db.DetachAliasParams{
+		ProjectID: p.ID, AliasID: a.ID, Actor: "tester",
+	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, db.ErrAliasIsLast))
 }
@@ -191,7 +193,7 @@ func TestDetachProjectAlias_ForceDropsLast(t *testing.T) {
 	require.NoError(t, err)
 
 	_, evt, err := d.DetachProjectAlias(ctx, db.DetachAliasParams{
-		AliasID: a.ID, Actor: "tester", Force: true,
+		ProjectID: p.ID, AliasID: a.ID, Actor: "tester", Force: true,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, evt)
@@ -200,4 +202,38 @@ func TestDetachProjectAlias_ForceDropsLast(t *testing.T) {
 	require.NoError(t, d.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, p.ID).Scan(&remaining))
 	assert.Equal(t, 0, remaining)
+}
+
+// TestDetachProjectAlias_RejectsCrossProject pins the atomic
+// (project_id, alias_id) safety: if a stale handler preflight resolves
+// to project A but the alias_id belongs to project B, the delete must
+// refuse rather than silently dropping B's alias. The transaction's
+// SELECT keys on both columns so a reassignment between any preflight
+// and the delete cannot mis-target.
+func TestDetachProjectAlias_RejectsCrossProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	pA, err := d.CreateProject(ctx, "github.com/wesm/proj-a", "a")
+	require.NoError(t, err)
+	pB, err := d.CreateProject(ctx, "github.com/wesm/proj-b", "b")
+	require.NoError(t, err)
+	// Two aliases on B so detaching one doesn't trip the last-alias gate
+	// (we want the cross-project check to be the only refusal path).
+	_, err = d.AttachAlias(ctx, pB.ID, "github.com/wesm/proj-b", "git", "/tmp/b-primary")
+	require.NoError(t, err)
+	aB, err := d.AttachAlias(ctx, pB.ID, "local:///tmp/b-extra", "local", "/tmp/b-extra")
+	require.NoError(t, err)
+
+	_, _, err = d.DetachProjectAlias(ctx, db.DetachAliasParams{
+		ProjectID: pA.ID, AliasID: aB.ID, Actor: "tester",
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, db.ErrNotFound),
+		"cross-project detach must refuse with ErrNotFound, got %v", err)
+
+	// Both of B's aliases are intact.
+	var remaining int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, pB.ID).Scan(&remaining))
+	assert.Equal(t, 2, remaining)
 }

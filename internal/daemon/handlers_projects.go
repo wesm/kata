@@ -199,26 +199,16 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Actor); err != nil {
 			return nil, err
 		}
-		// Pre-check that the alias belongs to the path's project_id so we
-		// don't drop an alias from a different project and then try to undo
-		// — DetachProjectAlias is keyed only by alias_id.
-		preflight, err := cfg.DB.AliasByID(ctx, in.AliasID)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "alias_not_found", "alias not found", "", nil)
-		}
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		if preflight.ProjectID != in.ProjectID {
-			return nil, api.NewError(404, "alias_not_found",
-				"alias does not belong to the requested project", "", nil)
-		}
+		// (project_id, alias_id) is validated atomically inside the delete
+		// transaction so a reassignment between any preflight and the delete
+		// cannot drop an alias from a different project than the request named.
 		alias, evt, err := cfg.DB.DetachProjectAlias(ctx, db.DetachAliasParams{
-			AliasID: in.AliasID, Actor: in.Actor, Force: in.Force,
+			ProjectID: in.ProjectID, AliasID: in.AliasID, Actor: in.Actor, Force: in.Force,
 		})
 		switch {
 		case errors.Is(err, db.ErrNotFound):
-			return nil, api.NewError(404, "alias_not_found", "alias not found", "", nil)
+			return nil, api.NewError(404, "alias_not_found",
+				"alias not found for the requested project", "", nil)
 		case errors.Is(err, db.ErrAliasIsLast):
 			return nil, api.NewError(409, "alias_is_last",
 				"alias is the only one for its project",
