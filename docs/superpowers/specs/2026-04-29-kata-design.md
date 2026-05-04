@@ -416,7 +416,7 @@ CREATE TABLE meta (
 );
 INSERT INTO meta(key, value) VALUES ('created_by_version', '0.1.0');
 
--- FTS5 virtual table over issue title+body+comments, kept in sync via triggers in Plan 3.
+-- FTS5 virtual table over issue title+body+comments, kept in sync via AFTER INSERT/UPDATE/DELETE triggers.
 CREATE VIRTUAL TABLE issues_fts USING fts5(
   title, body, comments,
   content='', tokenize='unicode61 remove_diacritics 2'
@@ -542,7 +542,7 @@ GET    /api/v1/events?after_id=N&limit=N                           # cross-proje
 GET    /api/v1/events/stream                                       # SSE; ?after_id or Last-Event-ID
 ```
 
-All issue/project/link/event JSON shapes include additive UID fields. `Project` includes `uid`; `Issue` includes `uid` and `project_uid`; `LinkOut` includes `from_issue_uid` and `to_issue_uid`; event envelopes include `event_uid`, `origin_instance_uid`, `project_uid`, `issue_uid`, and `related_issue_uid` where applicable; `PurgeLog` envelopes include `uid` and `origin_instance_uid`. The federation-foundation spec (`docs/superpowers/specs/2026-05-04-kata-federation-foundation-design.md`) covers how `event_uid` and `origin_instance_uid` interact with future sync; `event_uid` is a stable cross-instance identity but **not** a global ordering cursor — the ordered feed remains `events.id`. UIDs are never synthesized by exporters for an older source schema; importer fill rules add them while importing old JSONL into a current database.
+All issue/project/link/event JSON shapes include additive UID fields. `Project` includes `uid`; `Issue` includes `uid` and `project_uid`; `LinkOut` includes `from_issue_uid` and `to_issue_uid`; event envelopes include `event_uid`, `origin_instance_uid`, `project_uid`, `issue_uid`, and `related_issue_uid` where applicable; `PurgeLog` envelopes include `uid` and `origin_instance_uid`. `event_uid` is a stable cross-instance identity but **not** a global ordering cursor — the ordered feed remains `events.id`. UIDs are never synthesized by exporters for an older source schema; importer fill rules add them while importing old JSONL into a current database.
 
 ### 4.2 Project resolution flow
 
