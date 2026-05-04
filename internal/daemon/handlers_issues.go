@@ -31,11 +31,15 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
+		project, err := cfg.DB.ProjectByID(ctx, in.ProjectID)
+		if err != nil {
 			if errors.Is(err, db.ErrNotFound) {
 				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
 			}
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if project.DeletedAt != nil {
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
 		}
 
 		links := make([]db.InitialLink, 0, len(in.Body.Links))
@@ -84,6 +88,8 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		case errors.Is(err, db.ErrParentAlreadySet):
 			return nil, api.NewError(409, "parent_already_set",
 				"duplicate parent in initial links", "pass at most one parent link", nil)
+		case errors.Is(err, db.ErrNotFound):
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
 		case err != nil:
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}

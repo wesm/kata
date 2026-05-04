@@ -183,13 +183,15 @@ ORDER BY p.id`
 // driver string. The current schema's strftime('%Y-%m-%dT%H:%M:%fZ','now')
 // produces RFC3339 with millisecond precision and a 'Z' zone, but databases
 // imported from older snapshots may carry SQLite's other supported text
-// layouts ("YYYY-MM-DD HH:MM:SS[.SSS]"). Fall through the layouts in order;
-// surface the original error when none match so a corrupt value still
-// returns an actionable wrap.
+// layouts: bare ("YYYY-MM-DD HH:MM:SS[.SSS]") or zoned with an explicit
+// offset suffix (matching jsonl.parseExportTime). Fall through the layouts
+// in order; surface the original error when none match so a corrupt value
+// still returns an actionable wrap.
 func parseSQLiteTimestamp(s string) (time.Time, error) {
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
+		"2006-01-02 15:04:05.999999999-07:00",
 		"2006-01-02 15:04:05.999999999",
 		"2006-01-02 15:04:05",
 	}

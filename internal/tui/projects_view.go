@@ -74,7 +74,11 @@ func projectsRows(byID map[int64]string, identByID map[int64]string, stats map[i
 		if !ti.Equal(tj) {
 			return ti.After(tj)
 		}
-		return strings.ToLower(rows[i].name) < strings.ToLower(rows[j].name)
+		ni, nj := strings.ToLower(rows[i].name), strings.ToLower(rows[j].name)
+		if ni != nj {
+			return ni < nj
+		}
+		return rows[i].projectID < rows[j].projectID
 	})
 	sentinel := projectsRow{sentinel: true, name: "All projects"}
 	var maxT time.Time

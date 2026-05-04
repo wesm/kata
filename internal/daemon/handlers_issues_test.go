@@ -238,6 +238,26 @@ func TestCreateIssue_InitialLinkToMissingTargetIs404(t *testing.T) {
 	assert.Equal(t, 404, resp.StatusCode)
 }
 
+// TestCreateIssue_RejectsArchivedProject pins that creating an issue
+// against an archived project returns 404 (matching the "archived
+// projects are gone" semantic) rather than a 500. The DB-layer
+// CreateIssue gates writes with deleted_at IS NULL and returns
+// ErrNotFound; the handler must surface that as project_not_found
+// after also rejecting in the preflight ProjectByID check.
+func TestCreateIssue_RejectsArchivedProject(t *testing.T) {
+	h, projectID := bootstrapProject(t)
+	_, _, err := h.DB().RemoveProject(t.Context(), db.RemoveProjectParams{
+		ProjectID: projectID, Actor: "tester",
+	})
+	require.NoError(t, err)
+
+	resp, bs := postJSON(t, h.ts.(*httptest.Server),
+		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+"/issues",
+		map[string]any{"actor": "agent-1", "title": "should fail", "body": "details"})
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"code":"project_not_found"`)
+}
+
 func TestCreateIssue_InvalidLabelIs400(t *testing.T) {
 	env := testenv.New(t)
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")

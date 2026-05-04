@@ -10,10 +10,18 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+// projectsViewChromeRows is the line budget reserved for non-row chrome
+// in renderProjects: title + count + blank + header (above) + blank +
+// footer + blank + key-hint (below) = 8 lines. Subtract from m.height
+// to get the row budget.
+const projectsViewChromeRows = 8
+
 // renderProjects draws the projects-view body: a 5-column table
 // (Project / Open / Closed / Total / Updated), an All-projects sentinel
 // pinned at row 0, and a 1-line identity footer for the highlighted
-// row. Spec §5.
+// row. Spec §5. Rows are clipped to the available height with
+// cursor-relative scrolling so the chrome (footer + key-hint) stays on
+// screen even with many projects on a short terminal.
 func renderProjects(m Model) string {
 	rows := projectsRows(m.projectsByID, m.projectIdentByID, m.projectStats)
 	cursor := m.projectsCursor
@@ -24,6 +32,15 @@ func renderProjects(m Model) string {
 		cursor = 0
 	}
 
+	rowBudget := len(rows)
+	if m.height > 0 {
+		rowBudget = m.height - projectsViewChromeRows
+		if rowBudget < 1 {
+			rowBudget = 1
+		}
+	}
+	visible := clipProjectsRows(rows, cursor, rowBudget)
+
 	headerCells := []string{"Project", "Open", "Closed", "Total", "Updated"}
 	body := []string{
 		titleStyle.Render("kata / projects"),
@@ -31,8 +48,8 @@ func renderProjects(m Model) string {
 		"",
 		renderProjectsHeader(headerCells, m.width),
 	}
-	for i, r := range rows {
-		body = append(body, renderProjectsRow(r, i == cursor, m.width))
+	for _, vr := range visible {
+		body = append(body, renderProjectsRow(vr.row, vr.index == cursor, m.width))
 	}
 	body = append(body, "")
 	if cursor >= 0 && cursor < len(rows) {
@@ -42,10 +59,60 @@ func renderProjects(m Model) string {
 	body = append(body, subtleStyle.Render(
 		"[↑/↓ k/j] move  [enter] open  [esc] back  [r] refresh  [q] quit  [?] help"))
 
-	if m.width <= 0 || m.height <= 0 {
-		return strings.Join(body, "\n")
-	}
 	return strings.Join(body, "\n")
+}
+
+// projectsVisibleRow pairs a row with its index in the unclipped
+// projectsRows slice so the renderer can compare against the (clamped)
+// cursor without re-deriving offsets.
+type projectsVisibleRow struct {
+	row   projectsRow
+	index int
+}
+
+// clipProjectsRows returns the slice of rows that should render in a
+// budget of `budget` lines. The sentinel (rows[0]) is always shown at
+// the top — it's the "All projects" anchor users expect to see whenever
+// they're in viewProjects. Concrete rows scroll cursor-relative below
+// the sentinel.
+//
+// Special cases:
+//   - budget <= 0 or empty rows: return nil (caller should still render
+//     the chrome).
+//   - budget == 1: only the sentinel renders.
+//   - all concrete rows fit: render every row in order.
+//
+// The scrolling window for concrete rows uses a third-from-top anchor
+// matching the list view's windowBounds — more upcoming rows than
+// scrolled-past, which matches the common vim/less feel.
+func clipProjectsRows(rows []projectsRow, cursor, budget int) []projectsVisibleRow {
+	if budget <= 0 || len(rows) == 0 {
+		return nil
+	}
+	out := []projectsVisibleRow{{row: rows[0], index: 0}}
+	if budget == 1 || len(rows) == 1 {
+		return out
+	}
+	concreteSlots := budget - 1
+	concreteCount := len(rows) - 1
+	if concreteCount <= concreteSlots {
+		for i := 1; i < len(rows); i++ {
+			out = append(out, projectsVisibleRow{row: rows[i], index: i})
+		}
+		return out
+	}
+	// Translate cursor to concrete-row index space (cursor==0 is the
+	// sentinel; clamp to the concrete window's top in that case so the
+	// user sees the head of the list).
+	concreteCursor := cursor - 1
+	if concreteCursor < 0 {
+		concreteCursor = 0
+	}
+	start, end := windowBounds(concreteCount, concreteCursor, concreteSlots)
+	for i := start; i < end; i++ {
+		out = append(out, projectsVisibleRow{row: rows[i+1], index: i + 1})
+	}
+	return out
 }
 
 func renderProjectsHeader(cells []string, width int) string {

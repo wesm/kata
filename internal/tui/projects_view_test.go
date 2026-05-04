@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,31 @@ func TestProjectsRows_SortByLastEventDesc(t *testing.T) {
 	assert.Equal(t, "noevents", rows[3].name)
 }
 
+// TestProjectsRows_StableTiebreakerOnEqualNamesAndTimes pins that two
+// projects with identical last_event_at and equal-folded names sort
+// deterministically by projectID. Without this, render and key-handling
+// could see different orderings between calls (Go map iteration is
+// intentionally randomized), so Enter on the highlighted row would
+// occasionally select the wrong project.
+func TestProjectsRows_StableTiebreakerOnEqualNamesAndTimes(t *testing.T) {
+	t1 := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	byID := map[int64]string{
+		100: "Kata",
+		50:  "kata", // same fold
+	}
+	idents := map[int64]string{100: "github.com/wesm/kata-100", 50: "github.com/wesm/kata-50"}
+	stats := map[int64]ProjectStatsSummary{
+		100: {LastEventAt: &t1},
+		50:  {LastEventAt: &t1},
+	}
+	for i := 0; i < 50; i++ {
+		rows := projectsRows(byID, idents, stats)
+		require.Len(t, rows, 3)
+		assert.Equal(t, int64(50), rows[1].projectID, "lower projectID first on tie")
+		assert.Equal(t, int64(100), rows[2].projectID)
+	}
+}
+
 // TestProjectsView_RendersTable confirms the table renders with the
 // expected column headers and row content for a fixture model. Wide
 // terminal so all columns fit.
@@ -94,6 +120,32 @@ func TestProjectsView_RendersTable(t *testing.T) {
 	} {
 		assert.Contains(t, out, want, "missing %q in viewProjects output", want)
 	}
+}
+
+// TestProjectsView_ViewportClipsRowsToHeight pins that with many
+// projects and a small terminal, the footer + key-hint line stay on
+// screen. Without clipping, every row renders and the chrome falls
+// off the bottom — the user can't see [↑/↓ k/j] move etc.
+func TestProjectsView_ViewportClipsRowsToHeight(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.width = 120
+	m.height = 14 // chrome=8 + ~5 row slots
+	m.projectsByID = map[int64]string{}
+	m.projectIdentByID = map[int64]string{}
+	m.projectStats = map[int64]ProjectStatsSummary{}
+	for i := int64(1); i <= 20; i++ {
+		m.projectsByID[i] = "proj" + strconv.FormatInt(i, 10)
+		m.projectIdentByID[i] = "github.com/wesm/proj" + strconv.FormatInt(i, 10)
+		m.projectStats[i] = ProjectStatsSummary{}
+	}
+	m.projectsCursor = 10
+
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	assert.LessOrEqual(t, len(lines), m.height, "render must fit within m.height")
+	assert.Contains(t, out, "[↑/↓ k/j] move", "key-hint must remain visible")
+	assert.Contains(t, out, "All projects", "sentinel must remain visible")
 }
 
 // TestProjectsView_DashWhenNoEvents pins spec §6.1: a row with

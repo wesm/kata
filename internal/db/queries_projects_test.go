@@ -575,3 +575,35 @@ func TestBatchProjectStats_PartitionsByProject(t *testing.T) {
 	assert.Equal(t, 2, stats[a.ID].Open)
 	assert.Equal(t, 1, stats[b.ID].Open)
 }
+
+// TestBatchProjectStats_ParsesZonedLegacyTimestamp pins that
+// parseSQLiteTimestamp accepts the zoned legacy layout
+// ("YYYY-MM-DD HH:MM:SS.NNN-07:00") that jsonl.parseExportTime emits on
+// the import path. Without this layout, an imported database with a
+// zoned offset on events.created_at would 500 the stats endpoint.
+func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/zoned", "zoned")
+	require.NoError(t, err)
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "live", Author: "tester",
+	})
+	require.NoError(t, err)
+	// Stamp an event whose created_at uses the zoned legacy layout. The
+	// MAX(created_at) over events for this project will surface this row,
+	// driving parseSQLiteTimestamp through the new layout slot.
+	eventUID, err := uid.New()
+	require.NoError(t, err)
+	const zonedTS = "2026-05-04 12:34:56.789-07:00"
+	_, err = d.ExecContext(ctx, `
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester', '{}', ?)`,
+		eventUID, p.ID, p.Identity, issue.ID, issue.Number, zonedTS)
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	require.Contains(t, stats, p.ID)
+	require.NotNil(t, stats[p.ID].LastEventAt, "zoned timestamp must parse, not nil")
+}

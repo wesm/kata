@@ -226,6 +226,13 @@ func (m Model) Init() tea.Cmd {
 	if m.view == viewEmpty || m.api == nil {
 		return tea.Batch(tea.EnableBracketedPaste, m.waitForSSE())
 	}
+	if m.view == viewProjects {
+		// Boot landed on viewProjects (cwd unresolved + ≥1 project). The
+		// stats cache is already seeded by buildRunModel; skip fetchInitial
+		// (which would hit /api/v1/projects/0/issues with empty scope) and
+		// just drive SSE plus the projects-stats refetch on next event.
+		return tea.Batch(tea.EnableBracketedPaste, m.fetchProjects(), m.waitForSSE())
+	}
 	return tea.Batch(tea.EnableBracketedPaste, m.fetchInitial(), m.fetchProjects(), m.waitForSSE())
 }
 
@@ -370,13 +377,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if pl.stats != nil {
 			m.projectStats = pl.stats
+			// Stats successfully landed; consume the stale flag so a
+			// debounce timer already in flight doesn't trigger a redundant
+			// refetch. A failed fetch (pl.err != nil above) returns
+			// earlier and preserves the flag.
+			m.projectsStale = false
+		}
+		// A shrinking refetch (e.g. archive on another client) may leave
+		// m.projectsCursor past the end of the row list. Clamp here so
+		// Enter on the visually-highlighted row doesn't no-op against an
+		// out-of-range cursor in applyProjectsViewSelection.
+		rowCount := len(projectsRows(m.projectsByID, m.projectIdentByID, m.projectStats))
+		if m.projectsCursor >= rowCount {
+			m.projectsCursor = rowCount - 1
+		}
+		if m.projectsCursor < 0 {
+			m.projectsCursor = 0
 		}
 		return m, nil
 	}
 	if _, ok := msg.(projectsDebounceFireMsg); ok {
 		m.projectsRefetchPending = false
 		if m.view == viewProjects && m.projectsStale {
-			m.projectsStale = false
 			return m, m.fetchProjectsWithStats()
 		}
 		return m, nil
