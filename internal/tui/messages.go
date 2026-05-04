@@ -183,11 +183,19 @@ type labelsFetchedMsg struct {
 // maps are populated only by fetchProjectsWithStats; the boot
 // fetchProjects cmd leaves them nil so callers can distinguish "names
 // only" vs "with stats".
+//
+// gen carries the Model.projectsGen value captured at dispatch time. The
+// projectsLoadedMsg handler clears m.projectsStale only when gen still
+// matches m.projectsGen — guards against an SSE invalidation arriving
+// while an older fetch is in flight. fetchProjects (the boot, no-stats
+// variant) leaves gen=0 since it does not participate in the stale-flip
+// race. Spec §6.3.
 type projectsLoadedMsg struct {
 	projects map[int64]string
 	idents   map[int64]string
 	stats    map[int64]ProjectStatsSummary
 	err      error
+	gen      uint64
 }
 
 // resetRequiredMsg signals sync.reset_required: the daemon's purge

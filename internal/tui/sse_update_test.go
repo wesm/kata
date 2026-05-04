@@ -566,16 +566,19 @@ func TestHandleToastExpired_PreservesNewerToast(t *testing.T) {
 
 // TestProjectsView_StaleOnIssueEvent pins spec §6.3: an issue event for
 // a project the table is showing flips m.projectsStale and dispatches
-// the debounce timer.
+// the debounce timer. The stale-flip also bumps m.projectsGen so an
+// in-flight fetch with the older gen cannot clear stale on response.
 func TestProjectsView_StaleOnIssueEvent(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewProjects
 	m.projectsByID = map[int64]string{7: "kata"}
+	startGen := m.projectsGen
 
 	out, cmd := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 7})
 	nm := out.(Model)
 	assert.True(t, nm.projectsStale)
 	assert.True(t, nm.projectsRefetchPending)
+	assert.Equal(t, startGen+1, nm.projectsGen, "stale-flip bumps gen")
 	require.NotNil(t, cmd, "first event must dispatch a debounce timer")
 }
 
@@ -698,10 +701,36 @@ func TestProjectsLoadedMsg_ClearsStaleOnSuccessfulStatsFetch(t *testing.T) {
 		projects: map[int64]string{1: "kata"},
 		idents:   map[int64]string{1: "github.com/wesm/kata"},
 		stats:    map[int64]ProjectStatsSummary{1: {}},
+		gen:      m.projectsGen, // captures the current gen at "dispatch" time
 	}
 	out, _ := m.Update(msg)
 	nm := out.(Model)
 	assert.False(t, nm.projectsStale, "successful stats fetch clears stale")
+}
+
+// TestProjectsLoadedMsg_PreservesStaleWhenNewerEventArrived pins the
+// race: while a fetchProjectsWithStats is in flight, a newer SSE
+// invalidation can flip projectsStale and bump projectsGen. The older
+// response carries the older gen and must NOT clear stale, so the
+// pending re-fetch can still reflect the newer event.
+func TestProjectsLoadedMsg_PreservesStaleWhenNewerEventArrived(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsStale = true
+	m.projectsGen = 5
+
+	// Response carries gen=4 (an older fetch that was dispatched
+	// before the latest stale-flip).
+	msg := projectsLoadedMsg{
+		projects: map[int64]string{1: "kata"},
+		idents:   map[int64]string{1: "..."},
+		stats:    map[int64]ProjectStatsSummary{1: {}},
+		gen:      4,
+	}
+	out, _ := m.Update(msg)
+	nm := out.(Model)
+	assert.True(t, nm.projectsStale, "older response must NOT clear stale")
+	assert.Equal(t, uint64(5), nm.projectsGen, "gen unchanged on response")
 }
 
 // TestProjectsLoadedMsg_PreservesStaleOnFailure pins that a failed

@@ -59,6 +59,12 @@ type Model struct {
 	// m.projectsByID and viewProjects is the active view. Cleared when the
 	// debounced fetchProjectsWithStats lands. Spec §6.3.
 	projectsStale bool
+	// projectsGen increments on every stale-flip from an SSE event. The
+	// fetchProjectsWithStats cmd captures the generation at dispatch time
+	// so the projectsLoadedMsg handler can detect whether a newer event
+	// arrived while the response was in flight, and only clear stale when
+	// the response covers the latest generation. Spec §6.3.
+	projectsGen uint64
 	// projectsRefetchPending coalesces stale-flips inside the 500ms window
 	// so a burst of SSE events produces exactly one refetch.
 	projectsRefetchPending bool
@@ -377,7 +383,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// debounce timer already in flight doesn't trigger a redundant
 			// refetch. A failed fetch (pl.err != nil above) returns
 			// earlier and preserves the flag.
-			m.projectsStale = false
+			//
+			// Only clear when the response's gen still matches
+			// m.projectsGen. A newer SSE invalidation that arrived while
+			// this fetch was in flight bumped the counter; the response
+			// reflects pre-invalidation state, so the stale flag must
+			// remain armed for the pending re-fetch to surface the newer
+			// event. Spec §6.3.
+			if pl.gen == m.projectsGen {
+				m.projectsStale = false
+			}
 		}
 		// A shrinking refetch (e.g. archive on another client) may leave
 		// m.projectsCursor past the end of the row list. Clamp here so
@@ -1608,6 +1623,7 @@ func (m Model) handleEventReceived(msg eventReceivedMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.view == viewProjects && eventAffectsProjectsTable(msg, m.projectsByID) {
 		m.projectsStale = true
+		m.projectsGen++
 		if !m.projectsRefetchPending {
 			m.projectsRefetchPending = true
 			cmds = append(cmds, projectsDebounceCmd())

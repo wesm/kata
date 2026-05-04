@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -581,6 +582,13 @@ func TestBatchProjectStats_PartitionsByProject(t *testing.T) {
 // ("YYYY-MM-DD HH:MM:SS.NNN-07:00") that jsonl.parseExportTime emits on
 // the import path. Without this layout, an imported database with a
 // zoned offset on events.created_at would 500 the stats endpoint.
+//
+// The zoned event uses a far-future year (2099) so MAX(created_at)'s
+// string comparison deterministically picks this row over the
+// CreateIssue-generated issue.created event, whose RFC3339Nano
+// timestamp differs at position 10 ('T' vs ' '). Without the
+// year-bump, the issue.created row wins the MAX regardless of date
+// and parseSQLiteTimestamp's zoned layout is never exercised.
 func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
@@ -595,7 +603,7 @@ func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
 	// driving parseSQLiteTimestamp through the new layout slot.
 	eventUID, err := uid.New()
 	require.NoError(t, err)
-	const zonedTS = "2026-05-04 12:34:56.789-07:00"
+	const zonedTS = "2099-05-04 12:34:56.789-07:00"
 	_, err = d.ExecContext(ctx, `
 		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
 		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester', '{}', ?)`,
@@ -606,4 +614,11 @@ func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, stats, p.ID)
 	require.NotNil(t, stats[p.ID].LastEventAt, "zoned timestamp must parse, not nil")
+	// "2099-05-04 12:34:56.789-07:00" → UTC 2099-05-04 19:34:56.789Z.
+	// Without parseSQLiteTimestamp's zoned layout, BatchProjectStats would
+	// either drop this row or 500. The exact-time assertion prevents a
+	// loose nil-check from masking the parser regressing.
+	expected := time.Date(2099, 5, 4, 19, 34, 56, 789000000, time.UTC)
+	require.True(t, stats[p.ID].LastEventAt.Equal(expected),
+		"zoned event time wrong: got %v, want %v", stats[p.ID].LastEventAt, expected)
 }

@@ -17,14 +17,21 @@ import (
 //
 // Failures populate err so the message handler can surface a toast
 // without leaving the table empty.
+//
+// gen captures m.projectsGen at dispatch time and rides on the response
+// so the projectsLoadedMsg handler can detect whether an SSE
+// invalidation bumped the counter while the fetch was in flight — only
+// a response whose gen still matches m.projectsGen is allowed to clear
+// m.projectsStale. Spec §6.3.
 func (m Model) fetchProjectsWithStats() tea.Cmd {
 	api := m.api
+	gen := m.projectsGen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		rows, err := api.ListProjectsWithStats(ctx)
 		if err != nil {
-			return projectsLoadedMsg{err: err}
+			return projectsLoadedMsg{err: err, gen: gen}
 		}
 		names := make(map[int64]string, len(rows))
 		idents := make(map[int64]string, len(rows))
@@ -36,7 +43,7 @@ func (m Model) fetchProjectsWithStats() tea.Cmd {
 				stats[r.ID] = *r.Stats
 			}
 		}
-		return projectsLoadedMsg{projects: names, idents: idents, stats: stats}
+		return projectsLoadedMsg{projects: names, idents: idents, stats: stats, gen: gen}
 	}
 }
 
