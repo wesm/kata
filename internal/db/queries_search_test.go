@@ -313,6 +313,46 @@ func TestSearchFTS_MatchedIn_CrossColumn(t *testing.T) {
 	assert.ElementsMatch(t, []string{"title", "body"}, got[0].MatchedIn)
 }
 
+// TestSearchFTS_OperatorWordsAsLiterals pins #23: FTS5 reserved words and
+// special characters in the user query must be treated as literal phrase
+// content, not as FTS5 syntax. The escaping pass quotes each whitespace-split
+// token and doubles embedded quotes, which neutralizes NEAR/OR/AND/NOT and
+// the `*` prefix-match marker.
+func TestSearchFTS_OperatorWordsAsLiterals(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "do NOT merge yet", Body: "blocked OR waiting", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "merge after review", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	cases := []struct {
+		name, query, wantTitle string
+	}{
+		{"NOT as literal", "NOT merge", "do NOT merge yet"},
+		{"OR as literal", "blocked OR", "do NOT merge yet"},
+		{"star is literal not prefix", "merg*", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := d.SearchFTS(ctx, p.ID, tc.query, 20, false)
+			require.NoError(t, err, "query %q must parse without FTS5 syntax error", tc.query)
+			if tc.wantTitle == "" {
+				assert.Len(t, got, 0, "wildcard must not act as prefix-match")
+				return
+			}
+			require.Len(t, got, 1)
+			assert.Equal(t, tc.wantTitle, got[0].Issue.Title)
+		})
+	}
+}
+
 // TestSearchFTSAny_FindsNearDuplicates pins the look-alike fix from roborev
 // 16791: implicit-AND search misses a row that's a near-duplicate but lacks
 // one of the query tokens; the OR variant retrieves it so similarity.Score
