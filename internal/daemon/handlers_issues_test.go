@@ -561,6 +561,119 @@ func TestListIssues_IncludesBlockerMetadata(t *testing.T) {
 	assert.Empty(t, byNumber[blocked])
 }
 
+// TestListAllIssues_AcrossProjects pins #22's wire contract: GET /api/v1/issues
+// with no project_id returns issues from every project, hydrating labels
+// per-issue across project boundaries.
+func TestListAllIssues_AcrossProjects(t *testing.T) {
+	env := testenv.New(t)
+	pidA := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/proj-a.git")
+	pidB := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/proj-b.git")
+	createIssueViaHTTP(t, env, pidA, "alpha-1")
+	createIssueViaHTTP(t, env, pidB, "beta-1")
+	createIssueViaHTTP(t, env, pidA, "alpha-2")
+
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/issues")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+
+	var out struct {
+		Issues []struct {
+			ProjectID int64  `json:"project_id"`
+			Title     string `json:"title"`
+		} `json:"issues"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Len(t, out.Issues, 3)
+	projectIDs := map[int64]int{}
+	for _, iss := range out.Issues {
+		projectIDs[iss.ProjectID]++
+	}
+	assert.Equal(t, 2, projectIDs[pidA], "two issues from project A")
+	assert.Equal(t, 1, projectIDs[pidB], "one issue from project B")
+}
+
+// TestListAllIssues_ProjectFilter pins the optional ?project_id= query: the
+// cross-project endpoint can also serve as a single-project list when needed.
+func TestListAllIssues_ProjectFilter(t *testing.T) {
+	env := testenv.New(t)
+	pidA := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/proj-a.git")
+	pidB := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/proj-b.git")
+	createIssueViaHTTP(t, env, pidA, "alpha-1")
+	createIssueViaHTTP(t, env, pidB, "beta-1")
+
+	resp, err := env.HTTP.Get(env.URL +
+		"/api/v1/issues?project_id=" + strconv.FormatInt(pidB, 10))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Issues []struct {
+			ProjectID int64  `json:"project_id"`
+			Title     string `json:"title"`
+		} `json:"issues"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Len(t, out.Issues, 1)
+	assert.Equal(t, pidB, out.Issues[0].ProjectID)
+	assert.Equal(t, "beta-1", out.Issues[0].Title)
+}
+
+// TestListAllIssues_ProjectNotFound pins the 404 path: a project_id that
+// doesn't exist surfaces as project_not_found, matching the per-project
+// endpoint's contract for invalid IDs.
+func TestListAllIssues_ProjectNotFound(t *testing.T) {
+	env := testenv.New(t)
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/issues?project_id=9999")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body), string(bs))
+	assert.Equal(t, "project_not_found", body.Error.Code)
+}
+
+// TestListAllIssues_HydratesLabelsAcrossProjects pins that labels attach
+// correctly to rows from different projects — the hydration helper groups by
+// project_id internally so labels stay scoped to the right issue.
+func TestListAllIssues_HydratesLabelsAcrossProjects(t *testing.T) {
+	env := testenv.New(t)
+	pidA := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/proj-a.git")
+	pidB := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/proj-b.git")
+	a1 := createIssueViaHTTP(t, env, pidA, "alpha-1")
+	b1 := createIssueViaHTTP(t, env, pidB, "beta-1")
+	postLabel(t, env, pidA, a1, "bug")
+	postLabel(t, env, pidB, b1, "enhancement")
+
+	resp, err := env.HTTP.Get(env.URL + "/api/v1/issues")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct {
+		Issues []struct {
+			ProjectID int64    `json:"project_id"`
+			Number    int64    `json:"number"`
+			Labels    []string `json:"labels"`
+		} `json:"issues"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	labelsByKey := map[string][]string{}
+	for _, iss := range out.Issues {
+		key := strconv.FormatInt(iss.ProjectID, 10) + "/" + strconv.FormatInt(iss.Number, 10)
+		labelsByKey[key] = iss.Labels
+	}
+	assert.Equal(t, []string{"bug"},
+		labelsByKey[strconv.FormatInt(pidA, 10)+"/"+strconv.FormatInt(a1, 10)])
+	assert.Equal(t, []string{"enhancement"},
+		labelsByKey[strconv.FormatInt(pidB, 10)+"/"+strconv.FormatInt(b1, 10)])
+}
+
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, child := setupTwoIssues(t, env)

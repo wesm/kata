@@ -77,6 +77,111 @@ func TestListIssues_DefaultsToOpenOnlyAndExcludesDeleted(t *testing.T) {
 	assert.Len(t, got, 3)
 }
 
+// TestListAllIssues_CoversAllProjectsAndOrders pins #22's contract: with
+// ProjectID==0 every project's issues are returned, soft-deleted rows are
+// excluded, and the ordering is created_at DESC, id DESC.
+func TestListAllIssues_CoversAllProjectsAndOrders(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p1, err := d.CreateProject(ctx, "alpha", "alpha")
+	require.NoError(t, err)
+	p2, err := d.CreateProject(ctx, "beta", "beta")
+	require.NoError(t, err)
+
+	a1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p1.ID, Title: "alpha-1", Author: "x"})
+	require.NoError(t, err)
+	b1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p2.ID, Title: "beta-1", Author: "x"})
+	require.NoError(t, err)
+	a2, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p1.ID, Title: "alpha-2", Author: "x"})
+	require.NoError(t, err)
+
+	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{})
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	// created_at DESC, id DESC: latest insert comes first. Insert order was
+	// a1, b1, a2 — id-DESC tiebreak guarantees stable ordering even when
+	// several issues share a created_at sub-second bucket.
+	assert.Equal(t, a2.ID, got[0].ID)
+	assert.Equal(t, b1.ID, got[1].ID)
+	assert.Equal(t, a1.ID, got[2].ID)
+}
+
+// TestListAllIssues_ProjectFilterScopes pins the optional project_id query:
+// passing ProjectID>0 returns only that project's issues.
+func TestListAllIssues_ProjectFilterScopes(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p1, err := d.CreateProject(ctx, "alpha", "alpha")
+	require.NoError(t, err)
+	p2, err := d.CreateProject(ctx, "beta", "beta")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p1.ID, Title: "a1", Author: "x"})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p2.ID, Title: "b1", Author: "x"})
+	require.NoError(t, err)
+
+	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{ProjectID: p2.ID})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, p2.ID, got[0].ProjectID)
+}
+
+// TestListAllIssues_StatusFilterApplies pins the status filter across
+// projects: closed/open are honored.
+func TestListAllIssues_StatusFilterApplies(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	open1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "open", Author: "x"})
+	require.NoError(t, err)
+	closed1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "to-close", Author: "x"})
+	require.NoError(t, err)
+	_, _, _, err = d.CloseIssue(ctx, closed1.ID, "done", "x")
+	require.NoError(t, err)
+
+	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{Status: "open"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, open1.ID, got[0].ID)
+}
+
+// TestListAllIssues_ExcludesSoftDeleted pins that purged/soft-deleted issues
+// don't surface in the cross-project list.
+func TestListAllIssues_ExcludesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	live, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "live", Author: "x"})
+	require.NoError(t, err)
+	doomed, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "doomed", Author: "x"})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, doomed.ID, "x")
+	require.NoError(t, err)
+
+	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, live.ID, got[0].ID)
+}
+
+// TestListAllIssues_LimitCaps pins the limit knob on cross-project listing.
+func TestListAllIssues_LimitCaps(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p", "p")
+	require.NoError(t, err)
+	for i := 0; i < 5; i++ {
+		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "i", Author: "x"})
+		require.NoError(t, err)
+	}
+
+	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+}
+
 func TestCreateComment_EmitsEvent(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

@@ -125,6 +125,36 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 
 	huma.Register(humaAPI, huma.Operation{
+		OperationID: "listAllIssues",
+		Method:      "GET",
+		Path:        "/api/v1/issues",
+	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
+		if in.ProjectID > 0 {
+			if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
+				if errors.Is(err, db.ErrNotFound) {
+					return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+				}
+				return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			}
+		}
+		issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
+			ProjectID: in.ProjectID,
+			Status:    in.Status,
+			Limit:     in.Limit,
+		})
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		issueOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, issues)
+		out := &api.ListIssuesResponse{}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out.Body.Issues = issueOuts
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "showIssue",
 		Method:      "GET",
 		Path:        "/api/v1/projects/{project_id}/issues/{number}",
@@ -289,6 +319,37 @@ func loadParentRef(ctx context.Context, store *db.DB, issue db.Issue) (*api.Issu
 	}
 	ref := issueRefFromDB(parent)
 	return &ref, nil
+}
+
+// hydrateIssueOutsCrossProject hydrates labels/parent/child-counts for issues
+// that may span multiple projects. Per-project hydration helpers
+// (LabelsByIssues, ParentNumbersByIssues, ChildCountsByParents) all scope by
+// project_id, so we group by ProjectID and run them per group, then assemble
+// the IssueOut slice in the input order. Realistic project counts are tiny
+// (≤10) so the per-group cost is bounded.
+func hydrateIssueOutsCrossProject(ctx context.Context, store *db.DB, issues []db.Issue) ([]api.IssueOut, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	byProject := map[int64][]db.Issue{}
+	for _, iss := range issues {
+		byProject[iss.ProjectID] = append(byProject[iss.ProjectID], iss)
+	}
+	rowsByID := make(map[int64]api.IssueOut, len(issues))
+	for projectID, group := range byProject {
+		hydrated, err := hydrateIssueOuts(ctx, store, projectID, group)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range hydrated {
+			rowsByID[row.ID] = row
+		}
+	}
+	out := make([]api.IssueOut, len(issues))
+	for i, iss := range issues {
+		out[i] = rowsByID[iss.ID]
+	}
+	return out, nil
 }
 
 func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues []db.Issue) ([]api.IssueOut, error) {

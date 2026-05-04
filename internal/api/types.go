@@ -176,6 +176,15 @@ type ListIssuesRequest struct {
 	Limit     int    `query:"limit,omitempty"`
 }
 
+// ListAllIssuesRequest is GET /api/v1/issues — the cross-project list. The
+// optional project_id query param narrows to a single project for callers
+// that want one trip through this surface; omit it for the all-projects feed.
+type ListAllIssuesRequest struct {
+	ProjectID int64  `query:"project_id,omitempty"`
+	Status    string `query:"status,omitempty" enum:"open,closed,"`
+	Limit     int    `query:"limit,omitempty"`
+}
+
 // IssueOut is the wire projection of one row in ListIssuesResponse.
 // It embeds db.Issue (every persistence column flattens to the top
 // level on JSON marshal) and adds row metadata the daemon hydrates

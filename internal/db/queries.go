@@ -597,6 +597,49 @@ func (d *DB) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, error
 	return out, rows.Err()
 }
 
+// ListAllIssuesParams filters cross-project list output. ProjectID==0 means
+// "every project"; >0 narrows to a single project. Status="" → all statuses.
+type ListAllIssuesParams struct {
+	ProjectID int64
+	Status    string
+	Limit     int
+}
+
+// ListAllIssues returns issues across one or every project, excluding
+// soft-deleted rows. Ordering is (created_at DESC, id DESC) per #22 — a
+// stable "newest first" feed across projects, distinct from the per-project
+// endpoint's updated_at-DESC ordering which leads with recent activity.
+func (d *DB) ListAllIssues(ctx context.Context, p ListAllIssuesParams) ([]Issue, error) {
+	q := issueSelect + ` WHERE i.deleted_at IS NULL`
+	var args []any
+	if p.ProjectID > 0 {
+		q += ` AND i.project_id = ?`
+		args = append(args, p.ProjectID)
+	}
+	if p.Status != "" {
+		q += ` AND i.status = ?`
+		args = append(args, p.Status)
+	}
+	q += ` ORDER BY i.created_at DESC, i.id DESC`
+	if p.Limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d`, p.Limit)
+	}
+	rows, err := d.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list all issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Issue
+	for rows.Next() {
+		i, err := scanIssue(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
 // CreateCommentParams carries inputs for CreateComment.
 type CreateCommentParams struct {
 	IssueID int64
