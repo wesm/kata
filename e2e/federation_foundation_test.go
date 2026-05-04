@@ -54,16 +54,20 @@ func TestSmoke_FederationFoundationV3(t *testing.T) {
 	defer func() { _ = sseResp.Body.Close() }()
 	framer := newSmokeFramer(sseResp.Body)
 
-	// 5. Create issue and comment.
+	// 5. Create two issues + a comment. Issue #1 is purged in step 7;
+	//    issue #2 survives so step 8's JSONL export still has events to
+	//    validate (a vacuous "no events left" export would pass otherwise).
 	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
 		map[string]any{"actor": "agent", "title": "v3-smoke"}))
 	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1/comments",
 		map[string]any{"actor": "agent", "body": "smoke comment"}))
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]any{"actor": "agent", "title": "v3-survivor"}))
 
-	// 6. Capture the two SSE frames; every event_uid is valid and
+	// 6. Capture the three SSE frames; every event_uid is valid and
 	//    origin_instance_uid matches the daemon's identity.
-	frames := framer.NextN(t, 2, 2*time.Second)
-	require.Len(t, frames, 2)
+	frames := framer.NextN(t, 3, 2*time.Second)
+	require.Len(t, frames, 3)
 	for _, f := range frames {
 		var data struct {
 			EventUID          string `json:"event_uid"`
@@ -103,7 +107,7 @@ func TestSmoke_FederationFoundationV3(t *testing.T) {
 	require.NoError(t, jsonl.Export(context.Background(), env.DB, &buf,
 		jsonl.ExportOptions{IncludeDeleted: true}))
 
-	var sawInstanceMeta bool
+	var sawInstanceMeta, sawEvent, sawPurgeLog bool
 	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
 		var env struct {
 			Kind string          `json:"kind"`
@@ -128,6 +132,7 @@ func TestSmoke_FederationFoundationV3(t *testing.T) {
 			require.NoError(t, json.Unmarshal(env.Data, &rec))
 			assert.True(t, uid.Valid(rec.UID), "event uid %q invalid", rec.UID)
 			assert.Equal(t, inst.InstanceUID, rec.OriginInstanceUID)
+			sawEvent = true
 		case "purge_log":
 			var rec struct {
 				UID               string `json:"uid"`
@@ -136,7 +141,12 @@ func TestSmoke_FederationFoundationV3(t *testing.T) {
 			require.NoError(t, json.Unmarshal(env.Data, &rec))
 			assert.True(t, uid.Valid(rec.UID), "purge_log uid %q invalid", rec.UID)
 			assert.Equal(t, inst.InstanceUID, rec.OriginInstanceUID)
+			sawPurgeLog = true
 		}
 	}
 	assert.True(t, sawInstanceMeta, "JSONL export must contain a meta.instance_uid record")
+	assert.True(t, sawEvent, "JSONL export must contain at least one event envelope "+
+		"(otherwise the per-event uid/origin assertions are vacuous)")
+	assert.True(t, sawPurgeLog, "JSONL export must contain at least one purge_log envelope "+
+		"(otherwise the per-purge_log uid/origin assertions are vacuous)")
 }

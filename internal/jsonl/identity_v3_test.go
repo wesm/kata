@@ -3,6 +3,7 @@ package jsonl_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -35,20 +36,51 @@ func TestV2ToV3CutoverFillsIdentity(t *testing.T) {
 		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&localUID))
 	assert.True(t, uid.Valid(localUID))
 
-	// Every event has a valid uid + origin == new instance.
-	rows, err := d.QueryContext(ctx, `SELECT uid, origin_instance_uid FROM events ORDER BY id`)
+	// Every event has a valid uid + origin == new instance, AND the seeded
+	// type + payload survive cutover (without a payload check, regressions
+	// that drop payloads or rewrite types would pass silently).
+	rows, err := d.QueryContext(ctx, `SELECT uid, type, payload, origin_instance_uid FROM events ORDER BY id`)
 	require.NoError(t, err)
 	defer func() { _ = rows.Close() }()
-	var eventCount int
+	var (
+		eventCount   int
+		seenCreated  bool
+		seenComment  bool
+	)
 	for rows.Next() {
-		var u, origin string
-		require.NoError(t, rows.Scan(&u, &origin))
+		var u, typ, payload, origin string
+		require.NoError(t, rows.Scan(&u, &typ, &payload, &origin))
 		assert.True(t, uid.Valid(u), "event uid %q invalid", u)
 		assert.Equal(t, localUID, origin)
+		switch typ {
+		case "issue.created":
+			var p struct {
+				IdempotencyKey         string `json:"idempotency_key"`
+				IdempotencyFingerprint string `json:"idempotency_fingerprint"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(payload), &p),
+				"issue.created payload not valid JSON after cutover: %s", payload)
+			assert.Equal(t, "K1", p.IdempotencyKey,
+				"issue.created idempotency_key did not survive cutover")
+			assert.Equal(t, "fp", p.IdempotencyFingerprint,
+				"issue.created idempotency_fingerprint did not survive cutover")
+			seenCreated = true
+		case "issue.commented":
+			var p struct {
+				CommentID int64 `json:"comment_id"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(payload), &p),
+				"issue.commented payload not valid JSON after cutover: %s", payload)
+			assert.Equal(t, int64(42), p.CommentID,
+				"issue.commented comment_id did not survive cutover")
+			seenComment = true
+		}
 		eventCount++
 	}
 	require.NoError(t, rows.Err())
 	assert.Equal(t, 2, eventCount, "fixture seeds 2 events (issue.created with idempotency_key + issue.commented)")
+	assert.True(t, seenCreated, "issue.created event missing after cutover")
+	assert.True(t, seenComment, "issue.commented event missing after cutover")
 
 	// purge_log row also has uid + origin and the reservation is preserved.
 	var purgeUID, purgeOrigin string
