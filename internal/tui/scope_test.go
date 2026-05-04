@@ -30,46 +30,58 @@ func scopeFixtureSingle() Model {
 	return m
 }
 
-// TestScopeToggle_GatedNoOp: pressing R is a toast-only no-op while
-// the cross-project surface is gated. Scope must be unchanged, the
-// list cache untouched, and the toast text must explain the gate so
-// the user isn't confused by the silent no-op.
-func TestScopeToggle_GatedNoOp(t *testing.T) {
+// TestScopeToggle_FlipsToAllProjects pins the R binding's contract: in
+// single-project scope with a home project bound, R flips to all-projects
+// mode and clears the per-project list cache so the next fetch lands a
+// fresh all-projects page.
+func TestScopeToggle_FlipsToAllProjects(t *testing.T) {
 	m := scopeFixtureSingle()
 	next, cmd := m.handleScopeToggle()
-	if next.scope.allProjects {
-		t.Fatal("scope must not flip while all-projects is gated")
+	if !next.scope.allProjects {
+		t.Fatal("R must flip scope.allProjects from false → true")
 	}
-	if next.scope.projectID != 7 {
-		t.Fatalf("projectID changed: got %d, want 7", next.scope.projectID)
+	if next.scope.projectID != 0 {
+		t.Fatalf("projectID = %d, want 0 in all-projects mode", next.scope.projectID)
 	}
-	if !next.cache.set {
-		t.Fatal("cache must NOT be dropped when toggle is a no-op")
-	}
-	if next.toast == nil {
-		t.Fatal("expected gate-explanation toast")
-	}
-	if !strings.Contains(next.toast.text, "all-projects not available") {
-		t.Fatalf("toast text = %q, want hint about gated all-projects",
-			next.toast.text)
+	if next.scope.homeProjectID != 7 {
+		t.Fatal("homeProjectID must persist across toggle so we can flip back")
 	}
 	if cmd == nil {
-		t.Fatal("expected toast-expiry cmd")
+		t.Fatal("toggle must dispatch a refetch command")
 	}
 }
 
-// TestScopeToggle_RKeyDispatch_Gated: R at the top level still routes
-// through handleScopeToggle. The binding is wired; the toggle just
-// produces a toast instead of changing scope.
-func TestScopeToggle_RKeyDispatch_Gated(t *testing.T) {
+// TestScopeToggle_FlipsBackToHome pins the inverse: from all-projects mode,
+// R restores the home project as the new scope.
+func TestScopeToggle_FlipsBackToHome(t *testing.T) {
+	m := scopeFixtureSingle()
+	m.scope.allProjects = true
+	m.scope.projectID = 0
+	m.scope.projectName = ""
+
+	next, cmd := m.handleScopeToggle()
+	if next.scope.allProjects {
+		t.Fatal("second R must flip scope.allProjects back to false")
+	}
+	if next.scope.projectID != 7 {
+		t.Fatalf("projectID = %d, want 7 (home project)", next.scope.projectID)
+	}
+	if next.scope.projectName != "kata" {
+		t.Fatalf("projectName = %q, want \"kata\"", next.scope.projectName)
+	}
+	if cmd == nil {
+		t.Fatal("toggle-back must dispatch a refetch command")
+	}
+}
+
+// TestScopeToggle_RKeyDispatch pins that the R binding at the top level
+// routes through handleScopeToggle and actually flips scope.
+func TestScopeToggle_RKeyDispatch(t *testing.T) {
 	m := scopeFixtureSingle()
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	nm := out.(Model)
-	if nm.scope.allProjects {
-		t.Fatal("R must not flip scope while all-projects is gated")
-	}
-	if nm.toast == nil {
-		t.Fatal("R must surface the gate-explanation toast")
+	if !nm.scope.allProjects {
+		t.Fatal("R via Update must flip scope.allProjects")
 	}
 }
 
@@ -82,10 +94,29 @@ func TestScopeToggle_GatedByInputting(t *testing.T) {
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	nm := out.(Model)
 	if nm.scope.allProjects {
-		t.Fatal("R toggled scope while bar was active; should be gated")
+		t.Fatal("R toggled scope while bar was active; should reach the prompt")
 	}
 	if v := nm.input.activeField().value(); v != "R" {
 		t.Fatalf("bar buffer = %q, want %q (rune must reach prompt)", v, "R")
+	}
+}
+
+// TestScopeToggle_NoHomeRefuses pins the empty-state guard: when boot
+// landed in viewEmpty (no project resolved) the toggle has nowhere to
+// go, so it surfaces a toast instead of leaving the user on a blank
+// list with no way back.
+func TestScopeToggle_NoHomeRefuses(t *testing.T) {
+	m := scopeFixtureSingle()
+	m.scope = scope{empty: true}
+	next, cmd := m.handleScopeToggle()
+	if next.scope.allProjects {
+		t.Fatal("R must not flip into all-projects when there's no home project")
+	}
+	if next.toast == nil {
+		t.Fatal("toggle must surface a toast when there's no project to toggle from")
+	}
+	if cmd == nil {
+		t.Fatal("toast must come with an expiry cmd")
 	}
 }
 

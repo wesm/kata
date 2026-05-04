@@ -7,25 +7,40 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// handleScopeToggle implements the R binding. Today the cross-project
-// surface is gated off (the daemon has no GET /issues route), so R is
-// a toast-only no-op explaining the gate. Re-enable the actual toggle
-// once handlers_issues.go ships the cross-project endpoint and the
-// list model has a wire path that won't 404.
+// handleScopeToggle implements the R binding: flip between the home
+// project (single-project mode) and the all-projects feed. The list
+// refetches under the new scope; the cache slot keys on allProjects so
+// the previous slot stays warm for a fast toggle back. SSE keeps flowing
+// — eventAffectsView() filters client-side so every cached event shows
+// up under whichever scope we land in.
 //
-// The pre-gate behavior is intentionally not preserved as a fallback:
-// silently switching into a 404-backed mode would land the user on an
-// error screen with no clue why. Better to surface the gate.
+// When the home project is unset (boot landed in the empty state) the
+// toggle has nowhere to go, so it shows a toast instead of leaving the
+// user stuck on an empty list with no project to return to.
 func (m Model) handleScopeToggle() (Model, tea.Cmd) {
-	return m.toastScopeGated()
+	if !m.scope.allProjects && m.scope.homeProjectID == 0 {
+		return m.toastScopeUnavailable()
+	}
+	if m.scope.allProjects {
+		m.scope.allProjects = false
+		m.scope.projectID = m.scope.homeProjectID
+		m.scope.projectName = m.scope.homeProjectName
+	} else {
+		m.scope.allProjects = true
+		m.scope.projectID = 0
+		m.scope.projectName = ""
+	}
+	m.list = listModel{}
+	m.cache.markStale()
+	return m, m.fetchInitial()
 }
 
-// toastScopeGated surfaces a hint that the all-projects surface is
-// gated until the daemon ships cross-project list support. The TTL
-// matches the no-binding toast's cadence — long enough to read.
-func (m Model) toastScopeGated() (Model, tea.Cmd) {
+// toastScopeUnavailable surfaces a hint that scope can't be toggled —
+// e.g. the TUI booted in the empty state with no home project to
+// return to.
+func (m Model) toastScopeUnavailable() (Model, tea.Cmd) {
 	m.toast = &toast{
-		text:      "all-projects not available yet (daemon route pending)",
+		text:      "no project to toggle from (run kata init in a project first)",
 		level:     toastError,
 		expiresAt: m.toastNow().Add(toastNoBindingTTL),
 	}

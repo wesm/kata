@@ -24,10 +24,11 @@ import (
 // the TUI to surface soft-deleted rows today. Re-introducing the flag
 // is deferred to a follow-up that adds wire + handler support.
 //
-// AllProjects is also absent: the daemon registers no cross-project
-// list route (handlers_issues.go only registers the project-scoped
-// endpoint), so a TUI all-projects mode would 404 on every fetch. The
-// CLI flag, the R toggle, and the boot fallback are all gated on this.
+// AllProjects is intentionally absent from Options: the boot flow
+// always starts in single-project mode (resolved from the cwd) or empty
+// state, and users toggle to all-projects via the R binding at runtime.
+// Adding a CLI flag is reasonable as a future ergonomic but isn't
+// required for the navigation surface.
 type Options struct {
 	Stdout           io.Writer // typically os.Stdout
 	Stderr           io.Writer // typically os.Stderr
@@ -90,14 +91,13 @@ func programOpts(ctx context.Context, opts Options) []tea.ProgramOption {
 }
 
 // sseProjectScope picks the project_id pointer to thread into startSSE.
-// All-projects mode passes nil so the daemon broadcasts every event;
-// single-project mode constrains the stream to scope.projectID.
-func sseProjectScope(sc scope) *int64 {
-	if sc.allProjects || sc.projectID == 0 {
-		return nil
-	}
-	pid := sc.projectID
-	return &pid
+// Always returns nil so the SSE stream carries every project's events
+// regardless of the current scope. The TUI filters per-message via
+// Model.eventAffectsView, so a user who toggles into all-projects mode
+// (R binding) sees events from projects that weren't in scope at boot
+// without restarting the SSE goroutine.
+func sseProjectScope(_ scope) *int64 {
+	return nil
 }
 
 // bootClient discovers the daemon, constructs the typed HTTP client, the

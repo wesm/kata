@@ -1,23 +1,23 @@
 kata — keybindings
 
-Global                            Detail                                     Forms                       
-?         help                    tab            next tab                    ctrl+s         save or apply
-q/ctrl+c  quit                    shift+tab      prev tab                    esc            cancel       
-R         scope toggle (gated)    enter          jump to referenced issue    tab/shift+tab  change field 
-L         toggle layout           esc/backspace  back                        ctrl+e         open editor  
-                                  e              edit body                   ctrl+u         clear prompt 
-Graph                             c              new comment                                             
-k/up    up                        p              set parent                  Filters                     
-j/down  down                      b              add blocker                 /       search              
-pgup    page up                   l              add link                    s       cycle status filter 
-pgdown  page down                 +              add label                   f       filter (form)       
-g       first                     -              remove label                c       clear filters       
-G       last                      a              assign owner                ctrl+r  reset filter form   
-enter   open detail               A              clear owner                                             
-space   expand/collapse                                                                                  
-n       new issue (form)          Children                                                               
-o       toggle graph order        N      new child                                                       
-x       close                     ↑↓     move child cursor                                               
-r       reopen                    enter  open child                                                      
+Global                                Detail                                     Forms                       
+?         help                        tab            next tab                    ctrl+s         save or apply
+q/ctrl+c  quit                        shift+tab      prev tab                    esc            cancel       
+R         toggle all-projects view    enter          jump to referenced issue    tab/shift+tab  change field 
+L         toggle layout               esc/backspace  back                        ctrl+e         open editor  
+                                      e              edit body                   ctrl+u         clear prompt 
+Queue                                 c              new comment                                             
+k/up    up                            p              set parent                  Filters                     
+j/down  down                          b              add blocker                 /       search              
+pgup    page up                       l              add link                    s       cycle status filter 
+pgdown  page down                     +              add label                   f       filter (form)       
+g       first                         -              remove label                c       clear filters       
+G       last                          a              assign owner                ctrl+r  reset filter form   
+enter   open detail                   A              clear owner                                             
+space   expand/collapse                                                                                      
+n       new issue (form)              Children                                                               
+x       close                         N      new child                                                       
+r       reopen                        ↑↓     move child cursor                                               
+                                      enter  open child                                                      
 
 press ? to return

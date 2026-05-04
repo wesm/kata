@@ -3,7 +3,7 @@ kata — keybindings
 Global
 ?         help
 q/ctrl+c  quit
-R         scope toggle (gated)
+R         toggle all-projects view
 L         toggle layout
 
 Graph
