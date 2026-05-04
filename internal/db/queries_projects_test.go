@@ -622,3 +622,58 @@ func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
 	require.True(t, stats[p.ID].LastEventAt.Equal(expected),
 		"zoned event time wrong: got %v, want %v", stats[p.ID].LastEventAt, expected)
 }
+
+// TestBatchProjectStats_PicksAbsoluteLatestAcrossMixedFormats pins that
+// MAX over events.created_at compares by parsed time, not by lex string,
+// so the absolute-latest event wins even when the events table contains
+// a mix of T-separated RFC3339 and space/offset legacy layouts (which
+// parseSQLiteTimestamp accepts on the read path).
+//
+// Concretely: we stamp two events on the same project, both at the same
+// real-world UTC instant. One uses the legacy zoned layout
+// ("YYYY-MM-DD HH:MM:SS.SSS-07:00"); the other is a millisecond earlier
+// in the current RFC3339Nano layout. Because '<space>' (0x20) sorts
+// before 'T' (0x54), a naive lex MAX(created_at) would pick the
+// later-T-formatted earlier event. After the julianday() normalization,
+// the absolute-latest space-zoned event wins.
+func TestBatchProjectStats_PicksAbsoluteLatestAcrossMixedFormats(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/mixed-ts", "mixed-ts")
+	require.NoError(t, err)
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "live", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// Earlier-in-absolute-time but lex-LATER (T separator > space).
+	earlierUID, err := uid.New()
+	require.NoError(t, err)
+	const earlierTRFC = "2050-01-01T00:00:00.000Z"
+	_, err = d.ExecContext(ctx, `
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester', '{}', ?)`,
+		earlierUID, p.ID, p.Identity, issue.ID, issue.Number, earlierTRFC)
+	require.NoError(t, err)
+
+	// Later-in-absolute-time but lex-EARLIER (space separator < T).
+	// 2050-01-01 00:00:01-00:00 == 2050-01-01T00:00:01Z which is one
+	// second after earlierTRFC. Lex MAX would pick earlierTRFC.
+	laterUID, err := uid.New()
+	require.NoError(t, err)
+	const laterZoned = "2050-01-01 00:00:01.000-00:00"
+	_, err = d.ExecContext(ctx, `
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.commented', 'tester', '{}', ?)`,
+		laterUID, p.ID, p.Identity, issue.ID, issue.Number, laterZoned)
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	require.Contains(t, stats, p.ID)
+	require.NotNil(t, stats[p.ID].LastEventAt)
+	expected := time.Date(2050, 1, 1, 0, 0, 1, 0, time.UTC)
+	assert.True(t, stats[p.ID].LastEventAt.Equal(expected),
+		"BatchProjectStats picked the lex-largest row, not the absolute-latest: got %v, want %v",
+		stats[p.ID].LastEventAt, expected)
+}

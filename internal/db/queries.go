@@ -133,7 +133,13 @@ WITH
     GROUP BY project_id
   ),
   event_max AS (
-    SELECT project_id, MAX(created_at) AS last_event_at
+    -- julianday() normalizes both T-separated RFC3339 and space/offset
+    -- legacy layouts to a numeric julian day, so MAX picks the
+    -- absolute-latest event regardless of which text format was stored.
+    -- strftime() formats it back to RFC3339Nano with a 'Z' zone, matching
+    -- the layout the rest of the code emits via strftime() on insert.
+    SELECT project_id,
+           strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(created_at))) AS last_event_at
     FROM events
     GROUP BY project_id
   )
