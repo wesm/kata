@@ -39,12 +39,9 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		from, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		from, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		to, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Body.ToNumber)
 		if errors.Is(err, db.ErrNotFound) {
@@ -165,12 +162,9 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 		if err := validateActor(in.Actor); err != nil {
 			return nil, err
 		}
-		from, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		from, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 
 		link, err := cfg.DB.LinkByID(ctx, in.LinkID)

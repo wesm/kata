@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -22,12 +21,9 @@ func registerCommentsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		c, evt, err := cfg.DB.CreateComment(ctx, db.CreateCommentParams{
 			IssueID: issue.ID,

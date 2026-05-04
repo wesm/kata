@@ -156,12 +156,9 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/projects/{project_id}/issues/{number}",
 	}, func(ctx context.Context, in *api.ShowIssueRequest) (*api.ShowIssueResponse, error) {
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		return buildShowIssueResponse(ctx, cfg, issue, in.IncludeDeleted)
 	})
@@ -175,6 +172,12 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
+		// Hide issues whose parent project is archived, mirroring every
+		// other project-scoped handler. The UID lookup itself returns the
+		// row regardless of project archive state.
+		if _, perr := activeProjectByID(ctx, cfg.DB, issue.ProjectID); perr != nil {
+			return nil, perr
+		}
 		return buildShowIssueResponse(ctx, cfg, issue, in.IncludeDeleted)
 	})
 
@@ -186,12 +189,9 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		updated, evt, changed, err := cfg.DB.EditIssue(ctx, db.EditIssueParams{
 			IssueID: issue.ID,

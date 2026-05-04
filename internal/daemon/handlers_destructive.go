@@ -26,12 +26,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateConfirm(in.Confirm, "DELETE", in.Number); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		updated, evt, changed, err := cfg.DB.SoftDeleteIssue(ctx, issue.ID, in.Body.Actor)
 		if errors.Is(err, db.ErrNotFound) {
@@ -59,12 +56,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		updated, evt, changed, err := cfg.DB.RestoreIssue(ctx, issue.ID, in.Body.Actor)
 		if errors.Is(err, db.ErrNotFound) {
@@ -95,12 +89,9 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateConfirm(in.Confirm, "PURGE", in.Number); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		var reasonPtr *string
 		if in.Body.Reason != "" {

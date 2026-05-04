@@ -15,6 +15,29 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
+// activeIssueByNumber resolves an issue by (project_id, number) for surface
+// API handlers, gating on the parent project's archive state first. Returns
+// project_not_found 404 when the project is archived (mirroring every other
+// project-scoped handler) and issue_not_found 404 when the issue does not
+// exist. Errors are pre-wrapped api.NewError envelopes so call sites can
+// `return nil, err`.
+//
+// Internal callers that need to operate on issues whose parent project is
+// archived (merge / restore plumbing) must use store.IssueByNumber directly.
+func activeIssueByNumber(ctx context.Context, store *db.DB, projectID, number int64) (db.Issue, error) {
+	if _, err := activeProjectByID(ctx, store, projectID); err != nil {
+		return db.Issue{}, err
+	}
+	issue, err := store.IssueByNumber(ctx, projectID, number)
+	if errors.Is(err, db.ErrNotFound) {
+		return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+	}
+	if err != nil {
+		return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return issue, nil
+}
+
 // activeProjectByID resolves a project by rowid for surface API handlers
 // that should treat archived projects as not-found. Returns the api.NewError
 // envelope directly so call sites can `return nil, err`.

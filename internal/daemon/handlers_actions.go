@@ -2,12 +2,10 @@ package daemon
 
 import (
 	"context"
-	"errors"
 
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/db"
 )
 
 // registerActionsHandlers installs POST /actions/close and /actions/reopen.
@@ -23,12 +21,9 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		updated, evt, changed, err := cfg.DB.CloseIssue(ctx, issue.ID, in.Body.Reason, in.Body.Actor)
 		if err != nil {
@@ -53,12 +48,9 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Number)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-		}
+		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		updated, evt, changed, err := cfg.DB.ReopenIssue(ctx, issue.ID, in.Body.Actor)
 		if err != nil {
