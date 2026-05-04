@@ -98,6 +98,12 @@ type Model struct {
 	// it back, and handleLabelsFetched compares msg.gen >= entry.gen
 	// to decide whether to apply the result.
 	nextLabelsGen int64
+	// projectsByID maps project_id → display name for the all-projects
+	// list view. Populated at boot and after project.* SSE events so
+	// list rows in all-projects scope can prefix the title with the
+	// owning project's name. Stays nil-safe — a missing entry renders
+	// as a numeric "[#N]" prefix instead of crashing.
+	projectsByID map[int64]string
 	// layout is the EFFECTIVE rendered layout — what the View functions
 	// actually draw. Re-evaluated on every WindowSizeMsg via
 	// resolveLayout, which consults preferredLayout + layoutLocked +
@@ -156,6 +162,7 @@ func initialModel(opts Options) Model {
 		cache:         newIssueCache(),
 		toastNow:      time.Now,
 		projectLabels: newLabelCache(),
+		projectsByID:  map[int64]string{},
 		layout:        layoutStacked,
 		focus:         focusList,
 		uidFormat:     uidFormat,
@@ -193,7 +200,7 @@ func (m Model) Init() tea.Cmd {
 	if m.view == viewEmpty || m.api == nil {
 		return tea.Batch(tea.EnableBracketedPaste, m.waitForSSE())
 	}
-	return tea.Batch(tea.EnableBracketedPaste, m.fetchInitial(), m.waitForSSE())
+	return tea.Batch(tea.EnableBracketedPaste, m.fetchInitial(), m.fetchProjects(), m.waitForSSE())
 }
 
 // waitForSSE is the bridge from the SSE goroutine into the TEA loop. It
@@ -214,6 +221,27 @@ func (m Model) waitForSSE() tea.Cmd {
 			return nil
 		}
 		return msg
+	}
+}
+
+// fetchProjects loads /api/v1/projects into projectsByID so the
+// all-projects list view can label each row with its owning project.
+// Errors degrade gracefully — rows render with a numeric "[#N]" prefix
+// when the map is missing the entry.
+func (m Model) fetchProjects() tea.Cmd {
+	api := m.api
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		summaries, err := api.ListProjects(ctx)
+		if err != nil {
+			return projectsLoadedMsg{err: err}
+		}
+		out := make(map[int64]string, len(summaries))
+		for _, p := range summaries {
+			out[p.ID] = p.Name
+		}
+		return projectsLoadedMsg{projects: out}
 	}
 }
 
@@ -297,6 +325,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// shape after.
 	if lf, ok := msg.(labelsFetchedMsg); ok {
 		m = m.handleLabelsFetched(lf)
+		return m, nil
+	}
+	if pl, ok := msg.(projectsLoadedMsg); ok {
+		if pl.err == nil && pl.projects != nil {
+			m.projectsByID = pl.projects
+		}
 		return m, nil
 	}
 	return m.dispatchToView(msg)
@@ -2251,11 +2285,12 @@ func (m Model) viewBody() string {
 // this keeps the sub-views free of Model coupling.
 func (m Model) chrome() viewChrome {
 	return viewChrome{
-		scope:     m.scope,
-		sseStatus: m.sseStatus,
-		pending:   m.pendingRefetch,
-		toast:     m.toast,
-		version:   kataVersion,
-		input:     m.input,
+		scope:        m.scope,
+		sseStatus:    m.sseStatus,
+		pending:      m.pendingRefetch,
+		toast:        m.toast,
+		version:      kataVersion,
+		input:        m.input,
+		projectsByID: m.projectsByID,
 	}
 }

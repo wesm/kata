@@ -31,13 +31,14 @@ import (
 // detail header's assignment row). Detail rendering ignores narrow
 // (the detail pane in split mode flexes the same as in stacked).
 type viewChrome struct {
-	scope     scope        // project / counts / version go in the title bar
-	sseStatus sseConnState // surfaces only as a flash when not connected
-	pending   bool         // pendingRefetch — surfaces as a flash when set
-	toast     *toast       // optional flash message (e.g. "resynced")
-	version   string       // build-time version string for the title bar; "" hides
-	input     inputState   // active input shell (M3a bar; M3b prompt; M4 form)
-	narrow    bool         // M6 split mode list pane: drop owner column
+	scope        scope            // project / counts / version go in the title bar
+	sseStatus    sseConnState     // surfaces only as a flash when not connected
+	pending      bool             // pendingRefetch — surfaces as a flash when set
+	toast        *toast           // optional flash message (e.g. "resynced")
+	version      string           // build-time version string for the title bar; "" hides
+	input        inputState       // active input shell (M3a bar; M3b prompt; M4 form)
+	narrow       bool             // M6 split mode list pane: drop owner column
+	projectsByID map[int64]string // for all-projects mode: pid → display name (empty otherwise)
 }
 
 // View renders the list under the M3.5 chrome layer:
@@ -118,7 +119,7 @@ const listBodyFloor = 5
 // minimum height. M5 will replace this with a proper "too narrow"
 // hint; for now it's just the table without chrome.
 func (lm listModel) renderTinyFallback(width int) string {
-	return lm.renderBody(width, listBodyFloor, false)
+	return lm.renderBody(width, listBodyFloor, viewChrome{})
 }
 
 // renderBodyArea wraps renderBody with the fillScreen padding that
@@ -131,7 +132,7 @@ func (lm listModel) renderTinyFallback(width int) string {
 // in M6 split-mode. The narrow flag stays scoped to renderBody +
 // helpers — chrome boilerplate (title/footer) is unaffected.
 func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) string {
-	body := lm.renderBody(width, bodyRows-2 /* header + sep */, chrome.narrow)
+	body := lm.renderBody(width, bodyRows-2 /* header + sep */, chrome)
 	rendered := strings.Split(body, "\n")
 	for len(rendered) < bodyRows {
 		rendered = append(rendered, normalRowStyle.Render(strings.Repeat(" ", width)))
@@ -407,11 +408,12 @@ func (lm listModel) issueCounts() issueCounts {
 // data rows around the cursor. No top/bottom borders (msgvault
 // pattern); just one separator under the column header.
 //
-// narrow=true (M6 split-mode list pane) drops the owner column so
-// the title column flexes into the recovered cells. The owner is
-// redundant in split mode — the detail pane's assignment row carries
-// it on the right of the screen.
-func (lm listModel) renderBody(width, height int, narrow bool) string {
+// chrome.narrow=true (M6 split-mode list pane) drops the owner column so
+// the title column flexes into the recovered cells. chrome.scope and
+// chrome.projectsByID drive the all-projects per-row prefix so the user
+// can tell which project each row belongs to under the R toggle.
+func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
+	narrow := chrome.narrow
 	queueRows := lm.visibleRows()
 	if len(queueRows) == 0 {
 		hint := "no issues match. press c to clear filters or n to create one."
@@ -428,7 +430,7 @@ func (lm listModel) renderBody(width, height int, narrow bool) string {
 	}
 	visible, vCursor := windowQueueRows(queueRows, displayCursor, height)
 	cols := listColumnWidths(width, narrow)
-	rows := buildRows(visible, vCursor, cols.title, narrow)
+	rows := buildRows(visible, vCursor, cols.title, narrow, chrome)
 	headers := listTableHeaders(narrow)
 	t := table.New().
 		Border(lipgloss.HiddenBorder()).
@@ -817,20 +819,21 @@ func joinNonEmpty(parts []string) string {
 //
 // narrow=true (M6 split-mode list pane) drops the owner cell so the
 // row aligns with the five-header table.
-func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool) [][]string {
+func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool, chrome viewChrome) [][]string {
 	if titleW < 20 {
 		titleW = 20
 	}
 	rows := make([][]string, 0, len(queueRows))
 	for i, qr := range queueRows {
 		iss := qr.issue
+		title := titleForRow(iss, chrome, titleW)
 		row := []string{
 			selMarker(i == cursor),
 			contextMarker(qr.context),
 			treeCell(qr),
 			fmt.Sprintf("#%d", iss.Number),
 			statusChip(iss),
-			truncate(sanitizeForDisplay(iss.Title), titleW),
+			title,
 			childCountCell(iss.ChildCounts),
 		}
 		if !narrow {
@@ -840,6 +843,34 @@ func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool) [][]string
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// titleForRow renders the title cell, prefixing the owning project's
+// display name in all-projects scope so the user can tell which project
+// a row belongs to under the R toggle. The prefix is rendered as
+// "[name] " (or "[#PID] " when projectsByID is missing the entry, e.g.
+// after a freshly-created project before the cache refresh) and is
+// truncated together with the title to fit titleW.
+//
+// In single-project scope the prefix is omitted — every row belongs to
+// the same project so repeating the name on every line is noise.
+func titleForRow(iss Issue, chrome viewChrome, titleW int) string {
+	clean := sanitizeForDisplay(iss.Title)
+	if !chrome.scope.allProjects {
+		return truncate(clean, titleW)
+	}
+	prefix := projectPrefix(iss.ProjectID, chrome.projectsByID)
+	return truncate(prefix+clean, titleW)
+}
+
+// projectPrefix renders the bracketed project name for a list row. Falls
+// back to "[#PID]" when the project lookup misses so the row still tells
+// the user which project rather than appearing nameless.
+func projectPrefix(projectID int64, byID map[int64]string) string {
+	if name, ok := byID[projectID]; ok && name != "" {
+		return "[" + name + "] "
+	}
+	return fmt.Sprintf("[#%d] ", projectID)
 }
 
 func contextMarker(context bool) string {

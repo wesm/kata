@@ -177,6 +177,15 @@ type labelsFetchedMsg struct {
 	err    error
 }
 
+// projectsLoadedMsg is delivered after a /api/v1/projects fetch returns.
+// The all-projects list view uses the resulting map to prefix each row's
+// title with the owning project's display name. Failures populate err so
+// the TUI can degrade gracefully (rows render without the prefix).
+type projectsLoadedMsg struct {
+	projects map[int64]string
+	err      error
+}
+
 // resetRequiredMsg signals sync.reset_required: the daemon's purge
 // gap means the consumer's cursor is too old. The TEA loop drops the
 // cache and refetches from scratch.

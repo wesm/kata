@@ -246,7 +246,7 @@ func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) 
 		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
 	}}
 
-	collapsed := stripANSI(lm.renderBody(100, 6, false))
+	collapsed := stripANSI(lm.renderBody(100, 6, viewChrome{}))
 	if !strings.Contains(collapsed, "+") {
 		t.Fatalf("collapsed parent missing disclosure glyph:\n%s", collapsed)
 	}
@@ -258,7 +258,7 @@ func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) 
 	}
 
 	lm.expanded = expansionSet{{projectID: 7, number: parentNum}: true}
-	expanded := stripANSI(lm.renderBody(100, 6, false))
+	expanded := stripANSI(lm.renderBody(100, 6, viewChrome{}))
 	if !strings.Contains(expanded, "-") {
 		t.Fatalf("expanded parent missing disclosure glyph:\n%s", expanded)
 	}
@@ -278,12 +278,75 @@ func TestRenderListBody_ContextRowHasVisibleMarkerInNoColor(t *testing.T) {
 		filter: ListFilter{Search: "login"},
 	}
 
-	got := stripANSI(lm.renderBody(100, 6, false))
+	got := stripANSI(lm.renderBody(100, 6, viewChrome{}))
 	if !strings.Contains(got, "~") {
 		t.Fatalf("context row missing no-color marker:\n%s", got)
 	}
 	if !strings.Contains(got, "parent") || !strings.Contains(got, "child login") {
 		t.Fatalf("context render missing ancestor or child:\n%s", got)
+	}
+}
+
+// TestRenderListBody_AllProjectsPrefixesTitle pins the navigation contract
+// for the R toggle: in all-projects scope each row's title is prefixed with
+// the owning project's display name from chrome.projectsByID, so the user
+// can tell which project a row belongs to without expanding detail.
+func TestRenderListBody_AllProjectsPrefixesTitle(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	lm := listModel{issues: []Issue{
+		{ProjectID: 7, Number: 1, Title: "alpha bug", Status: "open"},
+		{ProjectID: 9, Number: 1, Title: "beta bug", Status: "open"},
+	}}
+	chrome := viewChrome{
+		scope:        scope{allProjects: true},
+		projectsByID: map[int64]string{7: "alpha", 9: "beta"},
+	}
+	got := stripANSI(lm.renderBody(120, 6, chrome))
+	if !strings.Contains(got, "[alpha] alpha bug") {
+		t.Fatalf("all-projects render missing alpha prefix:\n%s", got)
+	}
+	if !strings.Contains(got, "[beta] beta bug") {
+		t.Fatalf("all-projects render missing beta prefix:\n%s", got)
+	}
+}
+
+// TestRenderListBody_AllProjectsFallsBackToPID pins the degraded path: a
+// row whose project is missing from the cache (e.g. a freshly-created
+// project before the next /projects refresh) renders as "[#PID]" rather
+// than appearing nameless.
+func TestRenderListBody_AllProjectsFallsBackToPID(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	lm := listModel{issues: []Issue{
+		{ProjectID: 42, Number: 1, Title: "ghost project", Status: "open"},
+	}}
+	chrome := viewChrome{
+		scope:        scope{allProjects: true},
+		projectsByID: map[int64]string{},
+	}
+	got := stripANSI(lm.renderBody(120, 6, chrome))
+	if !strings.Contains(got, "[#42] ghost project") {
+		t.Fatalf("missing-project render must fall back to [#PID]:\n%s", got)
+	}
+}
+
+// TestRenderListBody_SingleProjectOmitsPrefix pins the inverse: in
+// single-project scope the prefix is omitted (every row belongs to the
+// same project, so repeating the name is noise).
+func TestRenderListBody_SingleProjectOmitsPrefix(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	lm := listModel{issues: []Issue{
+		{ProjectID: 7, Number: 1, Title: "alpha bug", Status: "open"},
+	}}
+	chrome := viewChrome{
+		scope:        scope{projectID: 7, projectName: "alpha"},
+		projectsByID: map[int64]string{7: "alpha"},
+	}
+	got := stripANSI(lm.renderBody(120, 6, chrome))
+	if strings.Contains(got, "[alpha]") {
+		t.Fatalf("single-project render must not prefix project name:\n%s", got)
+	}
+	if !strings.Contains(got, "alpha bug") {
+		t.Fatalf("title missing in single-project render:\n%s", got)
 	}
 }
 
