@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	katauid "github.com/wesm/kata/internal/uid"
 )
@@ -111,6 +112,71 @@ func (d *DB) listProjects(ctx context.Context, includeArchived bool) ([]Project,
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// BatchProjectStats returns aggregate stats for every active project. The
+// result includes projects with zero issues (Open=0, Closed=0) and zero
+// events (LastEventAt=nil), driven by LEFT JOINs onto pre-aggregated
+// subqueries. Pre-aggregation matters: the naive
+// projects⋈issues⋈events GROUP BY shape would multiply each issue row by
+// each event row and inflate counts. Spec §6.1.
+func (d *DB) BatchProjectStats(ctx context.Context) (map[int64]ProjectStats, error) {
+	const q = `
+WITH
+  issue_counts AS (
+    SELECT
+      project_id,
+      SUM(CASE WHEN status = 'open'   THEN 1 ELSE 0 END) AS open_count,
+      SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed_count
+    FROM issues
+    WHERE deleted_at IS NULL
+    GROUP BY project_id
+  ),
+  event_max AS (
+    SELECT project_id, MAX(created_at) AS last_event_at
+    FROM events
+    GROUP BY project_id
+  )
+SELECT
+  p.id,
+  COALESCE(ic.open_count,   0),
+  COALESCE(ic.closed_count, 0),
+  em.last_event_at
+FROM projects p
+LEFT JOIN issue_counts ic ON ic.project_id = p.id
+LEFT JOIN event_max    em ON em.project_id = p.id
+WHERE p.deleted_at IS NULL
+ORDER BY p.id`
+	rows, err := d.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("batch project stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[int64]ProjectStats{}
+	for rows.Next() {
+		var (
+			id     int64
+			open   int
+			closed int
+			ts     sql.NullString
+		)
+		if err := rows.Scan(&id, &open, &closed, &ts); err != nil {
+			return nil, fmt.Errorf("scan project stats: %w", err)
+		}
+		s := ProjectStats{Open: open, Closed: closed}
+		if ts.Valid {
+			t, err := time.Parse(time.RFC3339Nano, ts.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse last_event_at %q: %w", ts.String, err)
+			}
+			s.LastEventAt = &t
+		}
+		out[id] = s
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows: %w", err)
+	}
+	return out, nil
 }
 
 // ProjectHasIssuesError is returned by ResetIssueCounter when the target

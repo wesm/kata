@@ -448,3 +448,122 @@ func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber)
 }
+
+func TestBatchProjectStats_EmptyProjectReturnsZeroes(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/empty", "empty")
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+
+	require.Contains(t, stats, p.ID)
+	s := stats[p.ID]
+	assert.Equal(t, 0, s.Open)
+	assert.Equal(t, 0, s.Closed)
+	assert.Nil(t, s.LastEventAt, "no events → LastEventAt is nil")
+}
+
+// TestBatchProjectStats_NoCountInflation pins the spec §6.1 contract:
+// the issues-and-events join MUST be pre-aggregated, otherwise N issues
+// times M events would inflate counts. Three issues + four events on the
+// same project must still report Open=3.
+func TestBatchProjectStats_NoCountInflation(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/proj", "proj")
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID,
+			Title:     "i",
+			Body:      "",
+			Author:    "tester",
+		})
+		require.NoError(t, err)
+	}
+	iss, err := d.IssueByNumber(ctx, p.ID, 1)
+	require.NoError(t, err)
+	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: iss.ID,
+		Author:  "tester",
+		Body:    "note",
+	})
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	require.Contains(t, stats, p.ID)
+	assert.Equal(t, 3, stats[p.ID].Open, "must not inflate by event count")
+	assert.Equal(t, 0, stats[p.ID].Closed)
+	assert.NotNil(t, stats[p.ID].LastEventAt)
+}
+
+// TestBatchProjectStats_ExcludesSoftDeletedIssues pins that issues with
+// deleted_at != NULL do not count toward Open/Closed. Spec §6.1.
+func TestBatchProjectStats_ExcludesSoftDeletedIssues(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "github.com/wesm/proj", "proj")
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "live", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	soft, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "soft", Body: "", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.PurgeIssue(ctx, soft.ID, "tester", nil)
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats[p.ID].Open, "purged issue must not count")
+}
+
+// TestBatchProjectStats_ExcludesArchivedProjects pins that archived
+// projects don't appear in the result map at all. Spec §6.1.
+func TestBatchProjectStats_ExcludesArchivedProjects(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	live, err := d.CreateProject(ctx, "github.com/wesm/live", "live")
+	require.NoError(t, err)
+	arch, err := d.CreateProject(ctx, "github.com/wesm/arch", "arch")
+	require.NoError(t, err)
+	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: arch.ID, Actor: "tester"})
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, stats, live.ID)
+	assert.NotContains(t, stats, arch.ID)
+}
+
+// TestBatchProjectStats_PartitionsByProject pins that two projects with
+// distinct issue counts produce distinct rows; counts are not summed
+// across projects. Spec §6.1.
+func TestBatchProjectStats_PartitionsByProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	a, err := d.CreateProject(ctx, "github.com/wesm/a", "a")
+	require.NoError(t, err)
+	b, err := d.CreateProject(ctx, "github.com/wesm/b", "b")
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: a.ID, Title: "x", Author: "tester",
+		})
+		require.NoError(t, err)
+	}
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: b.ID, Title: "y", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	stats, err := d.BatchProjectStats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats[a.ID].Open)
+	assert.Equal(t, 1, stats[b.ID].Open)
+}

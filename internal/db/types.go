@@ -17,6 +17,16 @@ type Project struct {
 	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
 }
 
+// ProjectStats is the per-project aggregate returned by BatchProjectStats.
+// Used by GET /api/v1/projects?include=stats. LastEventAt is nil for a
+// project with zero events; tests pin this so the TUI's "—" rendering
+// is exercised.
+type ProjectStats struct {
+	Open        int
+	Closed      int
+	LastEventAt *time.Time
+}
+
 // ProjectAlias mirrors a row in project_aliases.
 type ProjectAlias struct {
 	ID            int64     `json:"id"`
