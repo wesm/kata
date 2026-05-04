@@ -162,8 +162,8 @@ func (m Model) cursorMoveProjects(msg tea.KeyMsg, rows []projectsRow) (Model, bo
 //
 // Idempotent re-selection: if the highlighted row already matches the
 // active scope, just return to viewList without invalidating the cache
-// or refetching. Mirrors applyProjectPickerSelection's behavior so the
-// user can re-confirm the current scope without churn.
+// or refetching, so the user can re-confirm the current scope without
+// churn.
 func (m Model) applyProjectsViewSelection(rows []projectsRow) (Model, tea.Cmd) {
 	if m.projectsCursor < 0 || m.projectsCursor >= len(rows) {
 		return m, nil

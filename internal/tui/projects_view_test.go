@@ -255,10 +255,9 @@ func TestProjectsView_EnterOnSentinelTransitions(t *testing.T) {
 	assert.True(t, out.cache.isStale(), "issue cache must be invalidated on scope change")
 }
 
-// TestProjectsView_EnterOnCurrentScopeIsIdempotent pins the parity with
-// the legacy picker (scope.go applyProjectPickerSelection): re-selecting
-// the row that matches the active scope just returns to viewList — no
-// cache invalidation, no refetch.
+// TestProjectsView_EnterOnCurrentScopeIsIdempotent pins the idempotent
+// re-selection contract: re-selecting the row that matches the active
+// scope just returns to viewList — no cache invalidation, no refetch.
 func TestProjectsView_EnterOnCurrentScopeIsIdempotent(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewProjects

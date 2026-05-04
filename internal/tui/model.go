@@ -124,10 +124,6 @@ type Model struct {
 	// projectsCursor is the highlighted row in viewProjects. Reset when
 	// transitioning into the view; preserved across re-renders.
 	projectsCursor int
-	// projectPicker carries the cursor + sorted project list for the
-	// switch-project modal opened by the P binding. Reset to its zero
-	// value when the modal closes.
-	projectPicker projectPickerState
 	// layout is the EFFECTIVE rendered layout — what the View functions
 	// actually draw. Re-evaluated on every WindowSizeMsg via
 	// resolveLayout, which consults preferredLayout + layoutLocked +
@@ -1892,8 +1888,6 @@ func (m Model) routeModalKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.modal = modalNone
 			return m, nil
 		}
-	case modalProjectPicker:
-		return m.routeProjectPickerKey(msg)
 	}
 	return m, nil
 }
@@ -2251,9 +2245,6 @@ func (m Model) View() string {
 		if m.modal == modalQuitConfirm {
 			return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
 		}
-		if m.modal == modalProjectPicker {
-			return overlayModal(body, renderProjectPickerModal(m.projectPicker), m.width, m.height)
-		}
 		if m.input.kind.isCenteredForm() {
 			form := renderCenteredForm(m.input, m.width, m.height)
 			return overlayModal(body, form, m.width, m.height)
@@ -2276,12 +2267,6 @@ func (m Model) View() string {
 	// M3.5b: a centered modal overlays the rendered view when active.
 	if m.modal == modalQuitConfirm {
 		return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
-	}
-	// P binding: the project picker modal overlays whichever view is
-	// rendered (list or detail) so the user can jump scopes from any
-	// surface.
-	if m.modal == modalProjectPicker {
-		return overlayModal(body, renderProjectPickerModal(m.projectPicker), m.width, m.height)
 	}
 	// M4: centered form overlays the rendered view when active.
 	if m.input.kind.isCenteredForm() {
