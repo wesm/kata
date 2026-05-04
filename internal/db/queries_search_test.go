@@ -331,17 +331,27 @@ func TestSearchFTS_OperatorWordsAsLiterals(t *testing.T) {
 		ProjectID: p.ID, Title: "merge after review", Author: "tester",
 	})
 	require.NoError(t, err)
-	// Seeded specifically so that AND/NEAR-as-literals can be exercised: each
-	// row contains the operator word as a regular token. A regression that
-	// stopped quoting these into phrases would either error out (FTS5 syntax)
-	// or match unrelated rows (operator semantics), so a positive literal
-	// match is the right pin.
+	// Seeded so AND/NEAR-as-literals can be exercised: each operator-bearing
+	// row pairs with a competitor that has the surrounding tokens but lacks
+	// the operator word itself. Under operator semantics ("build" AND
+	// "deploy") both rows would match; under correct literal semantics only
+	// the row containing the literal operator word matches. The test asserts
+	// exactly one match, so a regression that lost the FTS5 phrase-quoting
+	// fails here.
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "build AND deploy pipeline", Author: "tester",
 	})
 	require.NoError(t, err)
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "build deploy pipeline", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "place item NEAR exit", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "place item by exit", Author: "tester",
 	})
 	require.NoError(t, err)
 
