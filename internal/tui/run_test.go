@@ -7,9 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestBoot_ResolvesProject covers §7.2 case 1: cwd is bound to a registered
+// TestBoot_ResolvesProject covers §4.2 case 1: cwd is bound to a registered
 // project. bootResolveScope should return single-project scope, and the
 // initial list fetch should hit the project-scoped endpoint.
 func TestBoot_ResolvesProject(t *testing.T) {
@@ -35,10 +39,12 @@ func TestBoot_ResolvesProject(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	sc, err := bootResolveScope(t.Context(), c, "/tmp/x")
+	bi, err := bootResolveScope(t.Context(), c, "/tmp/x")
 	if err != nil {
 		t.Fatal(err)
 	}
+	assert.Equal(t, viewList, bi.view)
+	sc := bi.scope
 	if sc.allProjects {
 		t.Fatal("expected single-project scope, got allProjects")
 	}
@@ -62,46 +68,12 @@ func TestBoot_ResolvesProject(t *testing.T) {
 	}
 }
 
-// TestBoot_UnboundCwd_LandsInEmptyState: cwd is unbound; even though
-// the daemon has registered projects, we don't fall into all-projects
-// (the daemon has no cross-project list endpoint, so a fallback would
-// 404). The honest outcome is the empty state with the "run kata
-// init" hint. Re-add a fallback-to-allProjects test once the daemon
-// ships GET /issues for cross-project reads.
-func TestBoot_UnboundCwd_LandsInEmptyState(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/projects/resolve":
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": 404,
-				"error": map[string]any{
-					"code":    "project_not_initialized",
-					"message": "no .kata.toml",
-				},
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
-	sc, err := bootResolveScope(t.Context(), c, "/tmp/no-binding")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !sc.empty {
-		t.Fatal("expected empty scope, got something else")
-	}
-	if sc.allProjects {
-		t.Fatal("all-projects fallback is gated off; got allProjects=true")
-	}
-}
-
-// TestBoot_EmptyState_NoProjectsRegistered covers §7.2 case 4: cwd is
-// unbound and no projects are registered. bootResolveScope should signal
-// the empty view so Run renders an onboarding hint instead of a blank list.
+// TestBoot_EmptyState_NoProjectsRegistered covers §4.2 case 3: cwd is
+// unbound and no projects are registered. bootResolveScope should land
+// on viewEmpty so Run renders an onboarding hint instead of a blank
+// list. (The companion case-2 test is
+// TestBoot_UnresolvedWithProjects_LandsViewProjects below, which pins
+// the ≥1 project branch.)
 func TestBoot_EmptyState_NoProjectsRegistered(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -112,19 +84,21 @@ func TestBoot_EmptyState_NoProjectsRegistered(t *testing.T) {
 				"error": map[string]any{"code": "project_not_initialized"},
 			})
 		case "/api/v1/projects":
-			_ = json.NewEncoder(w).Encode(map[string]any{"projects": []map[string]any{}})
+			require.Equal(t, "stats", r.URL.Query().Get("include"))
+			_, _ = w.Write([]byte(`{"projects":[]}`))
 		}
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
-	sc, err := bootResolveScope(t.Context(), c, "/tmp/empty")
+	bi, err := bootResolveScope(t.Context(), c, "/tmp/empty")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sc.empty {
+	assert.Equal(t, viewEmpty, bi.view)
+	if !bi.scope.empty {
 		t.Fatal("expected scope.empty=true")
 	}
-	if sc.allProjects {
+	if bi.scope.allProjects {
 		t.Fatal("did not expect allProjects")
 	}
 }
@@ -176,4 +150,69 @@ func TestRun_NonFileStdout_ReturnsNotATTY(t *testing.T) {
 	if !errors.Is(err, errNotATTY) {
 		t.Fatalf("Run returned %v, want errNotATTY", err)
 	}
+}
+
+// TestBoot_UnresolvedWithProjects_LandsViewProjects pins the new boot
+// rule: an unresolved cwd plus ≥1 registered project lands on
+// viewProjects, not viewEmpty. Spec §4.2.
+func TestBoot_UnresolvedWithProjects_LandsViewProjects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/projects/resolve":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": 404,
+				"error": map[string]any{
+					"code":    "project_not_initialized",
+					"message": "no kata.toml",
+				},
+			})
+		case "/api/v1/projects":
+			require.Equal(t, "stats", r.URL.Query().Get("include"))
+			_, _ = w.Write([]byte(`{"projects":[
+				{"id":7,"identity":"github.com/wesm/kata","name":"kata",
+				 "stats":{"open":3,"closed":1,"last_event_at":"2026-05-04T12:00:00.000Z"}}
+			]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	bi, err := bootResolveScope(t.Context(), c, "/tmp/unbound")
+	require.NoError(t, err)
+	assert.Equal(t, viewProjects, bi.view)
+	assert.False(t, bi.scope.empty)
+	assert.Zero(t, bi.scope.projectID)
+	assert.False(t, bi.scope.allProjects)
+	require.Len(t, bi.projects, 1, "boot fetched rows must be threaded through")
+	assert.Equal(t, int64(7), bi.projects[0].ID)
+	assert.Equal(t, "kata", bi.projects[0].Name)
+}
+
+// TestBuildRunModel_SeedsViewProjectsCacheFromBoot pins that when boot
+// lands on viewProjects, the initial model's cache maps are populated
+// from the boot fetch — no empty-then-fill flicker on the first frame.
+// Spec §4.3.
+func TestBuildRunModel_SeedsViewProjectsCacheFromBoot(t *testing.T) {
+	t1 := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	bi := bootInit{
+		view:  viewProjects,
+		scope: scope{},
+		projects: []ProjectSummaryWithStats{
+			{
+				ProjectSummary: ProjectSummary{ID: 7, Identity: "github.com/wesm/kata", Name: "kata"},
+				Stats:          &ProjectStatsSummary{Open: 3, Closed: 1, LastEventAt: &t1},
+			},
+		},
+	}
+	m := buildRunModel(Options{}, &Client{}, bi)
+	assert.Equal(t, viewProjects, m.view)
+	assert.Equal(t, "kata", m.projectsByID[7])
+	assert.Equal(t, "github.com/wesm/kata", m.projectIdentByID[7])
+	require.Contains(t, m.projectStats, int64(7))
+	assert.Equal(t, 3, m.projectStats[7].Open)
+	assert.Equal(t, 1, m.projectStats[7].Closed)
 }

@@ -43,15 +43,15 @@ func Run(ctx context.Context, opts Options) error {
 	if !isTerminal(os.Stdin) || !outputIsTerminal(opts.Stdout) {
 		return errNotATTY
 	}
-	c, sseHC, sc, endpoint, err := bootClient(ctx, opts)
+	c, sseHC, bi, endpoint, err := bootClient(ctx, opts)
 	if err != nil {
 		return err
 	}
-	m := buildRunModel(opts, c, sc)
+	m := buildRunModel(opts, c, bi)
 	sseCtx, cancelSSE := context.WithCancel(ctx)
 	defer cancelSSE()
-	if !sc.empty && sseHC != nil {
-		go startSSE(sseCtx, sseHC, endpoint, sseProjectScope(sc), m.sseCh)
+	if !bi.scope.empty && sseHC != nil {
+		go startSSE(sseCtx, sseHC, endpoint, sseProjectScope(bi.scope), m.sseCh)
 	}
 	if _, err := tea.NewProgram(m, programOpts(ctx, opts)...).Run(); err != nil {
 		return err
@@ -59,14 +59,27 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// buildRunModel seeds the initial model with the resolved client and
-// scope. Splitting this off Run keeps the orchestration body small.
-func buildRunModel(opts Options, c *Client, sc scope) Model {
+// buildRunModel seeds the initial model with the resolved client,
+// scope, and view. When the boot path landed on viewProjects, the
+// pre-fetched project rows are seeded into the cache maps so the first
+// frame renders with stats.
+func buildRunModel(opts Options, c *Client, bi bootInit) Model {
 	m := initialModel(opts)
 	m.api = c
-	m.scope = sc
-	if sc.empty {
-		m.view = viewEmpty
+	m.scope = bi.scope
+	m.view = bi.view
+	if len(bi.projects) > 0 {
+		m.projectsByID = make(map[int64]string, len(bi.projects))
+		m.projectIdentByID = make(map[int64]string, len(bi.projects))
+		m.projectStats = make(map[int64]ProjectStatsSummary, len(bi.projects))
+		for _, r := range bi.projects {
+			m.projectsByID[r.ID] = r.Name
+			m.projectIdentByID[r.ID] = r.Identity
+			if r.Stats != nil {
+				m.projectStats[r.ID] = *r.Stats
+			}
+		}
+		m.projectsCursor = cursorForScope(projectsRows(m.projectsByID, m.projectIdentByID, m.projectStats), bi.scope)
 	}
 	return m
 }
@@ -110,41 +123,38 @@ func sseProjectScope(_ scope) *int64 {
 // response-header ceiling) so a long-lived stream isn't reaped after 5s.
 // We re-use NewHTTPClient with ResponseHeaderTimeout instead of building
 // a bespoke transport so unix-socket dialing stays in one place.
-func bootClient(ctx context.Context, _ Options) (*Client, *http.Client, scope, string, error) {
+func bootClient(ctx context.Context, _ Options) (*Client, *http.Client, bootInit, string, error) {
 	endpoint, err := daemonclient.EnsureRunning(ctx)
 	if err != nil {
-		return nil, nil, scope{}, "", err
+		return nil, nil, bootInit{}, "", err
 	}
 	hc, err := daemonclient.NewHTTPClient(ctx, endpoint,
 		daemonclient.Opts{Timeout: 5 * time.Second})
 	if err != nil {
-		return nil, nil, scope{}, "", err
+		return nil, nil, bootInit{}, "", err
 	}
 	sseHC, err := daemonclient.NewHTTPClient(ctx, endpoint,
 		daemonclient.Opts{ResponseHeaderTimeout: daemonclient.SSEHandshakeTimeout})
 	if err != nil {
-		return nil, nil, scope{}, "", err
+		return nil, nil, bootInit{}, "", err
 	}
 	c := NewClient(endpoint, hc)
 	cwd, _ := os.Getwd()
-	sc, err := bootResolveScope(ctx, c, cwd)
+	bi, err := bootResolveScope(ctx, c, cwd)
 	if err != nil {
-		return nil, nil, scope{}, "", err
+		return nil, nil, bootInit{}, "", err
 	}
-	return c, sseHC, sc, endpoint, nil
+	return c, sseHC, bi, endpoint, nil
 }
 
 // scope describes the issue-set the TUI is browsing. Exactly one of
-// projectID, allProjects, empty is set.
-//
-// allProjects is currently always false: cross-project mode is gated
-// off until the daemon ships a list endpoint (handlers_issues.go has
-// no cross-project route). The field stays on the struct so the R
-// toggle can be re-enabled in one place when daemon support lands.
+// projectID, allProjects, empty is set. The boot path drives the initial
+// values; runtime transitions in viewProjects mutate scope before
+// transitioning to viewList.
 //
 // homeProjectID/homeProjectName capture the project bootResolveScope
-// picked from the cwd. They're zero when boot landed in the empty
-// state.
+// picked from the cwd. They're zero when boot landed in viewProjects
+// or viewEmpty.
 type scope struct {
 	projectID       int64
 	allProjects     bool
@@ -155,35 +165,57 @@ type scope struct {
 	homeProjectName string
 }
 
-// bootResolveScope picks the initial scope from the cwd. With cross-
-// project mode gated off, the path is:
+// bootInit packages the resolved scope, the initial view, and any
+// projects fetched during boot. When the boot path resolves into
+// viewProjects, projects holds the rows from ListProjectsWithStats so
+// the first frame can render with stats — no second roundtrip. For
+// viewList and viewEmpty, projects is nil.
+type bootInit struct {
+	scope    scope
+	view     viewID
+	projects []ProjectSummaryWithStats
+}
+
+// bootResolveScope picks the initial scope + view from cwd. Spec §4.2:
 //
-//  1. POST /projects/resolve(cwd) success → single-project mode.
-//  2. project_not_initialized → empty state regardless of how many
-//     projects are registered. The pre-gate code dropped into
-//     all-projects when ≥1 project existed; that path now hits a 404
-//     because the daemon has no cross-project list route. Empty state
-//     is honest: the user gets the "run kata init" hint instead of an
-//     error screen.
-//  3. Any other resolve error → propagate so Run fails loudly.
-func bootResolveScope(
-	ctx context.Context, c *Client, cwd string,
-) (scope, error) {
+//  1. POST /projects/resolve(cwd) success → single-project scope, viewList.
+//  2. project_not_initialized + ≥1 registered project → empty scope,
+//     viewProjects (the user browses the workspace). The fetched rows
+//     are returned alongside so the model can render with stats on
+//     the first frame.
+//  3. project_not_initialized + 0 projects → empty scope (sc.empty=true),
+//     viewEmpty.
+//  4. Any other resolve error → propagate so Run fails loudly. Once we
+//     cross the resolve gate (case 2 or 3), the projects-list call is
+//     non-optional and a failure there is also treated as boot failure.
+//
+// On error, the bootInit is the zero value; callers must check err first.
+func bootResolveScope(ctx context.Context, c *Client, cwd string) (bootInit, error) {
 	rr, err := c.ResolveProject(ctx, cwd)
 	if err == nil {
-		return scope{
-			projectID:       rr.Project.ID,
-			projectName:     rr.Project.Name,
-			workspace:       rr.WorkspaceRoot,
-			homeProjectID:   rr.Project.ID,
-			homeProjectName: rr.Project.Name,
+		return bootInit{
+			scope: scope{
+				projectID:       rr.Project.ID,
+				projectName:     rr.Project.Name,
+				workspace:       rr.WorkspaceRoot,
+				homeProjectID:   rr.Project.ID,
+				homeProjectName: rr.Project.Name,
+			},
+			view: viewList,
 		}, nil
 	}
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != "project_not_initialized" {
-		return scope{}, err
+		return bootInit{}, err
 	}
-	return scope{empty: true}, nil
+	rows, err := c.ListProjectsWithStats(ctx)
+	if err != nil {
+		return bootInit{}, err
+	}
+	if len(rows) == 0 {
+		return bootInit{scope: scope{empty: true}, view: viewEmpty}, nil
+	}
+	return bootInit{view: viewProjects, projects: rows}, nil
 }
 
 // errNotATTY indicates the TUI was launched outside a terminal.
