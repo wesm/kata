@@ -1370,6 +1370,7 @@ func (m Model) routeLayoutFocusKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	}
 	if m.focus == focusDetail && msg.Type == tea.KeyEsc {
 		m.focus = focusList
+		m.view = viewList
 		return m, nil, true
 	}
 	return m, nil, false

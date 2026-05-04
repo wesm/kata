@@ -169,6 +169,49 @@ func TestScenario_NavigateTabs_TabAdvancesActiveSection(t *testing.T) {
 	}
 }
 
+// TestScenario_EscReturnsFromStackedDetailToList drives the same path
+// Bubble Tea uses in the real TUI: Esc reaches the detail view, which
+// returns a popDetailMsg command, and the command is then fed back into
+// Model.Update. A submodel-only test can miss this parent handoff.
+func TestScenario_EscReturnsFromStackedDetailToList(t *testing.T) {
+	m := scenarioModel(t, 120, 30)
+	m = scenarioOpenDetail(t, m, "short body")
+	if m.view != viewDetail {
+		t.Fatalf("setup: view=%v, want viewDetail", m.view)
+	}
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("Esc from stacked detail returned nil cmd; want popDetailMsg")
+	}
+	out, _ = m.Update(cmd())
+	m = out.(Model)
+	if m.view != viewList {
+		t.Fatalf("Esc did not return to list: view=%v, want viewList", m.view)
+	}
+}
+
+// TestScenario_EscReturnsFromSplitDetailToList pins the split-pane
+// parent state as well as focus. Enter opens/focuses detail in split
+// mode; Esc should make the list the active view again so future
+// overlays, layout flips, and model-level gates agree with what the
+// user just did.
+func TestScenario_EscReturnsFromSplitDetailToList(t *testing.T) {
+	m := scenarioModel(t, 200, 40)
+	m = scenarioOpenDetail(t, m, "short body")
+	if m.layout != layoutSplit || m.view != viewDetail || m.focus != focusDetail {
+		t.Fatalf("setup: layout=%v view=%v focus=%v, want split/detail/detail",
+			m.layout, m.view, m.focus)
+	}
+	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.focus != focusList {
+		t.Fatalf("Esc did not return focus to list: focus=%v", m.focus)
+	}
+	if m.view != viewList {
+		t.Fatalf("Esc left stale active view: view=%v, want viewList", m.view)
+	}
+}
+
 // TestScenario_LayoutToggle_LFlipsAtSplitEligibleSize: at a size that
 // triggers split layout, pressing L flips to stacked. Catches the L
 // keymap conflict (pre-93e37ec, L in detail opened the link prompt
