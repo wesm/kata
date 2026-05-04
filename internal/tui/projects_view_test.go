@@ -259,3 +259,38 @@ func TestProjectsView_RRefreshes(t *testing.T) {
 	assert.Equal(t, viewProjects, out.view)
 	require.NotNil(t, cmd, "r must dispatch fetchProjectsWithStats")
 }
+
+// TestProjectsView_PFromListTransitions pins spec §1.4: P from viewList
+// transitions to viewProjects and dispatches the stats fetch. Scope is
+// preserved on the way out so an Esc-back returns to the same queue.
+func TestProjectsView_PFromListTransitions(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewList
+	m.scope = scope{projectID: 7, projectName: "kata", homeProjectID: 7, homeProjectName: "kata"}
+	// Need a stub api so the cmd can be dispatched without crashing —
+	// the cmd doesn't run to completion in this test.
+	m.api = &Client{}
+
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	nm := out.(Model)
+	assert.Equal(t, viewProjects, nm.view)
+	assert.Equal(t, int64(7), nm.scope.projectID, "scope preserved on P transition")
+	require.NotNil(t, cmd, "P must dispatch a stats fetch")
+}
+
+// TestProjectsView_PWhileInputFocusedRoutesToPrompt pins spec §1.4: P
+// while a search bar / form is focused reaches the prompt instead of
+// transitioning the view.
+func TestProjectsView_PWhileInputFocusedRoutesToPrompt(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewList
+	m.scope = scope{projectID: 7, projectName: "kata"}
+	m.input = newSearchBar(ListFilter{})
+
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	nm := out.(Model)
+	assert.Equal(t, viewList, nm.view, "view must not transition while input is focused")
+	if v := nm.input.activeField().value(); v != "P" {
+		t.Fatalf("input buffer = %q, want %q", v, "P")
+	}
+}

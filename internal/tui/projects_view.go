@@ -207,3 +207,29 @@ func (m Model) escFromProjectsView() (Model, tea.Cmd) {
 	m.view = viewList
 	return m, nil
 }
+
+// transitionToProjects switches to viewProjects and dispatches a stats
+// fetch per spec §6.2. Cursor positions on the row matching the active
+// scope so a no-op P → Esc round-trip leaves the cursor where the user
+// expects. When scope.allProjects is true, cursor lands on the sentinel.
+func (m Model) transitionToProjects() (Model, tea.Cmd) {
+	m.view = viewProjects
+	rows := projectsRows(m.projectsByID, m.projectIdentByID, m.projectStats)
+	m.projectsCursor = cursorForScope(rows, m.scope)
+	return m, m.fetchProjectsWithStats()
+}
+
+// cursorForScope finds the row matching the active scope. Returns 0
+// (sentinel) when scope.allProjects, the row matching scope.projectID
+// when set, or 0 as a safe default.
+func cursorForScope(rows []projectsRow, sc scope) int {
+	if sc.allProjects {
+		return 0
+	}
+	for i, r := range rows {
+		if !r.sentinel && r.projectID == sc.projectID {
+			return i
+		}
+	}
+	return 0
+}

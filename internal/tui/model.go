@@ -1403,8 +1403,8 @@ func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	if m.keymap.Help.matches(msg) {
 		return m.toggleHelp(), nil, true
 	}
-	if m.keymap.SwitchProject.matches(msg) {
-		next, cmd := m.openProjectPicker()
+	if m.keymap.Projects.matches(msg) {
+		next, cmd := m.transitionToProjects()
 		return next, cmd, true
 	}
 	if m.keymap.ToggleLayout.matches(msg) {
