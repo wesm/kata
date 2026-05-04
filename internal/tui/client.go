@@ -195,6 +195,22 @@ func (c *Client) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 	return resp.Projects, nil
 }
 
+// ListProjectsWithStats returns every active project with per-project
+// aggregates {open, closed, last_event_at} populated. Used by the
+// projects view. Spec §7.3.
+func (c *Client) ListProjectsWithStats(ctx context.Context) ([]ProjectSummaryWithStats, error) {
+	var resp struct {
+		Projects []ProjectSummaryWithStats `json:"projects"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/projects?include=stats", nil, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Projects == nil {
+		resp.Projects = []ProjectSummaryWithStats{}
+	}
+	return resp.Projects, nil
+}
+
 // ListComments and ListLinks route through GET /issues/{number} because
 // the daemon embeds both slices there. ListEvents filters client-side
 // because the poll endpoint accepts no issue_number filter.

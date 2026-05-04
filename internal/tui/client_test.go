@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestClient_ListIssues_BuildsExpectedURLAndDecodes(t *testing.T) {
@@ -574,4 +577,56 @@ func TestAPIError_EmptyBodyFallback(t *testing.T) {
 	if !strings.Contains(msg, "/api/v1/projects/7/issues/42") {
 		t.Fatalf("Error() = %q, want it to mention the path", msg)
 	}
+}
+
+// TestClient_ListProjectsWithStats_Decodes pins that the typed client
+// decodes the ?include=stats wire shape into ProjectSummaryWithStats,
+// including the optional Stats field. Spec §7.3.
+func TestClient_ListProjectsWithStats_Decodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/projects", r.URL.Path)
+		require.Equal(t, "stats", r.URL.Query().Get("include"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+            "projects": [
+                {"id": 7, "identity": "github.com/wesm/x", "name": "x",
+                 "stats": {"open": 3, "closed": 1, "last_event_at": "2026-05-04T12:00:00.000Z"}},
+                {"id": 9, "identity": "github.com/wesm/empty", "name": "empty",
+                 "stats": {"open": 0, "closed": 0, "last_event_at": null}}
+            ]
+        }`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	got, err := c.ListProjectsWithStats(t.Context())
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+
+	require.NotNil(t, got[0].Stats)
+	assert.Equal(t, 3, got[0].Stats.Open)
+	assert.Equal(t, 1, got[0].Stats.Closed)
+	require.NotNil(t, got[0].Stats.LastEventAt)
+
+	require.NotNil(t, got[1].Stats)
+	assert.Equal(t, 0, got[1].Stats.Open)
+	assert.Nil(t, got[1].Stats.LastEventAt, "null wire → nil pointer")
+}
+
+// TestClient_ListProjectsWithStats_NotNilOnSuccess pins the same
+// regression covered for ListIssues / ListAllIssues: a 200 with an empty
+// array returns []ProjectSummaryWithStats{}, never nil — callers iterate
+// without nil-checks. Spec §7.3.
+func TestClient_ListProjectsWithStats_NotNilOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"projects": []}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	got, err := c.ListProjectsWithStats(t.Context())
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Len(t, got, 0)
 }

@@ -143,6 +143,23 @@ type ProjectSummary struct {
 	Name     string `json:"name"`
 }
 
+// ProjectStatsSummary is the per-project aggregate carried by
+// /api/v1/projects?include=stats. LastEventAt is nil for a project with
+// zero events. Spec §7.2.
+type ProjectStatsSummary struct {
+	Open        int        `json:"open"`
+	Closed      int        `json:"closed"`
+	LastEventAt *time.Time `json:"last_event_at"`
+}
+
+// ProjectSummaryWithStats extends ProjectSummary with the stats triple.
+// The boot project-name cache uses ProjectSummary; viewProjects uses
+// this shape.
+type ProjectSummaryWithStats struct {
+	ProjectSummary
+	Stats *ProjectStatsSummary `json:"stats,omitempty"`
+}
+
 // CommentEntry is the per-comment projection rendered in the comments tab.
 type CommentEntry struct {
 	ID        int64     `json:"id"`
