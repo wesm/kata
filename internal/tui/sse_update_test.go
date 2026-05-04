@@ -708,29 +708,38 @@ func TestProjectsLoadedMsg_ClearsStaleOnSuccessfulStatsFetch(t *testing.T) {
 	assert.False(t, nm.projectsStale, "successful stats fetch clears stale")
 }
 
-// TestProjectsLoadedMsg_PreservesStaleWhenNewerEventArrived pins the
-// race: while a fetchProjectsWithStats is in flight, a newer SSE
-// invalidation can flip projectsStale and bump projectsGen. The older
-// response carries the older gen and must NOT clear stale, so the
-// pending re-fetch can still reflect the newer event.
-func TestProjectsLoadedMsg_PreservesStaleWhenNewerEventArrived(t *testing.T) {
+// TestProjectsLoadedMsg_DropsOlderResponse pins the race: while a
+// fetchProjectsWithStats is in flight, a newer SSE invalidation can
+// flip projectsStale and bump projectsGen. The older response carries
+// the older gen and must be dropped entirely — neither updating the
+// cache maps (which would overwrite a newer in-flight fetch's data)
+// nor clearing the stale flag (which would leave the pending re-fetch
+// thinking the table is fresh).
+func TestProjectsLoadedMsg_DropsOlderResponse(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewProjects
 	m.projectsStale = true
 	m.projectsGen = 5
+	// Pre-existing newer state — the older response must not overwrite.
+	m.projectsByID = map[int64]string{2: "newer-data"}
+	m.projectIdentByID = map[int64]string{2: "newer-ident"}
+	m.projectStats = map[int64]ProjectStatsSummary{2: {Open: 99}}
 
 	// Response carries gen=4 (an older fetch that was dispatched
 	// before the latest stale-flip).
 	msg := projectsLoadedMsg{
-		projects: map[int64]string{1: "kata"},
-		idents:   map[int64]string{1: "..."},
-		stats:    map[int64]ProjectStatsSummary{1: {}},
+		projects: map[int64]string{1: "stale-data"},
+		idents:   map[int64]string{1: "stale-ident"},
+		stats:    map[int64]ProjectStatsSummary{1: {Open: 1}},
 		gen:      4,
 	}
 	out, _ := m.Update(msg)
 	nm := out.(Model)
 	assert.True(t, nm.projectsStale, "older response must NOT clear stale")
 	assert.Equal(t, uint64(5), nm.projectsGen, "gen unchanged on response")
+	assert.Equal(t, "newer-data", nm.projectsByID[2], "older response must NOT overwrite newer data")
+	_, hasStaleData := nm.projectsByID[1]
+	assert.False(t, hasStaleData, "older response must NOT inject its data into the cache")
 }
 
 // TestProjectsLoadedMsg_PreservesStaleOnFailure pins that a failed

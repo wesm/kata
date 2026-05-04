@@ -371,6 +371,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, toastExpireCmd(toastNoBindingTTL)
 		}
+		// Drop stale responses entirely. A pre-invalidation fetch (older
+		// gen) must not overwrite maps already updated by a newer in-
+		// flight or completed fetch — otherwise the table reverts to
+		// stale data and m.projectsStale stays armed but no more events
+		// fire to drive a refresh. Only newer fetches (gen > current,
+		// impossible) or current-gen fetches apply. Spec §6.3.
+		if pl.gen != m.projectsGen {
+			return m, nil
+		}
 		if pl.projects != nil {
 			m.projectsByID = pl.projects
 		}
@@ -379,20 +388,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if pl.stats != nil {
 			m.projectStats = pl.stats
-			// Stats successfully landed; consume the stale flag so a
-			// debounce timer already in flight doesn't trigger a redundant
-			// refetch. A failed fetch (pl.err != nil above) returns
-			// earlier and preserves the flag.
-			//
-			// Only clear when the response's gen still matches
-			// m.projectsGen. A newer SSE invalidation that arrived while
-			// this fetch was in flight bumped the counter; the response
-			// reflects pre-invalidation state, so the stale flag must
-			// remain armed for the pending re-fetch to surface the newer
-			// event. Spec §6.3.
-			if pl.gen == m.projectsGen {
-				m.projectsStale = false
-			}
+			// Stats successfully landed for the current generation;
+			// consume the stale flag so a debounce timer already in
+			// flight doesn't trigger a redundant refetch. A failed fetch
+			// (pl.err != nil above) returns earlier and preserves the
+			// flag.
+			m.projectsStale = false
 		}
 		// A shrinking refetch (e.g. archive on another client) may leave
 		// m.projectsCursor past the end of the row list. Clamp here so
