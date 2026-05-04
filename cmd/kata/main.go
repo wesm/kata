@@ -84,6 +84,7 @@ func newRootCmd() *cobra.Command {
 		newEventsCmd(),
 		newExportCmd(),
 		newImportCmd(),
+		newDigestCmd(),
 		newQuickstartCmd(),
 		newWhoamiCmd(),
 		newHealthCmd(),

@@ -221,6 +221,8 @@ kata search <query> [--limit N] [--include-deleted]
 kata ready [--limit N]
 kata events [--after N] [--limit N]
 kata events --tail [--last-event-id N]
+kata digest --since 24h [--until ...] [--project-id N | --all-projects]
+            [--actor NAME ...]
 kata projects list
 kata projects show <project>
 kata projects rename <project> <name>
@@ -228,6 +230,15 @@ kata projects merge <source> <target> [--rename-target NAME]
 kata export [--output PATH]
 kata import --input PATH --target PATH [--force]
 ```
+
+`kata digest` summarizes activity over a time window. It groups events by
+actor and lists per-issue actions (created, commented:N, closed:done,
+labeled:bug, unblocks:#7, ...) so you can see at a glance what each agent or
+person did overnight. `--since` accepts a duration (`24h`, `7d`) or an
+RFC3339 timestamp; `--until` defaults to now. The default scope is the
+current workspace's project; pass `--all-projects` for a cross-project
+digest, or `--project-id N` for an explicit one. `--actor` is repeatable to
+limit the report to one or more actors.
 
 Destructive operations are explicit:
 

@@ -434,6 +434,78 @@ type PurgeResponse struct {
 	}
 }
 
+// DigestRequest is GET /api/v1/digest (cross-project) and
+// /api/v1/projects/{project_id}/digest (per-project). Since/Until are
+// RFC3339 timestamps. Actor is a repeated query param: ?actor=alice&actor=bob.
+type DigestRequest struct {
+	Since  string   `query:"since" required:"true"`
+	Until  string   `query:"until,omitempty"`
+	Actors []string `query:"actor,omitempty"`
+}
+
+// DigestProjectRequest is the per-project variant. Only the path param differs.
+type DigestProjectRequest struct {
+	ProjectID int64    `path:"project_id" required:"true"`
+	Since     string   `query:"since" required:"true"`
+	Until     string   `query:"until,omitempty"`
+	Actors    []string `query:"actor,omitempty"`
+}
+
+// DigestTotals is the per-actor and grand-total breakdown of mutations the
+// digest understands. Categories that do not apply to a window are zero, not
+// omitted, so renderers can rely on the field set.
+type DigestTotals struct {
+	Created    int `json:"created"`
+	Closed     int `json:"closed"`
+	Reopened   int `json:"reopened"`
+	Commented  int `json:"commented"`
+	Edited     int `json:"edited"`
+	Assigned   int `json:"assigned"`
+	Unassigned int `json:"unassigned"`
+	Labeled    int `json:"labeled"`
+	Unlabeled  int `json:"unlabeled"`
+	Linked     int `json:"linked"`
+	Unlinked   int `json:"unlinked"`
+	Unblocked  int `json:"unblocked"`
+	Deleted    int `json:"deleted"`
+	Restored   int `json:"restored"`
+	Other      int `json:"other"`
+}
+
+// DigestIssueActions is the per-issue summary inside one actor's section.
+// Number/ProjectID identify the issue; Actions is a stable, ordered list of
+// human-readable action tokens (e.g. "created", "commented:2", "closed:done",
+// "labeled:bug", "unblocks #7"). The aggregator collapses repeated comments
+// into a count and joins the close reason / label name into the token so the
+// renderer can stay dumb.
+type DigestIssueActions struct {
+	ProjectID       int64    `json:"project_id"`
+	ProjectIdentity string   `json:"project_identity"`
+	IssueNumber     int64    `json:"issue_number"`
+	Actions         []string `json:"actions"`
+}
+
+// DigestActorEntry is one actor's slice of the digest. Issues is sorted by
+// issue number for stable rendering.
+type DigestActorEntry struct {
+	Actor  string               `json:"actor"`
+	Totals DigestTotals         `json:"totals"`
+	Issues []DigestIssueActions `json:"issues"`
+}
+
+// DigestResponse is the digest payload. ProjectID is 0 for cross-project
+// requests, otherwise the requested project. Actors is sorted by actor name.
+type DigestResponse struct {
+	Body struct {
+		Since      time.Time          `json:"since"`
+		Until      time.Time          `json:"until"`
+		ProjectID  int64              `json:"project_id"`
+		EventCount int                `json:"event_count"`
+		Totals     DigestTotals       `json:"totals"`
+		Actors     []DigestActorEntry `json:"actors"`
+	}
+}
+
 // SearchRequest is GET /api/v1/projects/{id}/search?q=...&limit=...&include_deleted=...
 type SearchRequest struct {
 	ProjectID      int64  `path:"project_id" required:"true"`
