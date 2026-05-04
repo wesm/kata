@@ -18,9 +18,9 @@ These eight decisions are settled here and are not re-litigated by the implement
 
 6. **Per-project stats are server-computed; the All-projects sentinel totals are client-summed.** `GET /api/v1/projects?include=stats` returns one stats triple per project derived from existing tables. The All-projects row's `Open`/`Closed`/`Total` are summed client-side from the rows already in the response; its `Updated` is the maximum `last_event_at` across the rows. This avoids a second SQL pass for the sentinel and guarantees the displayed totals are consistent with the per-row counts on the same frame. The TUI never makes N issue-list calls to compute counts.
 
-7. **`ListProjectsResponse` projects through a new API-owned `ProjectOut`, not raw `[]db.Project`.** Today `internal/api/types.go:79` returns the DB struct verbatim. This spec replaces that response with `ProjectOut`, an API-shape type that mirrors today's JSON keys exactly (so the default `?include=stats`-absent shape is byte-identical) and adds the optional `Stats *ProjectStatsOut` field with `omitempty`. The shape is now owned at the API layer; `db.Project` becomes an internal type free to evolve independently.
+7. **Every project-bearing API response projects through a new API-owned `ProjectOut`, not raw `db.Project`.** Today `db.Project` is leaked verbatim by five response types: `ResolveProjectResponse` (via `ProjectResolveBody`), `InitProjectResponse` (same body), `ListProjectsResponse`, `ShowProjectResponse`, `ResetCounterResponse`, `RemoveProjectResponse`. This spec replaces every one of them with `ProjectOut`, an API-shape type whose JSON keys mirror today's `db.Project` tags exactly (so default responses are byte-identical) and adds the optional `Stats *ProjectStatsOut` field with `omitempty`. The shape is now owned at the API layer; `db.Project` becomes an internal type free to evolve independently. The full set of touched response types is enumerated in §7.2.
 
-8. **Entry into `viewProjects` always dispatches a stats fetch.** Whether the user lands at boot, transitions via `P`, or returns via `Esc` from a list, the projects view's `Init` dispatches `fetchProjectsWithStats`. SSE-driven invalidation is a freshness optimization; entry-driven refetch is the correctness guarantee.
+8. **Boot landing and `P` transitions dispatch a stats fetch; `Esc`-back does not.** When the user lands on `viewProjects` at boot (§4.2 third row) or transitions from `viewList` via `P`, the model's transition handler dispatches `fetchProjectsWithStats` so the table renders fresh stats. When the user returns from `viewProjects` to `viewList` via `Esc`, no projects fetch is dispatched — the user is leaving the projects view, not entering it. SSE-driven invalidation (§6.3) is a freshness optimization while `viewProjects` is active; transition-driven refetch is the correctness guarantee on entry.
 
 The rest of this document expands what these decisions imply for the API shape, the boot routing, the projects view, the SSE invalidation, and the test plan.
 
@@ -202,11 +202,13 @@ Archived projects (`projects.deleted_at IS NOT NULL`) are excluded from the resp
 
 The All-projects sentinel row is **not** computed by this query. The TUI sums the per-row stats client-side for that row (per §1.6). This keeps the SQL one-pass and the displayed totals consistent with the per-row counts on the same frame.
 
-### 6.2 Entry-driven refetch (correctness)
+### 6.2 Transition-driven refetch (correctness)
 
-Every entry into `viewProjects` dispatches `fetchProjectsWithStats` — boot landing, transition from `viewList` via `P`, and `Esc`-back from a list view (per §1.4) all dispatch the cmd. This is the correctness guarantee: the table renders with up-to-date stats even when SSE-driven invalidation missed an event (reconnect window, missed delta, etc.).
+Two transitions dispatch `fetchProjectsWithStats`: the boot path that lands on `viewProjects` (§4.2 third row, dispatched as the boot cmd alongside the SSE-stream cmd), and the `P`-binding handler in `viewList` that transitions to `viewProjects`. Both happen inside `Update`, not inside `Model.Init` — `Init` runs once per program in Bubble Tea, not once per view entry.
 
-The first frame may render with whatever stats were carried from the boot fetch; the in-flight refetch updates the rows when its `projectsLoadedMsg` arrives. The user sees a populated table immediately, not an empty placeholder.
+The third transition into `viewProjects` is `Esc`-back from a list view that the user originally entered via `P`. That transition does **not** dispatch a fetch. The user is leaving the projects view to return to it; the table state from before the `P → viewList` jaunt is what the user expects to see, and SSE invalidation has been keeping the `m.projectsStale` flag honest in the background. If the flag is set on `Esc`-return, the standard 500ms-debounced refetch (§6.3) fires; otherwise the cached table renders immediately.
+
+This is the correctness guarantee for the two entry transitions: the table renders with up-to-date stats even when SSE-driven invalidation missed an event (reconnect window, missed delta, etc.). The first frame after entry may render briefly with stale-but-cached stats; the in-flight `fetchProjectsWithStats` updates the rows when its `projectsLoadedMsg` arrives. The user sees a populated table immediately, not an empty placeholder.
 
 ### 6.3 SSE invalidation (freshness)
 
@@ -266,18 +268,19 @@ The query parameter name `include=stats` (a comma-separated set, even though onl
 
 ### 7.2 Go-level types
 
-Today `internal/api/types.go:79` returns the raw DB struct verbatim:
+Today `internal/api/types.go` leaks `db.Project` verbatim from five distinct response types. The full set:
 
-```go
-// Current
-type ListProjectsResponse struct {
-    Body struct {
-        Projects []db.Project `json:"projects"`
-    }
-}
-```
+| line | type | route |
+|---|---|---|
+| `:50`  | `ProjectResolveBody.Project` (used by `ResolveProjectResponse` and `InitProjectResponse`) | `POST /api/v1/projects/resolve`, `POST /api/v1/projects` |
+| `:82`  | `ListProjectsResponse.Body.Projects []db.Project` | `GET /api/v1/projects` |
+| `:89`  | `ShowProjectResponse.Body.Project` | `GET /api/v1/projects/{id}` |
+| `:130` | `ResetCounterResponse.Body.Project` | `POST /api/v1/projects/{id}/reset-counter` |
+| `:355` | `RemoveProjectResponse.Body.Project` | `DELETE /api/v1/projects/{id}` |
 
-This spec replaces that projection with an API-owned `ProjectOut`. The reason is twofold: (a) the response gains an optional `Stats` field that has no place on `db.Project`; (b) decoupling the wire from the DB row lets `db.Project` evolve (e.g. add internal-only columns) without breaking API consumers. The new shape:
+This spec replaces every one of them with `ProjectOut`. The reason is twofold: (a) the list response gains an optional `Stats` field that has no place on `db.Project`; (b) decoupling the wire from the DB row lets `db.Project` evolve (e.g. add internal-only columns) without breaking API consumers. Doing this consistently across the five surfaces keeps the wire shape coherent — partial projection (e.g. only `List` and `Show`) would mean `kata init` and `kata projects remove` callers get a different field set than `kata projects list`, which is the exact inconsistency the projection is meant to remove.
+
+The new shape:
 
 ```go
 // internal/api/types.go
@@ -291,18 +294,28 @@ type ProjectStatsOut struct {
 // ProjectOut is the API-shape of a project. JSON keys mirror today's
 // db.Project tags exactly so the default (no ?include=stats) response is
 // byte-identical to the current wire.
+//
+// The field set is derived from internal/db/types.go:10 (db.Project) and
+// must be kept exhaustive: id, uid, identity, name, created_at,
+// next_issue_number, deleted_at (omitempty). No updated_at — db.Project
+// has none.
 type ProjectOut struct {
     ID              int64      `json:"id"`
     UID             string     `json:"uid"`
     Identity        string     `json:"identity"`
     Name            string     `json:"name"`
-    NextIssueNumber int64      `json:"next_issue_number"`
     CreatedAt       time.Time  `json:"created_at"`
-    UpdatedAt       time.Time  `json:"updated_at"`
+    NextIssueNumber int64      `json:"next_issue_number"`
     DeletedAt       *time.Time `json:"deleted_at,omitempty"`
-    // ... any other db.Project fields currently on the wire ...
 
     Stats *ProjectStatsOut `json:"stats,omitempty"` // present only with ?include=stats
+}
+
+// All five surfaces switch to ProjectOut:
+type ProjectResolveBody struct {
+    Project       ProjectOut      `json:"project"`
+    Alias         db.ProjectAlias `json:"alias"`
+    WorkspaceRoot string          `json:"workspace_root,omitempty"`
 }
 
 type ListProjectsResponse struct {
@@ -310,13 +323,30 @@ type ListProjectsResponse struct {
         Projects []ProjectOut `json:"projects"`
     }
 }
+type ShowProjectResponse struct {
+    Body struct {
+        Project ProjectOut        `json:"project"`
+        Aliases []db.ProjectAlias `json:"aliases"`
+    }
+}
+type ResetCounterResponse struct {
+    Body struct {
+        Project ProjectOut `json:"project"`
+    }
+}
+type RemoveProjectResponse struct {
+    Body struct {
+        Project ProjectOut `json:"project"`
+        Event   *db.Event  `json:"event"`
+    }
+}
 ```
 
-Implementation note: the `ProjectOut` field set must be derived from `db.Project`'s currently-tagged JSON fields at spec-write time, not retyped from memory. The plan includes a JSON snapshot test that pins the default-response bytes to exclude regressions when `db.Project` gains new fields.
+A single `dbProjectToOut(p db.Project) ProjectOut` helper is the only call site that maps between the two; every handler routes through it.
 
 `LastEventAt *time.Time` (not `*string`) keeps timestamp formatting centralized in the JSON encoder — `time.Time`'s default JSON marshaling already produces RFC3339 with millisecond precision, matching how `events.created_at` is rendered today (`internal/db/types.go:55` and adjacent fields are `time.Time`). Handler-level string conversion would risk drift between the projects endpoint's format and the rest of the API.
 
-`omitempty` on `Stats` keeps the wire identical to today's response when the query parameter is absent — no breaking change for the CLI's `kata projects list` or any other consumer.
+`omitempty` on `Stats` keeps the wire identical to today's response when the query parameter is absent — no breaking change for the CLI's `kata projects list` or any other consumer. JSON-bytes-snapshot tests on each of the five response types pin the default shape so any future `db.Project` field addition is caught loudly rather than leaking onto the wire.
 
 ### 7.3 TUI client
 
@@ -423,11 +453,11 @@ Hand off to `superpowers:writing-plans`. Expected ordering:
    - Single-project variant `db.ProjectStats(ctx, projectID int64) (ProjectStats, error)` is a thin wrapper that runs the same query with a `WHERE p.id = ?` predicate.
    - Tests per §8.1.
 
-2. **API: `ProjectOut` projection**
-   - Define `ProjectOut` and `ProjectStatsOut` in `internal/api/types.go` per §7.2.
-   - Replace `ListProjectsResponse.Body.Projects` from `[]db.Project` to `[]ProjectOut`. Same for `ShowProjectResponse.Body.Project`.
-   - Add a `dbProjectToOut(p db.Project) ProjectOut` helper used by every handler that returns project data.
-   - Add a JSON-bytes-snapshot test that pins the default-response shape so a future `db.Project` field addition does not silently leak onto the wire.
+2. **API: `ProjectOut` projection (all five surfaces)**
+   - Define `ProjectOut` and `ProjectStatsOut` in `internal/api/types.go` per §7.2. Field set derived exhaustively from `db.Project` (`id, uid, identity, name, created_at, next_issue_number, deleted_at`); no fictional `updated_at`.
+   - Replace every `db.Project` reference in API response types with `ProjectOut`: `ProjectResolveBody.Project` (covers `ResolveProjectResponse` and `InitProjectResponse`), `ListProjectsResponse.Body.Projects`, `ShowProjectResponse.Body.Project`, `ResetCounterResponse.Body.Project`, `RemoveProjectResponse.Body.Project`. Five surfaces; one consistent projection.
+   - Add a `dbProjectToOut(p db.Project) ProjectOut` helper that every project-returning handler routes through.
+   - Add JSON-bytes-snapshot tests on each of the five response types so a future `db.Project` field addition is caught loudly rather than leaking onto the wire.
 
 3. **API + daemon: `?include=stats`**
    - Extend the `GET /api/v1/projects` handler in `internal/daemon/handlers_projects.go` to honor `?include=stats` (parse a comma-separated `include` query param, dispatch to `db.BatchProjectStats` when `stats` is present, populate `ProjectOut.Stats` per row).
