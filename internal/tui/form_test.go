@@ -382,3 +382,46 @@ func TestForm_LegacyEditorReturn_FormGenZero_DoesNotRouteToFormPath(t *testing.T
 		t.Fatalf("legacy return wrote into form: %q", got)
 	}
 }
+
+// TestOpenBodyEditForm_UsesDetailScopePID pins that the form built
+// when pressing 'e' on a detail opened from all-projects scope
+// targets the issue's actual project (m.detail.scopePID), not
+// m.scope.projectID — which is 0 in all-projects scope. Without
+// this, save dispatches would post to /api/v1/projects/0/...
+func TestOpenBodyEditForm_UsesDetailScopePID(t *testing.T) {
+	m := formFixture()
+	m.scope = scope{allProjects: true} // m.scope.projectID == 0
+	m.detail.scopePID = 42
+	m.detail.issue = &Issue{Number: 7, Body: "old"}
+
+	out := m.openBodyEditForm()
+	if out.input.kind != inputBodyEditForm {
+		t.Fatalf("input kind = %v, want inputBodyEditForm", out.input.kind)
+	}
+	if got := out.input.target.projectID; got != 42 {
+		t.Fatalf("target.projectID = %d, want 42 (m.detail.scopePID)", got)
+	}
+	if got := out.input.target.issueNumber; got != 7 {
+		t.Fatalf("target.issueNumber = %d, want 7", got)
+	}
+}
+
+// TestOpenCommentForm_UsesDetailScopePID — same pattern for the
+// comment form opened by 'c' on a detail in all-projects scope.
+func TestOpenCommentForm_UsesDetailScopePID(t *testing.T) {
+	m := formFixture()
+	m.scope = scope{allProjects: true}
+	m.detail.scopePID = 42
+	m.detail.issue = &Issue{Number: 7}
+
+	out := m.openCommentForm()
+	if out.input.kind != inputCommentForm {
+		t.Fatalf("input kind = %v, want inputCommentForm", out.input.kind)
+	}
+	if got := out.input.target.projectID; got != 42 {
+		t.Fatalf("target.projectID = %d, want 42 (m.detail.scopePID)", got)
+	}
+	if got := out.input.target.issueNumber; got != 7 {
+		t.Fatalf("target.issueNumber = %d, want 7", got)
+	}
+}

@@ -138,9 +138,22 @@ type MergeProjectRequest struct {
 	}
 }
 
+// MergeProjectResultOut summarizes a completed project merge using
+// the API-owned ProjectOut projection. Mirrors db.ProjectMergeResult
+// but routes Source and Target through the projection so the wire
+// shape doesn't depend on internal db.Project fields.
+type MergeProjectResultOut struct {
+	Source         ProjectOut `json:"source"`
+	Target         ProjectOut `json:"target"`
+	IssuesMoved    int64      `json:"issues_moved"`
+	AliasesMoved   int64      `json:"aliases_moved"`
+	EventsMoved    int64      `json:"events_moved"`
+	PurgeLogsMoved int64      `json:"purge_logs_moved"`
+}
+
 // MergeProjectResponse summarizes a completed project merge.
 type MergeProjectResponse struct {
-	Body db.ProjectMergeResult
+	Body MergeProjectResultOut
 }
 
 // ResetCounterRequest is POST /api/v1/projects/{project_id}/reset-counter.

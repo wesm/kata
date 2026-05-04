@@ -208,7 +208,14 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		return &api.MergeProjectResponse{Body: merged}, nil
+		return &api.MergeProjectResponse{Body: api.MergeProjectResultOut{
+			Source:         dbProjectToOut(merged.Source),
+			Target:         dbProjectToOut(merged.Target),
+			IssuesMoved:    merged.IssuesMoved,
+			AliasesMoved:   merged.AliasesMoved,
+			EventsMoved:    merged.EventsMoved,
+			PurgeLogsMoved: merged.PurgeLogsMoved,
+		}}, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{

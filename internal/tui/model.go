@@ -749,12 +749,16 @@ func (m Model) dispatchLabelFetchIfNeeded(pid int64) (Model, tea.Cmd) {
 // open detail issue. Allocates a fresh formGen so a stale editor
 // return from a previous form is rejected. Returns the model
 // untouched if there's no open detail issue.
+//
+// projectID comes from m.detail.scopePID (the issue's actual project),
+// not m.scope.projectID — the latter is 0 in all-projects scope and
+// would route the save to /api/v1/projects/0/...
 func (m Model) openBodyEditForm() Model {
 	if m.detail.issue == nil {
 		return m
 	}
 	target := formTarget{
-		projectID:   m.scope.projectID,
+		projectID:   m.detail.scopePID,
 		issueNumber: m.detail.issue.Number,
 		detailGen:   m.detail.gen,
 	}
@@ -766,13 +770,14 @@ func (m Model) openBodyEditForm() Model {
 }
 
 // openCommentForm opens the centered comment editor for the
-// currently-open detail issue.
+// currently-open detail issue. See openBodyEditForm for why projectID
+// is sourced from m.detail.scopePID, not m.scope.projectID.
 func (m Model) openCommentForm() Model {
 	if m.detail.issue == nil {
 		return m
 	}
 	target := formTarget{
-		projectID:   m.scope.projectID,
+		projectID:   m.detail.scopePID,
 		issueNumber: m.detail.issue.Number,
 		detailGen:   m.detail.gen,
 	}
@@ -1261,6 +1266,12 @@ func (m Model) commitFormInput(kind inputKind) (Model, tea.Cmd) {
 // formGen is captured before dispatch and rides on the response so
 // routeFormMutation can drop a stale response that lands after the
 // user closed this form and opened another (jobs 242/244).
+//
+// projectID resolution: from viewDetail we use m.detail.scopePID (the
+// open issue's actual project) so a child-create from a detail opened
+// in all-projects scope still posts to the right project. From
+// viewList we use m.scope.projectID (the list view is gated against
+// all-projects scope at the key handler, so this is non-zero).
 func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	if len(m.input.fields) < 5 {
 		return m, nil
@@ -1277,7 +1288,11 @@ func (m Model) commitNewIssueForm() (Model, tea.Cmd) {
 	}
 	m.input.saving = true
 	m.input.err = ""
-	return m, dispatchFormCreateIssue(m.api, m.scope.projectID, body, m.input.formGen)
+	pid := m.scope.projectID
+	if m.view == viewDetail {
+		pid = m.detail.scopePID
+	}
+	return m, dispatchFormCreateIssue(m.api, pid, body, m.input.formGen)
 }
 
 func newIssueBodyFromForm(fields []inputField, actor string) (CreateIssueBody, error) {
