@@ -93,26 +93,27 @@ func (d *DB) RefreshInstanceUID(ctx context.Context) error {
 // row is absent it is inserted with a fresh ULID; if present it is read into
 // d.instanceUID. Idempotent across reboots and across every Open caller (tests,
 // import target init, cutover temp DB).
+//
+// The insert uses ON CONFLICT DO NOTHING and is followed by an unconditional
+// SELECT so two racing first-opens against a fresh DB cannot both insert and
+// neither fails with a primary-key conflict. The losing writer's INSERT is a
+// no-op; the SELECT resolves to whichever ULID won.
 func (d *DB) ensureInstanceUID(ctx context.Context) error {
-	var existing string
-	err := d.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&existing)
-	if err == nil {
-		d.instanceUID = existing
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read instance_uid: %w", err)
-	}
 	fresh, err := katauid.New()
 	if err != nil {
 		return fmt.Errorf("generate instance_uid: %w", err)
 	}
 	if _, err := d.ExecContext(ctx,
-		`INSERT INTO meta(key, value) VALUES('instance_uid', ?)`, fresh); err != nil {
+		`INSERT INTO meta(key, value) VALUES('instance_uid', ?)
+		 ON CONFLICT(key) DO NOTHING`, fresh); err != nil {
 		return fmt.Errorf("seed instance_uid: %w", err)
 	}
-	d.instanceUID = fresh
+	var stored string
+	if err := d.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&stored); err != nil {
+		return fmt.Errorf("read instance_uid: %w", err)
+	}
+	d.instanceUID = stored
 	return nil
 }
 
