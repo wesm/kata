@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -46,6 +47,11 @@ func TestArchivedProject_SurfaceHandlersReturn404(t *testing.T) {
 		body   any
 	}{
 		{"showProject", http.MethodGet, "/api/v1/projects/" + pid, nil},
+		{"renameProject", http.MethodPatch, "/api/v1/projects/" + pid,
+			map[string]any{"name": "renamed"}},
+		{"resetIssueCounter", http.MethodPost,
+			"/api/v1/projects/" + pid + "/reset-counter",
+			map[string]any{"to": 1}},
 		{"createIssue", http.MethodPost, "/api/v1/projects/" + pid + "/issues",
 			map[string]any{"actor": "tester", "title": "x", "body": ""}},
 		{"listIssues", http.MethodGet, "/api/v1/projects/" + pid + "/issues", nil},
@@ -61,26 +67,23 @@ func TestArchivedProject_SurfaceHandlersReturn404(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var resp *http.Response
-			var bs []byte
-			if tc.method == http.MethodPost {
-				resp, bs = postJSON(t, ts, tc.path, tc.body)
-			} else {
-				r, err := http.NewRequest(tc.method, ts.URL+tc.path, nil)
+			var bodyReader io.Reader
+			if tc.body != nil {
+				js, err := json.Marshal(tc.body)
 				require.NoError(t, err)
-				resp, err = http.DefaultClient.Do(r) //nolint:gosec // test loopback
-				require.NoError(t, err)
-				defer func() { _ = resp.Body.Close() }()
-				bs, _ = io.ReadAll(resp.Body)
+				bodyReader = bytes.NewReader(js)
 			}
+			r, err := http.NewRequest(tc.method, ts.URL+tc.path, bodyReader)
+			require.NoError(t, err)
+			if tc.body != nil {
+				r.Header.Set("Content-Type", "application/json")
+			}
+			resp, err := http.DefaultClient.Do(r) //nolint:gosec // test loopback
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			bs, _ := io.ReadAll(resp.Body)
+
 			assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
-			var body struct {
-				Detail string `json:"detail"`
-				Errors []struct {
-					Message string `json:"message"`
-				} `json:"errors"`
-			}
-			require.NoError(t, json.Unmarshal(bs, &body), string(bs))
 			assert.Contains(t, string(bs), "project_not_found", string(bs))
 		})
 	}

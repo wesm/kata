@@ -136,6 +136,9 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if in.Body.To < 1 {
 			return nil, api.NewError(400, "validation", "to must be >= 1", "", nil)
 		}
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
+		}
 		err := cfg.DB.ResetIssueCounter(ctx, in.ProjectID, in.Body.To)
 		if errors.Is(err, db.ErrInvalidCounterValue) {
 			return nil, api.NewError(400, "validation", "to must be >= 1", "", nil)
@@ -313,6 +316,9 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		name := strings.TrimSpace(in.Body.Name)
 		if name == "" {
 			return nil, api.NewError(400, "validation", "name must be non-empty", "", nil)
+		}
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		p, err := cfg.DB.RenameProject(ctx, in.ProjectID, name)
 		if errors.Is(err, db.ErrNotFound) {
