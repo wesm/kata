@@ -1645,7 +1645,7 @@ func (m Model) handleEventReceived(msg eventReceivedMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, debouncedRefetch(refetchDebounce))
 		}
 	}
-	if m.view == viewProjects && eventAffectsProjectsTable(msg, m.projectsByID) {
+	if m.view == viewProjects && eventAffectsProjectsTable(msg) {
 		m.projectsStale = true
 		m.projectsGen++
 		if !m.projectsRefetchPending {

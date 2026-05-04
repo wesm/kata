@@ -620,19 +620,22 @@ func TestProjectsView_DebouncesRefetch(t *testing.T) {
 	assert.Equal(t, 1, debounceCmds, "exactly one debounce timer")
 }
 
-// TestProjectsView_IgnoresEventsForUnknownProject pins that an event
-// for a projectID NOT in m.projectsByID is a no-op even when the view
-// is active — the projects table can't render rows for projects it
-// doesn't know about. Spec §6.3.
-func TestProjectsView_IgnoresEventsForUnknownProject(t *testing.T) {
+// TestProjectsView_StaleOnUnknownProjectEvent pins that an event for a
+// projectID NOT in m.projectsByID still flips projectsStale and
+// schedules the debounce refetch. The unknown projectID is exactly the
+// signal that a new project has appeared (e.g. `kata init` ran in
+// another terminal); without this refresh, the all-projects table
+// would never learn about it until the user manually refetched.
+func TestProjectsView_StaleOnUnknownProjectEvent(t *testing.T) {
 	m := sseUpdateFixture()
 	m.view = viewProjects
 	m.projectsByID = map[int64]string{7: "kata"}
 
-	out, _ := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 99})
+	out, cmd := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 99})
 	nm := out.(Model)
-	assert.False(t, nm.projectsStale)
-	assert.False(t, nm.projectsRefetchPending)
+	assert.True(t, nm.projectsStale)
+	assert.True(t, nm.projectsRefetchPending)
+	require.NotNil(t, cmd, "unknown-project event must schedule a debounced refetch")
 }
 
 // TestProjectsDebounceFire_DispatchesFetchWhenActive pins that the

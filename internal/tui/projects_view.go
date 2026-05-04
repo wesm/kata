@@ -262,13 +262,12 @@ func projectsDebounceCmd() tea.Cmd {
 }
 
 // eventAffectsProjectsTable reports whether an incoming SSE event
-// changes the numbers a viewProjects table is rendering. Any event for
-// a project the table is showing affects the Updated column at minimum;
-// issue lifecycle events also change Open/Closed counts.
-func eventAffectsProjectsTable(msg eventReceivedMsg, byID map[int64]string) bool {
-	if msg.projectID == 0 {
-		return false
-	}
-	_, shown := byID[msg.projectID]
-	return shown
+// should mark a viewProjects table stale. Any project-scoped event
+// (project_id != 0) qualifies: known projects' Open/Closed/Updated
+// columns may have changed, and unknown-project events are exactly
+// the signal that a new project has appeared and the table needs to
+// learn about it on the next fetchProjectsWithStats. Global events
+// (project_id == 0) cannot affect per-project stats.
+func eventAffectsProjectsTable(msg eventReceivedMsg) bool {
+	return msg.projectID != 0
 }
