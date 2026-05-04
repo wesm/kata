@@ -6,7 +6,7 @@ q/ctrl+c  quit                             shift+tab      prev tab              
 P         switch project / all-projects    enter          jump to referenced issue    tab/shift+tab  change field 
 L         toggle layout                    esc/backspace  back                        ctrl+e         open editor  
                                            e              edit body                   ctrl+u         clear prompt 
-Queue                                      c              new comment                                             
+Graph                                      c              new comment                                             
 k/up    up                                 p              set parent                  Filters                     
 j/down  down                               b              add blocker                 /       search              
 pgup    page up                            l              add link                    s       cycle status filter 
@@ -16,8 +16,8 @@ G       last                               a              assign owner          
 enter   open detail                        A              clear owner                                             
 space   expand/collapse                                                                                           
 n       new issue (form)                   Children                                                               
-x       close                              N      new child                                                       
-r       reopen                             ↑↓     move child cursor                                               
-                                           enter  open child                                                      
+o       toggle graph order                 N      new child                                                       
+x       close                              ↑↓     move child cursor                                               
+r       reopen                             enter  open child                                                      
 
 press ? to return
