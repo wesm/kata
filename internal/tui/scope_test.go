@@ -30,93 +30,151 @@ func scopeFixtureSingle() Model {
 	return m
 }
 
-// TestScopeToggle_FlipsToAllProjects pins the R binding's contract: in
-// single-project scope with a home project bound, R flips to all-projects
-// mode and clears the per-project list cache so the next fetch lands a
-// fresh all-projects page.
-func TestScopeToggle_FlipsToAllProjects(t *testing.T) {
+// scopeFixtureMultiProject extends the single-project fixture with a
+// projectsByID cache holding two projects so the picker has rows to
+// render and select from.
+func scopeFixtureMultiProject() Model {
 	m := scopeFixtureSingle()
-	next, cmd := m.handleScopeToggle()
-	if !next.scope.allProjects {
-		t.Fatal("R must flip scope.allProjects from false → true")
+	m.projectsByID = map[int64]string{7: "kata", 9: "other"}
+	return m
+}
+
+// TestProjectPicker_PKeyOpensModal pins the P binding: the top-level
+// dispatcher routes P through openProjectPicker which sets the modal
+// kind so subsequent keys are owned by the picker.
+func TestProjectPicker_PKeyOpensModal(t *testing.T) {
+	m := scopeFixtureMultiProject()
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	nm := out.(Model)
+	if nm.modal != modalProjectPicker {
+		t.Fatalf("modal = %v, want modalProjectPicker", nm.modal)
 	}
-	if next.scope.projectID != 0 {
-		t.Fatalf("projectID = %d, want 0 in all-projects mode", next.scope.projectID)
+	if len(nm.projectPicker.items) != 3 {
+		t.Fatalf("picker items = %d, want 3 (All projects + 2 projects)", len(nm.projectPicker.items))
 	}
-	if next.scope.homeProjectID != 7 {
-		t.Fatal("homeProjectID must persist across toggle so we can flip back")
+	if !nm.projectPicker.items[0].allProjects {
+		t.Fatalf("first row must be the All projects sentinel")
+	}
+}
+
+// TestProjectPicker_OpensOnActiveScope pins the cursor-positioning
+// rule: opening the picker lands the highlight on whichever scope is
+// currently active so a no-op re-open doesn't move focus.
+func TestProjectPicker_OpensOnActiveScope(t *testing.T) {
+	m := scopeFixtureMultiProject()
+	// scope.projectID=7 → cursor lands on the row whose projectID is 7.
+	out, _ := m.openProjectPicker()
+	want := -1
+	for i, item := range out.projectPicker.items {
+		if !item.allProjects && item.projectID == 7 {
+			want = i
+			break
+		}
+	}
+	if out.projectPicker.cursor != want {
+		t.Fatalf("cursor = %d, want %d (active scope row)", out.projectPicker.cursor, want)
+	}
+}
+
+// TestProjectPicker_AllProjectsSelection pins the "All projects" row:
+// Enter on it flips scope.allProjects=true and dispatches a refetch.
+func TestProjectPicker_AllProjectsSelection(t *testing.T) {
+	m := scopeFixtureMultiProject()
+	m, _ = m.openProjectPicker()
+	m.projectPicker.cursor = 0 // All projects row
+	out, cmd := m.routeProjectPickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if !out.scope.allProjects {
+		t.Fatal("Enter on All projects must flip scope.allProjects")
+	}
+	if out.scope.projectID != 0 {
+		t.Fatalf("projectID = %d, want 0 in all-projects mode", out.scope.projectID)
+	}
+	if out.modal != modalNone {
+		t.Fatalf("modal must close after selection: %v", out.modal)
 	}
 	if cmd == nil {
-		t.Fatal("toggle must dispatch a refetch command")
+		t.Fatal("selection must dispatch a refetch command")
 	}
 }
 
-// TestScopeToggle_FlipsBackToHome pins the inverse: from all-projects mode,
-// R restores the home project as the new scope.
-func TestScopeToggle_FlipsBackToHome(t *testing.T) {
-	m := scopeFixtureSingle()
-	m.scope.allProjects = true
-	m.scope.projectID = 0
-	m.scope.projectName = ""
-
-	next, cmd := m.handleScopeToggle()
-	if next.scope.allProjects {
-		t.Fatal("second R must flip scope.allProjects back to false")
+// TestProjectPicker_SwitchesToOtherProject pins the cross-project hop:
+// Enter on a non-home project row updates scope.projectID and
+// scope.projectName to the selected project.
+func TestProjectPicker_SwitchesToOtherProject(t *testing.T) {
+	m := scopeFixtureMultiProject()
+	m, _ = m.openProjectPicker()
+	// Find the "other" project row.
+	target := -1
+	for i, item := range m.projectPicker.items {
+		if !item.allProjects && item.projectID == 9 {
+			target = i
+			break
+		}
 	}
-	if next.scope.projectID != 7 {
-		t.Fatalf("projectID = %d, want 7 (home project)", next.scope.projectID)
+	if target < 0 {
+		t.Fatal("test setup: project 9 not in picker items")
 	}
-	if next.scope.projectName != "kata" {
-		t.Fatalf("projectName = %q, want \"kata\"", next.scope.projectName)
+	m.projectPicker.cursor = target
+	out, cmd := m.routeProjectPickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if out.scope.allProjects {
+		t.Fatal("specific-project selection must not leave allProjects=true")
+	}
+	if out.scope.projectID != 9 {
+		t.Fatalf("projectID = %d, want 9", out.scope.projectID)
+	}
+	if out.scope.projectName != "other" {
+		t.Fatalf("projectName = %q, want \"other\"", out.scope.projectName)
 	}
 	if cmd == nil {
-		t.Fatal("toggle-back must dispatch a refetch command")
+		t.Fatal("selection must dispatch a refetch command")
 	}
 }
 
-// TestScopeToggle_RKeyDispatch pins that the R binding at the top level
-// routes through handleScopeToggle and actually flips scope.
-func TestScopeToggle_RKeyDispatch(t *testing.T) {
-	m := scopeFixtureSingle()
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
-	nm := out.(Model)
-	if !nm.scope.allProjects {
-		t.Fatal("R via Update must flip scope.allProjects")
+// TestProjectPicker_EscCancels pins the cancel path: Esc closes the
+// modal without changing scope.
+func TestProjectPicker_EscCancels(t *testing.T) {
+	m := scopeFixtureMultiProject()
+	m, _ = m.openProjectPicker()
+	m.projectPicker.cursor = 1 // not the active scope
+	out, _ := m.routeProjectPickerKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if out.modal != modalNone {
+		t.Fatalf("Esc must close modal: %v", out.modal)
+	}
+	if out.scope.projectID != 7 {
+		t.Fatalf("scope.projectID = %d, want 7 unchanged after cancel", out.scope.projectID)
 	}
 }
 
-// TestScopeToggle_GatedByInputting: pressing R while the M3a inline
-// command bar is open must reach the bar's textinput buffer instead
-// of toggling scope. canQuit gates global keys via m.input.kind.
-func TestScopeToggle_GatedByInputting(t *testing.T) {
+// TestProjectPicker_NoProjectsRefuses pins the empty-state path: with
+// no projects in the cache the picker surfaces a toast instead of
+// opening an empty modal.
+func TestProjectPicker_NoProjectsRefuses(t *testing.T) {
 	m := scopeFixtureSingle()
-	m.input = newSearchBar(ListFilter{})
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
-	nm := out.(Model)
-	if nm.scope.allProjects {
-		t.Fatal("R toggled scope while bar was active; should reach the prompt")
+	m.projectsByID = map[int64]string{}
+	out, cmd := m.openProjectPicker()
+	if out.modal == modalProjectPicker {
+		t.Fatal("picker must not open with no projects to choose from")
 	}
-	if v := nm.input.activeField().value(); v != "R" {
-		t.Fatalf("bar buffer = %q, want %q (rune must reach prompt)", v, "R")
-	}
-}
-
-// TestScopeToggle_NoHomeRefuses pins the empty-state guard: when boot
-// landed in viewEmpty (no project resolved) the toggle has nowhere to
-// go, so it surfaces a toast instead of leaving the user on a blank
-// list with no way back.
-func TestScopeToggle_NoHomeRefuses(t *testing.T) {
-	m := scopeFixtureSingle()
-	m.scope = scope{empty: true}
-	next, cmd := m.handleScopeToggle()
-	if next.scope.allProjects {
-		t.Fatal("R must not flip into all-projects when there's no home project")
-	}
-	if next.toast == nil {
-		t.Fatal("toggle must surface a toast when there's no project to toggle from")
+	if out.toast == nil {
+		t.Fatal("expected a toast explaining why the picker won't open")
 	}
 	if cmd == nil {
 		t.Fatal("toast must come with an expiry cmd")
+	}
+}
+
+// TestProjectPicker_GatedByInputting: P while the inline command bar
+// is open must reach the prompt instead of opening the picker.
+func TestProjectPicker_GatedByInputting(t *testing.T) {
+	m := scopeFixtureMultiProject()
+	m.input = newSearchBar(ListFilter{})
+	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	nm := out.(Model)
+	if nm.modal == modalProjectPicker {
+		t.Fatal("P opened picker while bar was active; should reach the prompt")
+	}
+	if v := nm.input.activeField().value(); v != "P" {
+		t.Fatalf("bar buffer = %q, want %q (rune must reach prompt)", v, "P")
 	}
 }
 

@@ -6,7 +6,8 @@ import tea "github.com/charmbracelet/bubbletea"
 // reads from this same value so rendered help stays in lockstep with
 // what Update actually handles.
 type keymap struct {
-	Help, Quit, ToggleScope                        key
+	Help, Quit                                     key
+	SwitchProject                                  key
 	ToggleLayout                                   key
 	Up, Down, PageUp, PageDown, Home, End          key
 	Open, NewIssue, NewChild, Search               key
@@ -32,7 +33,7 @@ func newKeymap() keymap {
 	return keymap{
 		Help:           key{Keys: []string{"?"}, Help: "help"},
 		Quit:           key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
-		ToggleScope:    key{Keys: []string{"R"}, Help: "toggle all-projects view"},
+		SwitchProject:  key{Keys: []string{"P"}, Help: "switch project / all-projects"},
 		ToggleLayout:   key{Keys: []string{"L"}, Help: "toggle layout"},
 		Up:             key{Keys: []string{"k", "up"}, Help: "up"},
 		Down:           key{Keys: []string{"j", "down"}, Help: "down"},

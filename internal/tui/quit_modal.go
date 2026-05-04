@@ -16,6 +16,7 @@ type modalKind int
 const (
 	modalNone modalKind = iota
 	modalQuitConfirm
+	modalProjectPicker
 )
 
 // renderQuitConfirmModal returns the centered "Are you sure?" panel.
