@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,4 +131,131 @@ func TestProjectsView_IdentityFooterOnHighlight(t *testing.T) {
 	m.projectsCursor = 1 // kata row
 	out = m.View()
 	assert.Contains(t, out, "identity: github.com/wesm/kata")
+}
+
+// TestProjectsView_JKMoveCursor pins basic vertical navigation. Cursor
+// is clamped at both ends; j moves down, k moves up.
+func TestProjectsView_JKMoveCursor(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{1: "a", 2: "b", 3: "c"}
+	m.projectIdentByID = map[int64]string{1: "...", 2: "...", 3: "..."}
+	m.projectStats = map[int64]ProjectStatsSummary{1: {}, 2: {}, 3: {}}
+	m.projectsCursor = 0
+
+	out, _ := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	assert.Equal(t, 1, out.projectsCursor, "j → cursor 1")
+
+	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	assert.Equal(t, 3, out.projectsCursor, "j past end is clamped")
+
+	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	assert.Equal(t, 2, out.projectsCursor, "k → cursor 2")
+}
+
+// TestProjectsView_EnterOnProjectTransitions pins spec §5.4: Enter on
+// a real project sets scope to that project and transitions to viewList
+// with a fresh fetch dispatched.
+func TestProjectsView_EnterOnProjectTransitions(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata", 9: "roborev"}
+	m.projectIdentByID = map[int64]string{7: "...", 9: "..."}
+	m.projectStats = map[int64]ProjectStatsSummary{7: {}, 9: {}}
+	// Prime the cache so isStale() can register invalidation
+	// (isStale requires cache.set==true; see cache.go:51-52).
+	m.cache.put(cacheKey{allProjects: true}, []Issue{{Number: 1}})
+	// Cursor on the first real project (sentinel + sorted rows; see
+	// projectsRows for ordering — alpha tiebreak means 'kata' first).
+	m.projectsCursor = 1
+
+	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEnter})
+	assert.Equal(t, viewList, out.view)
+	assert.False(t, out.scope.allProjects, "concrete project, not all-projects")
+	assert.Equal(t, int64(7), out.scope.projectID)
+	assert.Equal(t, "kata", out.scope.projectName)
+	require.NotNil(t, cmd, "must dispatch a fetch")
+	assert.Equal(t, "kata", out.scope.homeProjectName, "home project tracked for R-toggle")
+	assert.Equal(t, int64(7), out.scope.homeProjectID)
+	assert.True(t, out.cache.isStale(), "issue cache must be invalidated on scope change")
+}
+
+// TestProjectsView_EnterOnSentinelTransitions pins that Enter on the
+// All-projects row sets allProjects=true and transitions to viewList.
+func TestProjectsView_EnterOnSentinelTransitions(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{1: "a"}
+	m.projectIdentByID = map[int64]string{1: "..."}
+	m.projectStats = map[int64]ProjectStatsSummary{1: {}}
+	// Prime the cache so isStale() can register invalidation
+	// (isStale requires cache.set==true; see cache.go:51-52).
+	m.cache.put(cacheKey{projectID: 1}, []Issue{{Number: 1}})
+	m.projectsCursor = 0 // sentinel
+
+	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEnter})
+	assert.Equal(t, viewList, out.view)
+	assert.True(t, out.scope.allProjects)
+	assert.Zero(t, out.scope.projectID)
+	require.NotNil(t, cmd)
+	assert.True(t, out.cache.isStale(), "issue cache must be invalidated on scope change")
+}
+
+// TestProjectsView_EnterOnCurrentScopeIsIdempotent pins the parity with
+// the legacy picker (scope.go applyProjectPickerSelection): re-selecting
+// the row that matches the active scope just returns to viewList — no
+// cache invalidation, no refetch.
+func TestProjectsView_EnterOnCurrentScopeIsIdempotent(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata"}
+	m.projectIdentByID = map[int64]string{7: "..."}
+	m.projectStats = map[int64]ProjectStatsSummary{7: {}}
+	m.scope = scope{projectID: 7, projectName: "kata", homeProjectID: 7, homeProjectName: "kata"}
+	m.projectsCursor = 1 // the kata row
+
+	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEnter})
+	assert.Equal(t, viewList, out.view, "transitions to viewList")
+	assert.Nil(t, cmd, "no refetch on idempotent re-select")
+	assert.False(t, out.cache.isStale(), "cache untouched on idempotent re-select")
+}
+
+// TestProjectsView_EscReturnsToPriorList pins spec §1.4: Esc from
+// viewProjects returns to viewList without a refetch when scope is set
+// (the user came from a list via P).
+func TestProjectsView_EscReturnsToPriorList(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.scope = scope{projectID: 7, projectName: "kata", homeProjectID: 7, homeProjectName: "kata"}
+
+	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEsc})
+	assert.Equal(t, viewList, out.view, "Esc → viewList")
+	assert.Equal(t, int64(7), out.scope.projectID, "scope unchanged")
+	assert.Nil(t, cmd, "no refetch on Esc-back")
+}
+
+// TestProjectsView_EscNoOpOnBootEntry pins that Esc with no prior scope
+// (boot landed on viewProjects) leaves the view in place. Spec §1.4.
+func TestProjectsView_EscNoOpOnBootEntry(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	// Default scope is zero (empty=false, projectID=0, allProjects=false)
+	// — this represents the boot landing case.
+
+	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEsc})
+	assert.Equal(t, viewProjects, out.view, "Esc with no prior list → no transition")
+	assert.Nil(t, cmd)
+}
+
+// TestProjectsView_RRefreshes pins spec §1.4: r dispatches a manual
+// refresh of the projects table. View stays in viewProjects.
+func TestProjectsView_RRefreshes(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+
+	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	assert.Equal(t, viewProjects, out.view)
+	require.NotNil(t, cmd, "r must dispatch fetchProjectsWithStats")
 }

@@ -554,6 +554,10 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if next, cmd, ok := m.routeGlobalKey(msg); ok {
 			return next, cmd, true
 		}
+		if m.view == viewProjects {
+			next, cmd := m.routeProjectsViewKey(msg)
+			return next, cmd, true
+		}
 		// Detail-view `e` and `c` open M4 centered forms instead of
 		// shelling out to $EDITOR. Routed at the Model level because
 		// the form lives on m.input, which detail.Update can't reach.
