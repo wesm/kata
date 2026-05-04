@@ -505,6 +505,7 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return next, cmd, true
 	case popDetailMsg:
 		m.view = viewList
+		m.focus = focusList
 		return m, nil, true
 	}
 	return m, nil, false
@@ -1369,6 +1370,9 @@ func (m Model) routeLayoutFocusKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 	if m.focus == focusDetail && msg.Type == tea.KeyEsc {
+		if len(m.detail.navStack) > 0 {
+			return m, nil, false
+		}
 		m.focus = focusList
 		m.view = viewList
 		return m, nil, true
