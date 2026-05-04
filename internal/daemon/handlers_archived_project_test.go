@@ -45,6 +45,7 @@ func TestArchivedProject_SurfaceHandlersReturn404(t *testing.T) {
 		path   string
 		body   any
 	}{
+		{"showProject", http.MethodGet, "/api/v1/projects/" + pid, nil},
 		{"createIssue", http.MethodPost, "/api/v1/projects/" + pid + "/issues",
 			map[string]any{"actor": "tester", "title": "x", "body": ""}},
 		{"listIssues", http.MethodGet, "/api/v1/projects/" + pid + "/issues", nil},
@@ -83,6 +84,24 @@ func TestArchivedProject_SurfaceHandlersReturn404(t *testing.T) {
 			assert.Contains(t, string(bs), "project_not_found", string(bs))
 		})
 	}
+}
+
+// TestListAllIssues_NegativeProjectIDReturns400 pins that
+// GET /api/v1/issues?project_id=-1 is a validation error rather than
+// silently falling through the > 0 guard and returning all projects'
+// issues.
+func TestListAllIssues_NegativeProjectIDReturns400(t *testing.T) {
+	h, _ := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+
+	resp, err := http.Get(ts.URL + "/api/v1/issues?project_id=-1") //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "validation", string(bs))
+	assert.Contains(t, string(bs), "project_id", string(bs))
 }
 
 // TestArchivedProject_SSEStreamRejects covers the SSE handler path that

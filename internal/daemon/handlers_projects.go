@@ -170,12 +170,9 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	}, func(ctx context.Context, in *struct {
 		ProjectID int64 `path:"project_id"`
 	}) (*api.ShowProjectResponse, error) {
-		p, err := cfg.DB.ProjectByID(ctx, in.ProjectID)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-		}
+		p, err := activeProjectByID(ctx, cfg.DB, in.ProjectID)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 		aliases, err := cfg.DB.ProjectAliases(ctx, p.ID)
 		if err != nil {

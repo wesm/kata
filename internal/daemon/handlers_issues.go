@@ -125,6 +125,10 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/issues",
 	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
+		if in.ProjectID < 0 {
+			return nil, api.NewError(400, "validation",
+				"project_id must be a positive integer", "", nil)
+		}
 		if in.ProjectID > 0 {
 			if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
 				return nil, err
