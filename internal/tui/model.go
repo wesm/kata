@@ -363,6 +363,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if pl, ok := msg.(projectsLoadedMsg); ok {
+		// Drop stale responses entirely (success OR error). A pre-
+		// invalidation fetch (older gen) must not overwrite maps already
+		// updated by a newer in-flight or completed fetch, AND its error
+		// must not surface as a toast over fresh data — otherwise the
+		// table reverts to stale data or the user sees a misleading
+		// "failed to load" while the visible table is current. Only
+		// newer fetches (gen > current, impossible) or current-gen
+		// fetches apply. Spec §6.3.
+		if pl.gen != m.projectsGen {
+			return m, nil
+		}
 		if pl.err != nil {
 			m.toast = &toast{
 				text:      "failed to load projects: " + pl.err.Error(),
@@ -370,15 +381,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				expiresAt: m.toastNow().Add(toastNoBindingTTL),
 			}
 			return m, toastExpireCmd(toastNoBindingTTL)
-		}
-		// Drop stale responses entirely. A pre-invalidation fetch (older
-		// gen) must not overwrite maps already updated by a newer in-
-		// flight or completed fetch — otherwise the table reverts to
-		// stale data and m.projectsStale stays armed but no more events
-		// fire to drive a refresh. Only newer fetches (gen > current,
-		// impossible) or current-gen fetches apply. Spec §6.3.
-		if pl.gen != m.projectsGen {
-			return m, nil
 		}
 		if pl.projects != nil {
 			m.projectsByID = pl.projects

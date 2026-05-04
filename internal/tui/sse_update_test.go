@@ -758,6 +758,33 @@ func TestProjectsLoadedMsg_PreservesStaleOnFailure(t *testing.T) {
 	assert.True(t, nm.projectsStale, "failed fetch must not clear stale")
 }
 
+// TestProjectsLoadedMsg_DropsOlderErrorResponse pins that an older-gen
+// failure response is dropped without surfacing a toast. If a newer
+// fetch has already landed successfully and the user is looking at
+// fresh data, an older fetch's error must NOT pop a "failed to load"
+// toast over the (current) UI. Regression for roborev job 17576.
+func TestProjectsLoadedMsg_DropsOlderErrorResponse(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsGen = 5
+	// Newer gen=5 response already landed — fresh data, stale cleared.
+	m.projectsByID = map[int64]string{2: "fresh-data"}
+	m.projectIdentByID = map[int64]string{2: "fresh-ident"}
+	m.projectStats = map[int64]ProjectStatsSummary{2: {Open: 7}}
+	m.projectsStale = false
+
+	// Older fetch (gen=4) returns with an error AFTER the newer
+	// success has already applied. Must NOT toast.
+	msg := projectsLoadedMsg{err: errors.New("fetch failed"), gen: 4}
+	out, _ := m.Update(msg)
+	nm := out.(Model)
+	assert.Nil(t, nm.toast, "older error response must not surface a toast")
+	assert.Equal(t, "fresh-data", nm.projectsByID[2],
+		"older error response must not perturb cache")
+	assert.False(t, nm.projectsStale,
+		"older error response must not re-arm stale")
+}
+
 // TestProjectsLoadedMsg_ClampsCursor pins that a refetch result with
 // fewer rows than before still leaves m.projectsCursor pointing at a
 // valid row. Without clamping, Enter on the visually-highlighted row
