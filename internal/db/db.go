@@ -94,11 +94,21 @@ func (d *DB) RefreshInstanceUID(ctx context.Context) error {
 // d.instanceUID. Idempotent across reboots and across every Open caller (tests,
 // import target init, cutover temp DB).
 //
-// The insert uses ON CONFLICT DO NOTHING and is followed by an unconditional
-// SELECT so two racing first-opens against a fresh DB cannot both insert and
-// neither fails with a primary-key conflict. The losing writer's INSERT is a
-// no-op; the SELECT resolves to whichever ULID won.
+// Existing DBs take the read-only fast path: a single SELECT, no write. Only
+// when the row is absent (fresh DB) do we generate a UID and run INSERT ...
+// ON CONFLICT DO NOTHING followed by a SELECT to recover whichever value won
+// a concurrent first-open race — the losing writer's INSERT is a no-op.
 func (d *DB) ensureInstanceUID(ctx context.Context) error {
+	var existing string
+	err := d.QueryRowContext(ctx,
+		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&existing)
+	if err == nil {
+		d.instanceUID = existing
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read instance_uid: %w", err)
+	}
 	fresh, err := katauid.New()
 	if err != nil {
 		return fmt.Errorf("generate instance_uid: %w", err)
@@ -111,7 +121,7 @@ func (d *DB) ensureInstanceUID(ctx context.Context) error {
 	var stored string
 	if err := d.QueryRowContext(ctx,
 		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&stored); err != nil {
-		return fmt.Errorf("read instance_uid: %w", err)
+		return fmt.Errorf("read instance_uid after seed: %w", err)
 	}
 	d.instanceUID = stored
 	return nil
