@@ -233,3 +233,31 @@ func cursorForScope(rows []projectsRow, sc scope) int {
 	}
 	return 0
 }
+
+const projectsRefetchDebounce = 500 * time.Millisecond
+
+// projectsDebounceFireMsg is the wakeup the debounce timer dispatches
+// after projectsRefetchDebounce elapses since the last stale-flip.
+type projectsDebounceFireMsg struct{}
+
+// projectsDebounceCmd schedules the debounce wakeup. The Update handler
+// for projectsDebounceFireMsg consumes the message and either dispatches
+// fetchProjectsWithStats (when viewProjects is still active) or no-ops.
+// Spec §6.3.
+func projectsDebounceCmd() tea.Cmd {
+	return tea.Tick(projectsRefetchDebounce, func(time.Time) tea.Msg {
+		return projectsDebounceFireMsg{}
+	})
+}
+
+// eventAffectsProjectsTable reports whether an incoming SSE event
+// changes the numbers a viewProjects table is rendering. Any event for
+// a project the table is showing affects the Updated column at minimum;
+// issue lifecycle events also change Open/Closed counts.
+func eventAffectsProjectsTable(msg eventReceivedMsg, byID map[int64]string) bool {
+	if msg.projectID == 0 {
+		return false
+	}
+	_, shown := byID[msg.projectID]
+	return shown
+}

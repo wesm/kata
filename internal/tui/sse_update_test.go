@@ -5,6 +5,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // sseUpdateFixture builds a minimal Model wired for the SSE Update-side
@@ -559,4 +561,143 @@ func TestHandleToastExpired_PreservesNewerToast(t *testing.T) {
 	if mm.toast.text != "fresher" {
 		t.Fatalf("toast.text = %q, want fresher", mm.toast.text)
 	}
+}
+
+// TestProjectsView_StaleOnIssueEvent pins spec §6.3: an issue event for
+// a project the table is showing flips m.projectsStale and dispatches
+// the debounce timer.
+func TestProjectsView_StaleOnIssueEvent(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata"}
+
+	out, cmd := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 7})
+	nm := out.(Model)
+	assert.True(t, nm.projectsStale)
+	assert.True(t, nm.projectsRefetchPending)
+	require.NotNil(t, cmd, "first event must dispatch a debounce timer")
+}
+
+// TestProjectsView_IgnoresEventsWhenInactive pins that the same event
+// is a no-op when viewList is active — the next P-into-viewProjects
+// transition does its own refetch. Spec §6.3.
+func TestProjectsView_IgnoresEventsWhenInactive(t *testing.T) {
+	m := initialModel(Options{})
+	m.view = viewList
+	m.projectsByID = map[int64]string{7: "kata"}
+
+	out, _ := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 7})
+	nm := out.(Model)
+	assert.False(t, nm.projectsStale)
+	assert.False(t, nm.projectsRefetchPending)
+}
+
+// TestProjectsView_DebouncesRefetch pins that a burst of SSE events
+// flips projectsStale once and dispatches exactly one debounce timer
+// (no thundering herd). Spec §6.3.
+func TestProjectsView_DebouncesRefetch(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata"}
+
+	var debounceCmds int
+	for i := 0; i < 3; i++ {
+		out, cmd := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 7})
+		m = out.(Model)
+		if cmd != nil {
+			debounceCmds++
+		}
+	}
+	assert.True(t, m.projectsStale)
+	assert.True(t, m.projectsRefetchPending)
+	// sseUpdateFixture has sseCh=nil, so waitForSSE returns nil. The
+	// only non-nil cmd over the burst is the single debounce scheduled
+	// by the first event.
+	assert.Equal(t, 1, debounceCmds, "exactly one debounce timer")
+}
+
+// TestProjectsView_IgnoresEventsForUnknownProject pins that an event
+// for a projectID NOT in m.projectsByID is a no-op even when the view
+// is active — the projects table can't render rows for projects it
+// doesn't know about. Spec §6.3.
+func TestProjectsView_IgnoresEventsForUnknownProject(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsByID = map[int64]string{7: "kata"}
+
+	out, _ := m.Update(eventReceivedMsg{eventType: "issue.created", projectID: 99})
+	nm := out.(Model)
+	assert.False(t, nm.projectsStale)
+	assert.False(t, nm.projectsRefetchPending)
+}
+
+// TestProjectsDebounceFire_DispatchesFetchWhenActive pins that the
+// debounce timer's wakeup dispatches fetchProjectsWithStats when the
+// user is still in viewProjects and the stale flag is set. Spec §6.3.
+func TestProjectsDebounceFire_DispatchesFetchWhenActive(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsStale = true
+	m.projectsRefetchPending = true
+	m.api = &Client{}
+
+	out, cmd := m.Update(projectsDebounceFireMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsRefetchPending, "pending flag must clear on fire")
+	assert.False(t, nm.projectsStale, "stale flag must clear when fetch dispatches")
+	require.NotNil(t, cmd, "active view + stale → fetch must dispatch")
+}
+
+// TestProjectsDebounceFire_NoFetchWhenInactive pins that the timer's
+// wakeup is a no-op for the fetch when the user has navigated away
+// from viewProjects, but still clears the pending flag so future
+// invalidations can re-arm. Spec §6.3.
+func TestProjectsDebounceFire_NoFetchWhenInactive(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewList // user navigated away
+	m.projectsStale = true
+	m.projectsRefetchPending = true
+
+	out, cmd := m.Update(projectsDebounceFireMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsRefetchPending, "pending flag must clear regardless")
+	assert.True(t, nm.projectsStale, "stale flag preserved when fetch is skipped")
+	assert.Nil(t, cmd, "inactive view → no fetch")
+}
+
+// TestProjectsDebounceFire_NoFetchWhenNotStale pins that the timer's
+// wakeup is a no-op when the stale flag is unset (spurious fire after
+// a manual refresh that consumed staleness). Spec §6.3.
+func TestProjectsDebounceFire_NoFetchWhenNotStale(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsStale = false
+	m.projectsRefetchPending = true
+
+	out, cmd := m.Update(projectsDebounceFireMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsRefetchPending)
+	assert.Nil(t, cmd, "stale=false → no fetch")
+}
+
+// TestHandleResetRequired_ClearsProjectsState pins that an SSE
+// reset_required clears the projects-view debounce flags and dispatches
+// a stats refetch when the user is in viewProjects. Without this,
+// "resynced" would lie to a viewProjects user — the table numbers
+// would lag the daemon. Spec §6.3 / §10 (resync semantics).
+func TestHandleResetRequired_ClearsProjectsState(t *testing.T) {
+	m := sseUpdateFixture()
+	m.view = viewProjects
+	m.projectsStale = true
+	m.projectsRefetchPending = true
+	m.api = &Client{}
+
+	out, cmd := m.Update(resetRequiredMsg{})
+	nm := out.(Model)
+	assert.False(t, nm.projectsStale, "stale cleared")
+	assert.False(t, nm.projectsRefetchPending, "pending cleared")
+	require.NotNil(t, cmd, "must batch a fetch")
+	// The cmd is a tea.Batch — we don't introspect it (can't reliably
+	// distinguish refetch types). The flag-clearing + non-nil cmd is
+	// the load-bearing assertion.
 }

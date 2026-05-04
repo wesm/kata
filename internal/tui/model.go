@@ -54,9 +54,17 @@ type Model struct {
 	sseCh          chan tea.Msg
 	sseStatus      sseConnState
 	pendingRefetch bool
-	cache          *issueCache
-	toast          *toast
-	toastNow       func() time.Time
+	// projectsStale flags that the projects table needs a refetch. Set by
+	// the SSE event router when an event's project_id matches a row in
+	// m.projectsByID and viewProjects is the active view. Cleared when the
+	// debounced fetchProjectsWithStats lands. Spec §6.3.
+	projectsStale bool
+	// projectsRefetchPending coalesces stale-flips inside the 500ms window
+	// so a burst of SSE events produces exactly one refetch.
+	projectsRefetchPending bool
+	cache                  *issueCache
+	toast                  *toast
+	toastNow               func() time.Time
 	// nextGen is the monotonic detail-open generation counter. Every
 	// open or jump allocates a fresh value via ++ so a fetch in flight
 	// from a previously-jumped issue cannot match a newly-opened issue
@@ -362,6 +370,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if pl.stats != nil {
 			m.projectStats = pl.stats
+		}
+		return m, nil
+	}
+	if _, ok := msg.(projectsDebounceFireMsg); ok {
+		m.projectsRefetchPending = false
+		if m.view == viewProjects && m.projectsStale {
+			m.projectsStale = false
+			return m, m.fetchProjectsWithStats()
 		}
 		return m, nil
 	}
@@ -1572,6 +1588,13 @@ func (m Model) handleEventReceived(msg eventReceivedMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, debouncedRefetch(refetchDebounce))
 		}
 	}
+	if m.view == viewProjects && eventAffectsProjectsTable(msg, m.projectsByID) {
+		m.projectsStale = true
+		if !m.projectsRefetchPending {
+			m.projectsRefetchPending = true
+			cmds = append(cmds, projectsDebounceCmd())
+		}
+	}
 	if cmd := m.maybeRefetchOpenDetail(msg); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
@@ -1717,6 +1740,8 @@ func (m Model) handleRefetchTick() (tea.Model, tea.Cmd) {
 func (m Model) handleResetRequired(_ resetRequiredMsg) (tea.Model, tea.Cmd) {
 	m.cache.drop()
 	m.pendingRefetch = false
+	m.projectsStale = false
+	m.projectsRefetchPending = false
 	m.toast = &toast{
 		text:      "resynced",
 		level:     toastInfo,
@@ -1732,6 +1757,12 @@ func (m Model) handleResetRequired(_ resetRequiredMsg) (tea.Model, tea.Cmd) {
 		// the next render.
 		if cmd := m.refetchOpenDetail(); cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+		// If the user is in viewProjects, the table numbers are also
+		// stale — without this, the "resynced" toast lies because the
+		// per-project counts wouldn't reflect the post-reset state.
+		if m.view == viewProjects {
+			cmds = append(cmds, m.fetchProjectsWithStats())
 		}
 	}
 	return m, tea.Batch(cmds...)
