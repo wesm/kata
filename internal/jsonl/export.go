@@ -100,6 +100,42 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	if sourceSchemaVersion < 2 {
 		return exportProjectsV1(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 4 {
+		return exportProjectsV2(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID              int64   `json:"id"`
+		UID             string  `json:"uid"`
+		Identity        string  `json:"identity"`
+		Name            string  `json:"name"`
+		CreatedAt       string  `json:"created_at"`
+		NextIssueNumber int64   `json:"next_issue_number"`
+		DeletedAt       *string `json:"deleted_at,omitempty"`
+	}
+	query := `SELECT id, uid, identity, name, CAST(created_at AS TEXT), next_issue_number,
+	                 CAST(deleted_at AS TEXT) FROM projects`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export projects: %w", err)
+	}
+	return scanRecords(rows, KindProject, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.Identity, &rec.Name, &rec.CreatedAt,
+			&rec.NextIssueNumber, &rec.DeletedAt)
+		return rec, err
+	})
+}
+
+// exportProjectsV2 covers schema versions 2 and 3 (UID present, deleted_at
+// absent). Kept distinct so cutover from v3→v4 reads the source via the
+// pre-v4 column list and lets the import path default deleted_at to NULL.
+func exportProjectsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID              int64  `json:"id"`
 		UID             string `json:"uid"`

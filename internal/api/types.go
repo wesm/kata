@@ -340,6 +340,41 @@ type DeleteLinkRequest struct {
 	Actor     string `query:"actor" required:"true"`
 }
 
+// RemoveProjectRequest is DELETE /api/v1/projects/{id} — archives the project
+// (#24). Force=true overrides the open-issue refusal.
+type RemoveProjectRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Actor     string `query:"actor" required:"true"`
+	Force     bool   `query:"force,omitempty"`
+}
+
+// RemoveProjectResponse carries the archived project + the project.removed
+// event the caller can replay or display.
+type RemoveProjectResponse struct {
+	Body struct {
+		Project db.Project `json:"project"`
+		Event   *db.Event  `json:"event"`
+	}
+}
+
+// DetachProjectAliasRequest is DELETE /api/v1/projects/{id}/aliases/{alias_id}.
+// Force=true overrides the last-alias refusal.
+type DetachProjectAliasRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	AliasID   int64  `path:"alias_id" required:"true"`
+	Actor     string `query:"actor" required:"true"`
+	Force     bool   `query:"force,omitempty"`
+}
+
+// DetachProjectAliasResponse carries the dropped alias + the
+// project.alias_removed event.
+type DetachProjectAliasResponse struct {
+	Body struct {
+		Alias db.ProjectAlias `json:"alias"`
+		Event *db.Event       `json:"event"`
+	}
+}
+
 // AddLabelRequest is POST /api/v1/projects/{id}/issues/{number}/labels.
 type AddLabelRequest struct {
 	ProjectID int64 `path:"project_id" required:"true"`

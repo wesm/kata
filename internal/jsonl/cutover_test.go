@@ -1,6 +1,7 @@
 package jsonl_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -352,6 +353,35 @@ INSERT INTO sqlite_sequence(name, seq) VALUES('purge_log', 1);
 	_, err = raw.Exec(schema)
 	require.NoError(t, err)
 	require.NoError(t, raw.Close())
+}
+
+// TestRoundtripV4PreservesDeletedAt covers #24's projects.deleted_at column:
+// an archived project in the source DB round-trips through JSONL with the
+// timestamp intact, so kata-instance backups don't silently un-archive
+// projects on restore.
+func TestRoundtripV4PreservesDeletedAt(t *testing.T) {
+	ctx := context.Background()
+	src := openExportTestDB(t)
+	p, err := src.CreateProject(ctx, "github.com/wesm/proj-archived", "archived")
+	require.NoError(t, err)
+	_, err = src.ExecContext(ctx,
+		`UPDATE projects SET deleted_at = '2026-05-04T12:00:00.000Z' WHERE id = ?`, p.ID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, src, &buf, jsonl.ExportOptions{IncludeDeleted: true}))
+
+	dstPath := filepath.Join(t.TempDir(), "dst.db")
+	dst, err := db.Open(ctx, dstPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = dst.Close() })
+	require.NoError(t, jsonl.Import(ctx, bytes.NewReader(buf.Bytes()), dst))
+
+	var got sql.NullTime
+	require.NoError(t, dst.QueryRowContext(ctx,
+		`SELECT deleted_at FROM projects WHERE id = ?`, p.ID).Scan(&got))
+	require.True(t, got.Valid, "deleted_at must round-trip as a non-null timestamp")
+	assert.Equal(t, "2026-05-04T12:00:00Z", got.Time.UTC().Format("2006-01-02T15:04:05Z"))
 }
 
 func writeVersionZeroDB(t *testing.T, path string) {

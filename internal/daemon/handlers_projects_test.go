@@ -348,6 +348,227 @@ func TestMergeProject_SourceMovesIntoSurvivingTarget(t *testing.T) {
 	assert.ErrorIs(t, err, db.ErrNotFound)
 }
 
+// TestRemoveProject_ArchivesAndDropsAliases pins #24's wire shape: DELETE
+// /api/v1/projects/{id}?actor=tester archives the project and removes its
+// aliases. List endpoint no longer surfaces the row; resolve against the
+// archived identity returns project_archived (409).
+func TestRemoveProject_ArchivesAndDropsAliases(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "")
+	store := h.DB()
+	ctx := t.Context()
+	p, err := store.CreateProject(ctx, "github.com/wesm/proj-rm", "proj-rm")
+	require.NoError(t, err)
+	_, err = store.AttachAlias(ctx, p.ID, "github.com/wesm/proj-rm", "git", h.dir)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		h.ts.(*httptest.Server).URL+"/api/v1/projects/"+strconv.FormatInt(p.ID, 10)+"?actor=tester", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(bs))
+
+	var body struct {
+		Project struct {
+			DeletedAt *string `json:"deleted_at"`
+		} `json:"project"`
+		Event struct {
+			Type string `json:"type"`
+		} `json:"event"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body), string(bs))
+	require.NotNil(t, body.Project.DeletedAt)
+	assert.Equal(t, "project.removed", body.Event.Type)
+
+	listResp, err := http.Get(h.ts.(*httptest.Server).URL + "/api/v1/projects") //nolint:gosec // test loopback
+	require.NoError(t, err)
+	defer func() { _ = listResp.Body.Close() }()
+	listBs, err := io.ReadAll(listResp.Body)
+	require.NoError(t, err)
+	assert.NotContains(t, string(listBs), "github.com/wesm/proj-rm",
+		"archived project must not surface in /projects list")
+}
+
+// TestRemoveProject_RefusesWithOpenIssues pins the safety gate: the wire
+// returns 409 project_has_open_issues when force is omitted.
+func TestRemoveProject_RefusesWithOpenIssues(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "")
+	store := h.DB()
+	ctx := t.Context()
+	p, err := store.CreateProject(ctx, "github.com/wesm/proj-busy", "proj-busy")
+	require.NoError(t, err)
+	_, _, err = store.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "still open", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		h.ts.(*httptest.Server).URL+"/api/v1/projects/"+strconv.FormatInt(p.ID, 10)+"?actor=tester", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "project_has_open_issues")
+}
+
+// TestRemoveProject_ForceOverridesOpenIssues pins ?force=true: with the
+// flag, archival succeeds even with open issues.
+func TestRemoveProject_ForceOverridesOpenIssues(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "")
+	store := h.DB()
+	ctx := t.Context()
+	p, err := store.CreateProject(ctx, "github.com/wesm/proj-force-http", "proj-force-http")
+	require.NoError(t, err)
+	_, _, err = store.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "still open", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		h.ts.(*httptest.Server).URL+"/api/v1/projects/"+strconv.FormatInt(p.ID, 10)+
+			"?actor=tester&force=true", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, string(bs))
+}
+
+// TestDetachProjectAlias_DropsOneAndEmitsEvent pins the alias-level wire:
+// DELETE /api/v1/projects/{id}/aliases/{alias_id} drops one alias and
+// emits project.alias_removed.
+func TestDetachProjectAlias_DropsOneAndEmitsEvent(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "")
+	store := h.DB()
+	ctx := t.Context()
+	p, err := store.CreateProject(ctx, "github.com/wesm/proj-alias-http", "proj-alias-http")
+	require.NoError(t, err)
+	a1, err := store.AttachAlias(ctx, p.ID, "github.com/wesm/proj-alias-http", "git", h.dir)
+	require.NoError(t, err)
+	a2, err := store.AttachAlias(ctx, p.ID, "local:///tmp/aliased", "local", "/tmp/aliased")
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		h.ts.(*httptest.Server).URL+"/api/v1/projects/"+strconv.FormatInt(p.ID, 10)+
+			"/aliases/"+strconv.FormatInt(a2.ID, 10)+"?actor=tester", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(bs))
+
+	var body struct {
+		Alias struct {
+			ID int64 `json:"id"`
+		} `json:"alias"`
+		Event struct {
+			Type string `json:"type"`
+		} `json:"event"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body), string(bs))
+	assert.Equal(t, a2.ID, body.Alias.ID)
+	assert.Equal(t, "project.alias_removed", body.Event.Type)
+
+	// The other alias remains and resolve still works.
+	remaining, err := store.AliasByID(ctx, a1.ID)
+	require.NoError(t, err)
+	assert.Equal(t, a1.ID, remaining.ID)
+}
+
+// TestDetachProjectAlias_LastRefuses pins the safety gate at the wire:
+// the only alias for a project rejects detach without ?force=true.
+func TestDetachProjectAlias_LastRefuses(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "")
+	store := h.DB()
+	ctx := t.Context()
+	p, err := store.CreateProject(ctx, "github.com/wesm/proj-only-http", "proj-only-http")
+	require.NoError(t, err)
+	a, err := store.AttachAlias(ctx, p.ID, "github.com/wesm/proj-only-http", "git", h.dir)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		h.ts.(*httptest.Server).URL+"/api/v1/projects/"+strconv.FormatInt(p.ID, 10)+
+			"/aliases/"+strconv.FormatInt(a.ID, 10)+"?actor=tester", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "alias_is_last")
+}
+
+// TestDetachProjectAlias_RejectsCrossProject pins that an alias_id from
+// another project can't be dropped via this project's path. Returns 404 to
+// avoid leaking the existence of the cross-project alias.
+func TestDetachProjectAlias_RejectsCrossProject(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "")
+	store := h.DB()
+	ctx := t.Context()
+	p1, err := store.CreateProject(ctx, "github.com/wesm/p1", "p1")
+	require.NoError(t, err)
+	p2, err := store.CreateProject(ctx, "github.com/wesm/p2", "p2")
+	require.NoError(t, err)
+	_, err = store.AttachAlias(ctx, p1.ID, "github.com/wesm/p1", "git", h.dir)
+	require.NoError(t, err)
+	a2, err := store.AttachAlias(ctx, p2.ID, "github.com/wesm/p2", "git", h.dir)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		h.ts.(*httptest.Server).URL+"/api/v1/projects/"+strconv.FormatInt(p1.ID, 10)+
+			"/aliases/"+strconv.FormatInt(a2.ID, 10)+"?actor=tester", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "alias_not_found")
+}
+
+// TestRemoveProject_ArchivedIdentityRefusesReinit pins the user's clarifier
+// in the design conversation: re-init against an archived identity returns
+// project_archived (409) rather than silently resurrecting the project.
+func TestRemoveProject_ArchivedIdentityRefusesReinit(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "https://github.com/wesm/proj-archive-reinit.git")
+	store := h.DB()
+	ctx := t.Context()
+	// Init the project.
+	resp, bs := postJSON(t, h.ts.(*httptest.Server), "/api/v1/projects",
+		map[string]any{"start_path": h.dir})
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(bs))
+	var initBody struct {
+		Project struct {
+			ID int64 `json:"id"`
+		} `json:"project"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &initBody))
+
+	// Archive it.
+	_, _, err := store.RemoveProject(ctx, db.RemoveProjectParams{
+		ProjectID: initBody.Project.ID, Actor: "tester",
+	})
+	require.NoError(t, err)
+
+	// Re-init from the same workspace must refuse.
+	resp2, bs2 := postJSON(t, h.ts.(*httptest.Server), "/api/v1/projects",
+		map[string]any{"start_path": h.dir})
+	assert.Equal(t, http.StatusConflict, resp2.StatusCode, string(bs2))
+	assert.Contains(t, string(bs2), "project_archived")
+}
+
 func TestInit_MergedKataTomlIdentityResolvesToSurvivingProject(t *testing.T) {
 	h := newServerWithGitWorkspace(t, "https://github.com/wesm/steward.git")
 	store := h.DB()

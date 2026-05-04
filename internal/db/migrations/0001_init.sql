@@ -5,10 +5,12 @@ CREATE TABLE projects (
   name              TEXT NOT NULL,
   created_at        DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   next_issue_number INTEGER NOT NULL DEFAULT 1,
+  deleted_at        DATETIME,
   CHECK (length(uid) = 26),
   CHECK (length(trim(identity)) > 0),
   CHECK (length(trim(name)) > 0)
 );
+CREATE INDEX idx_projects_active ON projects(id) WHERE deleted_at IS NULL;
 
 CREATE TABLE project_aliases (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,

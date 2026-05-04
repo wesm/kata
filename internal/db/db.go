@@ -19,7 +19,7 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // CurrentSchemaVersion returns the schema version expected by this binary.
 func CurrentSchemaVersion() int { return currentSchemaVersion }

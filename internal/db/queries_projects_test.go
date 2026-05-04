@@ -278,6 +278,44 @@ func TestMergeProjects_RejectsSourceIdentityAliasOwnedByDifferentProject(t *test
 	assert.Equal(t, "github.com/wesm/old", got.Identity)
 }
 
+// TestMergeProjects_RejectsArchivedSource pins the #24 invariant: an
+// archived source can't be merged because that would resurrect its identity
+// into the target. Restore-then-merge would be required if/when restore
+// ships.
+func TestMergeProjects_RejectsArchivedSource(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source, err := d.CreateProject(ctx, "github.com/wesm/archived-src", "src")
+	require.NoError(t, err)
+	target, err := d.CreateProject(ctx, "github.com/wesm/live-tgt", "tgt")
+	require.NoError(t, err)
+	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: source.ID, Actor: "tester"})
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: source.ID, TargetProjectID: target.ID,
+	})
+	assert.ErrorIs(t, err, db.ErrProjectMergeArchivedSource)
+}
+
+// TestMergeProjects_RejectsArchivedTarget pins the symmetric guard: folding
+// live work into an archived project undoes the archive's intent.
+func TestMergeProjects_RejectsArchivedTarget(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source, err := d.CreateProject(ctx, "github.com/wesm/live-src", "src")
+	require.NoError(t, err)
+	target, err := d.CreateProject(ctx, "github.com/wesm/archived-tgt", "tgt")
+	require.NoError(t, err)
+	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: target.ID, Actor: "tester"})
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: source.ID, TargetProjectID: target.ID,
+	})
+	assert.ErrorIs(t, err, db.ErrProjectMergeArchivedTarget)
+}
+
 func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

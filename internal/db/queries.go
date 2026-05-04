@@ -32,14 +32,30 @@ func (d *DB) CreateProject(ctx context.Context, identity, name string) (Project,
 	return d.ProjectByID(ctx, id)
 }
 
-// ProjectByID fetches one project by its rowid.
+// ProjectByID fetches one project by its rowid. Archived (deleted_at != NULL)
+// projects are returned as-is so callers like the merge / restore paths can
+// see them; surface-level callers (HTTP handlers, CLI) inspect DeletedAt
+// themselves.
 func (d *DB) ProjectByID(ctx context.Context, id int64) (Project, error) {
 	row := d.QueryRowContext(ctx, projectSelect+` WHERE id = ?`, id)
 	return scanProject(row)
 }
 
-// ProjectByIdentity fetches one project by its UNIQUE identity.
+// ProjectByIdentity fetches one project by its UNIQUE identity. Archived
+// projects are excluded — resolve flow uses this and an archived project
+// must look gone from the active surface. Callers needing the row even when
+// archived (e.g. to surface a "this identity was archived" error) can
+// follow up with ProjectByIdentityIncludingArchived.
 func (d *DB) ProjectByIdentity(ctx context.Context, identity string) (Project, error) {
+	row := d.QueryRowContext(ctx,
+		projectSelect+` WHERE identity = ? AND deleted_at IS NULL`, identity)
+	return scanProject(row)
+}
+
+// ProjectByIdentityIncludingArchived returns the project even when archived.
+// Used by error-message paths that want to distinguish "no project at all"
+// from "project was archived".
+func (d *DB) ProjectByIdentityIncludingArchived(ctx context.Context, identity string) (Project, error) {
 	row := d.QueryRowContext(ctx, projectSelect+` WHERE identity = ?`, identity)
 	return scanProject(row)
 }
@@ -61,9 +77,27 @@ func (d *DB) RenameProject(ctx context.Context, id int64, name string) (Project,
 	return d.ProjectByID(ctx, id)
 }
 
-// ListProjects returns every project ordered by id ASC.
+// ListProjects returns every active project ordered by id ASC. Archived
+// projects (deleted_at != NULL) are excluded; callers needing them too can
+// use ListProjectsIncludingArchived.
 func (d *DB) ListProjects(ctx context.Context) ([]Project, error) {
-	rows, err := d.QueryContext(ctx, projectSelect+` ORDER BY id ASC`)
+	return d.listProjects(ctx, false)
+}
+
+// ListProjectsIncludingArchived returns every project including archived
+// rows. Used by surfaces that want to render archived state explicitly
+// (e.g. operator inspection or restore tooling).
+func (d *DB) ListProjectsIncludingArchived(ctx context.Context) ([]Project, error) {
+	return d.listProjects(ctx, true)
+}
+
+func (d *DB) listProjects(ctx context.Context, includeArchived bool) ([]Project, error) {
+	q := projectSelect
+	if !includeArchived {
+		q += ` WHERE deleted_at IS NULL`
+	}
+	q += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -170,7 +204,7 @@ func (d *DB) AttachAlias(ctx context.Context, projectID int64, identity, kind, r
 	if err != nil {
 		return ProjectAlias{}, err
 	}
-	return d.aliasByID(ctx, id)
+	return d.AliasByID(ctx, id)
 }
 
 // AliasByIdentity returns the alias for a given alias_identity.
@@ -179,7 +213,8 @@ func (d *DB) AliasByIdentity(ctx context.Context, identity string) (ProjectAlias
 	return scanAlias(row)
 }
 
-func (d *DB) aliasByID(ctx context.Context, id int64) (ProjectAlias, error) {
+// AliasByID returns the project_aliases row with the given id.
+func (d *DB) AliasByID(ctx context.Context, id int64) (ProjectAlias, error) {
 	row := d.QueryRowContext(ctx, aliasSelect+` WHERE id = ?`, id)
 	return scanAlias(row)
 }
@@ -224,7 +259,7 @@ func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlia
 }
 
 // projectSelect is the canonical SELECT list for projects rows.
-const projectSelect = `SELECT id, uid, identity, name, created_at, next_issue_number FROM projects`
+const projectSelect = `SELECT id, uid, identity, name, created_at, next_issue_number, deleted_at FROM projects`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows used by scan helpers.
 type rowScanner interface {
@@ -233,7 +268,7 @@ type rowScanner interface {
 
 func scanProject(r rowScanner) (Project, error) {
 	var p Project
-	err := r.Scan(&p.ID, &p.UID, &p.Identity, &p.Name, &p.CreatedAt, &p.NextIssueNumber)
+	err := r.Scan(&p.ID, &p.UID, &p.Identity, &p.Name, &p.CreatedAt, &p.NextIssueNumber, &p.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}

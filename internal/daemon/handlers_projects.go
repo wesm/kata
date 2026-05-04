@@ -156,6 +156,86 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 
 	huma.Register(humaAPI, huma.Operation{
+		OperationID: "removeProject",
+		Method:      "DELETE",
+		Path:        "/api/v1/projects/{project_id}",
+	}, func(ctx context.Context, in *api.RemoveProjectRequest) (*api.RemoveProjectResponse, error) {
+		if err := validateActor(in.Actor); err != nil {
+			return nil, err
+		}
+		project, evt, err := cfg.DB.RemoveProject(ctx, db.RemoveProjectParams{
+			ProjectID: in.ProjectID, Actor: in.Actor, Force: in.Force,
+		})
+		switch {
+		case errors.Is(err, db.ErrNotFound):
+			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+		case errors.Is(err, db.ErrProjectAlreadyArchived):
+			return nil, api.NewError(409, "project_already_archived",
+				"project is already archived", "", nil)
+		}
+		var openErr *db.ProjectHasOpenIssuesError
+		if errors.As(err, &openErr) {
+			return nil, api.NewError(409, "project_has_open_issues",
+				"project has open issues",
+				"close or purge the open issues first, or pass force=true",
+				map[string]any{"open_issues": openErr.OpenIssues})
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: project.ID})
+		cfg.Hooks.Enqueue(*evt)
+		out := &api.RemoveProjectResponse{}
+		out.Body.Project = project
+		out.Body.Event = evt
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "detachProjectAlias",
+		Method:      "DELETE",
+		Path:        "/api/v1/projects/{project_id}/aliases/{alias_id}",
+	}, func(ctx context.Context, in *api.DetachProjectAliasRequest) (*api.DetachProjectAliasResponse, error) {
+		if err := validateActor(in.Actor); err != nil {
+			return nil, err
+		}
+		// Pre-check that the alias belongs to the path's project_id so we
+		// don't drop an alias from a different project and then try to undo
+		// — DetachProjectAlias is keyed only by alias_id.
+		preflight, err := cfg.DB.AliasByID(ctx, in.AliasID)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(404, "alias_not_found", "alias not found", "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if preflight.ProjectID != in.ProjectID {
+			return nil, api.NewError(404, "alias_not_found",
+				"alias does not belong to the requested project", "", nil)
+		}
+		alias, evt, err := cfg.DB.DetachProjectAlias(ctx, db.DetachAliasParams{
+			AliasID: in.AliasID, Actor: in.Actor, Force: in.Force,
+		})
+		switch {
+		case errors.Is(err, db.ErrNotFound):
+			return nil, api.NewError(404, "alias_not_found", "alias not found", "", nil)
+		case errors.Is(err, db.ErrAliasIsLast):
+			return nil, api.NewError(409, "alias_is_last",
+				"alias is the only one for its project",
+				"detach with force=true to drop it anyway, or attach a replacement first", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: alias.ProjectID})
+		cfg.Hooks.Enqueue(*evt)
+		out := &api.DetachProjectAliasResponse{}
+		out.Body.Alias = alias
+		out.Body.Event = evt
+		return out, nil
+	})
+
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "renameProject",
 		Method:      "PATCH",
 		Path:        "/api/v1/projects/{project_id}",
@@ -424,7 +504,12 @@ func writeDestination(disc config.DiscoveredPaths, abs string) string {
 }
 
 // upsertProject returns the existing project (created=false) when one matches
-// the identity, otherwise creates a new project (created=true).
+// the identity, otherwise creates a new project (created=true). Archived
+// (deleted_at != NULL) projects are NOT auto-resurrected — re-init against
+// an archived identity returns project_archived (409) so the operator
+// either picks a different identity or runs an explicit restore (when that
+// flow ships). The identity stays UNIQUE in projects, so a silent
+// re-create would otherwise hit a raw UNIQUE constraint error.
 func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
 	got, err := projectByIdentityOrAlias(ctx, store, identity)
 	if err == nil {
@@ -432,6 +517,12 @@ func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db
 	}
 	if !errors.Is(err, db.ErrNotFound) {
 		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if archived, archErr := store.ProjectByIdentityIncludingArchived(ctx, identity); archErr == nil && archived.DeletedAt != nil {
+		return db.Project{}, false, api.NewError(409, "project_archived",
+			"project with this identity was archived via `kata projects remove`",
+			"restore the project (not yet supported) or pick a different identity",
+			map[string]any{"identity": identity, "deleted_at": archived.DeletedAt})
 	}
 	created, err := store.CreateProject(ctx, identity, name)
 	if err != nil {

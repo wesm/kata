@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -32,7 +33,9 @@ type projectRef struct {
 
 func newProjectsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "projects", Short: "list and inspect kata projects"}
-	cmd.AddCommand(projectsListCmd(), projectsShowCmd(), projectsRenameCmd(), projectsMergeCmd(), projectsResetCounterCmd())
+	cmd.AddCommand(projectsListCmd(), projectsShowCmd(), projectsRenameCmd(),
+		projectsMergeCmd(), projectsRemoveCmd(), projectsDetachCmd(),
+		projectsResetCounterCmd())
 	return cmd
 }
 
@@ -535,4 +538,136 @@ func pluralCount(n int64, noun string) string {
 		return fmt.Sprintf("%d %ses", n, noun)
 	}
 	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// projectsRemoveCmd archives a project: DELETE /api/v1/projects/{id}. The
+// row stays so events keep a valid FK target, but list/resolve hide it and
+// re-init against the same identity returns project_archived. --force
+// overrides the open-issue refusal.
+func projectsRemoveCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "remove <project>",
+		Short: "archive a project (hides it from kata; events stay for audit)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(ctx, baseURL)
+			if err != nil {
+				return err
+			}
+			project, err := resolveProjectSelector(ctx, client, baseURL, args[0])
+			if err != nil {
+				return err
+			}
+			actor, _ := resolveActor(flags.As, nil)
+			path := fmt.Sprintf("%s/api/v1/projects/%d?actor=%s",
+				baseURL, project.ID, url.QueryEscape(actor))
+			if force {
+				path += "&force=true"
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodDelete, path, nil)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			if flags.JSON {
+				var buf bytes.Buffer
+				if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+					return err
+				}
+				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(),
+				"archived project #%d (%s); events preserved, aliases dropped\n",
+				project.ID, project.Identity)
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "archive even when open issues remain")
+	return cmd
+}
+
+// projectsDetachCmd drops a single alias from a project: DELETE
+// /api/v1/projects/{id}/aliases/{alias_id}. The selector is the alias_identity
+// (e.g. github.com/foo/bar or local:///abs/path). --force overrides the
+// last-alias refusal.
+func projectsDetachCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "detach <alias-identity>",
+		Short: "remove a single project alias",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			baseURL, err := ensureDaemon(ctx)
+			if err != nil {
+				return err
+			}
+			client, err := httpClientFor(ctx, baseURL)
+			if err != nil {
+				return err
+			}
+			selector := strings.TrimSpace(args[0])
+			projects, err := loadProjectRefs(ctx, client, baseURL)
+			if err != nil {
+				return err
+			}
+			projectID, aliasID, ok := findAliasBySelector(projects, selector)
+			if !ok {
+				return &cliError{
+					Message:  fmt.Sprintf("alias %q did not match any project_aliases row", selector),
+					Kind:     kindNotFound,
+					ExitCode: ExitNotFound,
+				}
+			}
+			actor, _ := resolveActor(flags.As, nil)
+			path := fmt.Sprintf("%s/api/v1/projects/%d/aliases/%d?actor=%s",
+				baseURL, projectID, aliasID, url.QueryEscape(actor))
+			if force {
+				path += "&force=true"
+			}
+			status, bs, err := httpDoJSON(ctx, client, http.MethodDelete, path, nil)
+			if err != nil {
+				return err
+			}
+			if status >= 400 {
+				return apiErrFromBody(status, bs)
+			}
+			if flags.JSON {
+				var buf bytes.Buffer
+				if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
+					return err
+				}
+				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(),
+				"detached alias %q from project #%d\n", selector, projectID)
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "drop the alias even when it's the only one for its project")
+	return cmd
+}
+
+// findAliasBySelector matches an alias_identity exactly across every
+// project's pre-loaded aliases. Returns the project_id and alias_id when one
+// match exists.
+func findAliasBySelector(projects []projectRef, selector string) (int64, int64, bool) {
+	for _, project := range projects {
+		for _, alias := range project.Aliases {
+			if alias.AliasIdentity == selector {
+				return project.ID, alias.ID, true
+			}
+		}
+	}
+	return 0, 0, false
 }

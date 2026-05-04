@@ -2,14 +2,19 @@ package db
 
 import "time"
 
-// Project mirrors a row in projects.
+// Project mirrors a row in projects. DeletedAt is set when the project has
+// been archived via kata projects remove (#24); the row stays in the table so
+// events/issues keep referring to a valid FK target, but read paths filter it
+// out. Identity stays UNIQUE so re-creating the same identity hits a clean
+// "project was archived" error rather than silently resurrecting it.
 type Project struct {
-	ID              int64     `json:"id"`
-	UID             string    `json:"uid"`
-	Identity        string    `json:"identity"`
-	Name            string    `json:"name"`
-	CreatedAt       time.Time `json:"created_at"`
-	NextIssueNumber int64     `json:"next_issue_number"`
+	ID              int64      `json:"id"`
+	UID             string     `json:"uid"`
+	Identity        string     `json:"identity"`
+	Name            string     `json:"name"`
+	CreatedAt       time.Time  `json:"created_at"`
+	NextIssueNumber int64      `json:"next_issue_number"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
 }
 
 // ProjectAlias mirrors a row in project_aliases.

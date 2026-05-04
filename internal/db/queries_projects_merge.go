@@ -16,6 +16,18 @@ var (
 	// ErrProjectMergeIssueNumberCollision is returned when moving source issues
 	// would violate the target's UNIQUE(project_id, number) constraint.
 	ErrProjectMergeIssueNumberCollision = errors.New("project merge issue number collision")
+
+	// ErrProjectMergeArchivedSource is returned when MergeProjects is asked
+	// to merge from a project that's been archived via RemoveProject (#24).
+	// Merging out of an archive is a restore-then-merge flow that doesn't
+	// exist yet; rather than silently undoing the archive we refuse here.
+	ErrProjectMergeArchivedSource = errors.New("source project is archived")
+
+	// ErrProjectMergeArchivedTarget is returned when the target project is
+	// archived. Folding live work into an archived project would resurrect
+	// the archive's identity, which is exactly what archival is meant to
+	// prevent.
+	ErrProjectMergeArchivedTarget = errors.New("target project is archived")
 )
 
 // ProjectMergeCollisionError carries the issue numbers that blocked a merge.
@@ -69,6 +81,12 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 	target, err := scanProject(tx.QueryRowContext(ctx, projectSelect+` WHERE id = ?`, p.TargetProjectID))
 	if err != nil {
 		return ProjectMergeResult{}, fmt.Errorf("load target project: %w", err)
+	}
+	if source.DeletedAt != nil {
+		return ProjectMergeResult{}, ErrProjectMergeArchivedSource
+	}
+	if target.DeletedAt != nil {
+		return ProjectMergeResult{}, ErrProjectMergeArchivedTarget
 	}
 
 	collisions, err := projectMergeIssueNumberCollisions(ctx, tx, p.SourceProjectID, p.TargetProjectID)

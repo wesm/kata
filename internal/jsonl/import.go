@@ -149,9 +149,9 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO projects(id, uid, identity, name, created_at, next_issue_number)
-			 VALUES(?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.UID, rec.Identity, rec.Name, rec.CreatedAt, rec.NextIssueNumber)
+			`INSERT INTO projects(id, uid, identity, name, created_at, next_issue_number, deleted_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.Identity, rec.Name, rec.CreatedAt, rec.NextIssueNumber, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindProjectAlias:
 		var rec projectAliasRecord
@@ -434,12 +434,13 @@ func stringPtrValue(s *string) any {
 }
 
 type projectRecord struct {
-	ID              int64  `json:"id"`
-	UID             string `json:"uid"`
-	Identity        string `json:"identity"`
-	Name            string `json:"name"`
-	CreatedAt       string `json:"created_at"`
-	NextIssueNumber int64  `json:"next_issue_number"`
+	ID              int64   `json:"id"`
+	UID             string  `json:"uid"`
+	Identity        string  `json:"identity"`
+	Name            string  `json:"name"`
+	CreatedAt       string  `json:"created_at"`
+	NextIssueNumber int64   `json:"next_issue_number"`
+	DeletedAt       *string `json:"deleted_at,omitempty"`
 }
 
 type projectAliasRecord struct {

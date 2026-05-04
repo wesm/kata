@@ -35,7 +35,7 @@ func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
 }
 
 func TestOpen_RecordsCurrentSchemaVersion(t *testing.T) {
-	assert.Equal(t, 3, db.CurrentSchemaVersion())
+	assert.Equal(t, 4, db.CurrentSchemaVersion())
 	path := filepath.Join(t.TempDir(), "kata.db")
 	d, err := db.Open(context.Background(), path)
 	require.NoError(t, err)
