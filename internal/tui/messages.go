@@ -178,11 +178,15 @@ type labelsFetchedMsg struct {
 }
 
 // projectsLoadedMsg is delivered after a /api/v1/projects fetch returns.
-// The all-projects list view uses the resulting map to prefix each row's
-// title with the owning project's display name. Failures populate err so
-// the TUI can degrade gracefully (rows render without the prefix).
+// The all-projects list view uses the projects map to prefix each row's
+// title with the owning project's display name. The stats and idents
+// maps are populated only by fetchProjectsWithStats; the boot
+// fetchProjects cmd leaves them nil so callers can distinguish "names
+// only" vs "with stats".
 type projectsLoadedMsg struct {
 	projects map[int64]string
+	idents   map[int64]string
+	stats    map[int64]ProjectStatsSummary
 	err      error
 }
 

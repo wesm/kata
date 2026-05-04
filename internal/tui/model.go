@@ -21,6 +21,7 @@ const (
 	viewDetail
 	viewHelp
 	viewEmpty
+	viewProjects
 )
 
 // Model is the top-level Bubble Tea model. Sub-views are embedded by
@@ -104,6 +105,17 @@ type Model struct {
 	// owning project's name. Stays nil-safe — a missing entry renders
 	// as a numeric "[#N]" prefix instead of crashing.
 	projectsByID map[int64]string
+	// projectStats is the per-project aggregate cache populated by
+	// fetchProjectsWithStats. nil-safe: viewProjects renders rows for
+	// projects in projectsByID even if their stats haven't loaded yet.
+	projectStats map[int64]ProjectStatsSummary
+	// projectIdentByID caches each project's identity (Git URL) for the
+	// projects-view detail footer. Populated alongside projectsByID by
+	// fetchProjectsWithStats.
+	projectIdentByID map[int64]string
+	// projectsCursor is the highlighted row in viewProjects. Reset when
+	// transitioning into the view; preserved across re-renders.
+	projectsCursor int
 	// projectPicker carries the cursor + sorted project list for the
 	// switch-project modal opened by the P binding. Reset to its zero
 	// value when the modal closes.
@@ -156,20 +168,22 @@ func initialModel(opts Options) Model {
 	lm.actor = resolveTUIActor()
 	uidFormat := parseUIDDisplayFormat(opts.DisplayUIDFormat)
 	return Model{
-		opts:          opts,
-		view:          viewList,
-		keymap:        newKeymap(),
-		list:          lm,
-		detail:        newDetailModel(),
-		sseCh:         make(chan tea.Msg, 16),
-		sseStatus:     sseConnected,
-		cache:         newIssueCache(),
-		toastNow:      time.Now,
-		projectLabels: newLabelCache(),
-		projectsByID:  map[int64]string{},
-		layout:        layoutStacked,
-		focus:         focusList,
-		uidFormat:     uidFormat,
+		opts:             opts,
+		view:             viewList,
+		keymap:           newKeymap(),
+		list:             lm,
+		detail:           newDetailModel(),
+		sseCh:            make(chan tea.Msg, 16),
+		sseStatus:        sseConnected,
+		cache:            newIssueCache(),
+		toastNow:         time.Now,
+		projectLabels:    newLabelCache(),
+		projectsByID:     map[int64]string{},
+		projectStats:     map[int64]ProjectStatsSummary{},
+		projectIdentByID: map[int64]string{},
+		layout:           layoutStacked,
+		focus:            focusList,
+		uidFormat:        uidFormat,
 	}
 }
 
@@ -334,6 +348,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if pl, ok := msg.(projectsLoadedMsg); ok {
 		if pl.err == nil && pl.projects != nil {
 			m.projectsByID = pl.projects
+		}
+		if pl.err == nil && pl.idents != nil {
+			m.projectIdentByID = pl.idents
+		}
+		if pl.err == nil && pl.stats != nil {
+			m.projectStats = pl.stats
 		}
 		return m, nil
 	}
@@ -2151,6 +2171,9 @@ func (m Model) View() string {
 	// modal would silently disappear and the user would be stuck —
 	// pressing q again would only re-trigger the (invisible) modal.
 	if m.width > 0 && m.width < 80 {
+		if m.view == viewProjects {
+			return renderProjects(m)
+		}
 		body := renderTooNarrow(m.width, m.height)
 		if m.modal == modalQuitConfirm {
 			return overlayModal(body, renderQuitConfirmModal(), m.width, m.height)
@@ -2280,6 +2303,8 @@ func (m Model) viewBody() string {
 		return renderHelp(m.keymap, m.width, m.list.filter)
 	case viewEmpty:
 		return renderEmpty(m.width, m.height)
+	case viewProjects:
+		return renderProjects(m)
 	}
 	if m.layout == layoutSplit {
 		return renderSplit(m)
