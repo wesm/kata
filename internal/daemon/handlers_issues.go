@@ -31,15 +31,8 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		project, err := cfg.DB.ProjectByID(ctx, in.ProjectID)
-		if err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-			}
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		if project.DeletedAt != nil {
-			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 
 		links := make([]db.InitialLink, 0, len(in.Body.Links))
@@ -107,11 +100,8 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/projects/{project_id}/issues",
 	}, func(ctx context.Context, in *api.ListIssuesRequest) (*api.ListIssuesResponse, error) {
-		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-			}
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		issues, err := cfg.DB.ListIssues(ctx, db.ListIssuesParams{
 			ProjectID: in.ProjectID,
@@ -136,11 +126,8 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Path:        "/api/v1/issues",
 	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
 		if in.ProjectID > 0 {
-			if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
-				if errors.Is(err, db.ErrNotFound) {
-					return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-				}
-				return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+				return nil, err
 			}
 		}
 		issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{

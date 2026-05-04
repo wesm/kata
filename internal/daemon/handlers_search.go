@@ -2,13 +2,11 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/wesm/kata/internal/api"
-	"github.com/wesm/kata/internal/db"
 )
 
 // registerSearchHandlers installs GET /api/v1/projects/{id}/search. Returns
@@ -23,11 +21,8 @@ func registerSearchHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(400, "validation",
 				"query parameter q must be non-empty", "", nil)
 		}
-		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-			}
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		limit := in.Limit
 		if limit <= 0 {

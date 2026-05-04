@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -33,11 +32,8 @@ func registerDigestHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(400, "validation",
 				"project_id must be a positive integer", "", nil)
 		}
-		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-			}
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		return doDigest(ctx, cfg, in.ProjectID, in.Since, in.Until, in.Actors)
 	})

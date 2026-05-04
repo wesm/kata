@@ -15,6 +15,26 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
+// activeProjectByID resolves a project by rowid for surface API handlers
+// that should treat archived projects as not-found. Returns the api.NewError
+// envelope directly so call sites can `return nil, err`.
+//
+// Internal helpers (merge, restore, alias resolve) that need to operate on
+// archived rows must use store.ProjectByID directly.
+func activeProjectByID(ctx context.Context, store *db.DB, id int64) (db.Project, error) {
+	p, err := store.ProjectByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return db.Project{}, api.NewError(404, "project_not_found", "project not found", "", nil)
+		}
+		return db.Project{}, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if p.DeletedAt != nil {
+		return db.Project{}, api.NewError(404, "project_not_found", "project not found", "", nil)
+	}
+	return p, nil
+}
+
 // dbProjectToOut maps a db.Project (internal row) to the API-shape
 // ProjectOut. Stats stays nil — that field is populated only by the
 // list-projects handler when ?include=stats is set (Task 3).

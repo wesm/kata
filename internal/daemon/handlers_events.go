@@ -51,11 +51,8 @@ func registerEventsHandlers(humaAPI huma.API, mux *http.ServeMux, cfg ServerConf
 		if in.ProjectID <= 0 {
 			return nil, api.NewError(400, "validation", "project_id must be a positive integer", "", nil)
 		}
-		if _, err := cfg.DB.ProjectByID(ctx, in.ProjectID); err != nil {
-			if errors.Is(err, db.ErrNotFound) {
-				return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-			}
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
 		}
 		return doPollEvents(ctx, cfg, in.AfterID, in.Limit, in.ProjectID)
 	})
@@ -222,13 +219,9 @@ func sseHandler(cfg ServerConfig) http.HandlerFunc {
 			}
 			// Mirror the polling endpoint contract: an unknown positive
 			// project_id is project_not_found, not an idle 200 stream.
-			if _, err := cfg.DB.ProjectByID(r.Context(), n); err != nil {
-				if errors.Is(err, db.ErrNotFound) {
-					renderAPIError(w, api.NewError(404, "project_not_found",
-						"project not found", "", nil))
-					return
-				}
-				renderAPIError(w, api.NewError(500, "internal", err.Error(), "", nil))
+			// Archived projects are also treated as not-found.
+			if _, err := activeProjectByID(r.Context(), cfg.DB, n); err != nil {
+				renderAPIError(w, err)
 				return
 			}
 			projectID = n
