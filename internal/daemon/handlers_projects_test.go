@@ -601,6 +601,91 @@ func TestRemoveProject_ArchivedIdentityRefusesReinit(t *testing.T) {
 	assert.Contains(t, string(bs2), "project_archived")
 }
 
+// TestListProjects_WithStatsIncludesAggregates pins the new wire
+// contract: ?include=stats returns a stats triple per project. Spec §7.1.
+func TestListProjects_WithStatsIncludesAggregates(t *testing.T) {
+	h := openTestDB(t)
+	ctx := t.Context()
+	p, err := h.db.CreateProject(ctx, "github.com/wesm/x", "x")
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, _, err := h.db.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: "i", Author: "tester",
+		})
+		require.NoError(t, err)
+	}
+	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts, "/api/v1/projects?include=stats")
+	var parsed struct {
+		Projects []struct {
+			ID    int64 `json:"id"`
+			Stats *struct {
+				Open        int     `json:"open"`
+				Closed      int     `json:"closed"`
+				LastEventAt *string `json:"last_event_at"`
+			} `json:"stats"`
+		} `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &parsed))
+	require.Len(t, parsed.Projects, 1)
+	require.NotNil(t, parsed.Projects[0].Stats, "stats present with ?include=stats")
+	assert.Equal(t, 3, parsed.Projects[0].Stats.Open)
+	assert.Equal(t, 0, parsed.Projects[0].Stats.Closed)
+	require.NotNil(t, parsed.Projects[0].Stats.LastEventAt)
+}
+
+// TestListProjects_WithStatsHandlesEmptyProjects pins that a project
+// with zero issues and zero events serializes Open=0, Closed=0,
+// LastEventAt=null. Spec §7.1.
+func TestListProjects_WithStatsHandlesEmptyProjects(t *testing.T) {
+	h := openTestDB(t)
+	_, err := h.db.CreateProject(t.Context(), "github.com/wesm/empty", "empty")
+	require.NoError(t, err)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts, "/api/v1/projects?include=stats")
+	var parsed struct {
+		Projects []struct {
+			Stats struct {
+				Open        int     `json:"open"`
+				Closed      int     `json:"closed"`
+				LastEventAt *string `json:"last_event_at"`
+			} `json:"stats"`
+		} `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &parsed))
+	require.Len(t, parsed.Projects, 1)
+	assert.Equal(t, 0, parsed.Projects[0].Stats.Open)
+	assert.Equal(t, 0, parsed.Projects[0].Stats.Closed)
+	assert.Nil(t, parsed.Projects[0].Stats.LastEventAt, "no events → null")
+}
+
+// TestListProjects_DefaultShapeUnchangedAfterStats pins that the no-query
+// default response did not regress after Task 3 — backwards compat for
+// kata projects list and any other consumer that doesn't opt in. Spec §7.1.
+func TestListProjects_DefaultShapeUnchangedAfterStats(t *testing.T) {
+	h := openTestDB(t)
+	_, err := h.db.CreateProject(t.Context(), "github.com/wesm/x", "x")
+	require.NoError(t, err)
+	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts, "/api/v1/projects")
+	var parsed struct {
+		Projects []map[string]any `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &parsed))
+	require.Len(t, parsed.Projects, 1)
+	_, has := parsed.Projects[0]["stats"]
+	assert.False(t, has, "stats must omit without ?include=stats")
+}
+
 func TestInit_MergedKataTomlIdentityResolvesToSurvivingProject(t *testing.T) {
 	h := newServerWithGitWorkspace(t, "https://github.com/wesm/steward.git")
 	store := h.DB()

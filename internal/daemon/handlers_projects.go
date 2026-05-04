@@ -30,6 +30,18 @@ func dbProjectToOut(p db.Project) api.ProjectOut {
 	}
 }
 
+// includeContains reports whether the comma-separated ?include= value
+// names the given token. Whitespace is trimmed; matching is case-
+// insensitive on the token side. Spec §7.1.
+func includeContains(includeParam, token string) bool {
+	for _, part := range strings.Split(includeParam, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
+}
+
 // registerProjectsHandlers installs project-scoped routes (resolve, init, list,
 // show) on humaAPI. Resolution and init semantics live entirely on the daemon
 // per spec §2.4 so all clients (CLI, TUI, future) see identical behavior.
@@ -65,7 +77,9 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		OperationID: "listProjects",
 		Method:      "GET",
 		Path:        "/api/v1/projects",
-	}, func(ctx context.Context, _ *struct{}) (*api.ListProjectsResponse, error) {
+	}, func(ctx context.Context, in *struct {
+		Include string `query:"include"`
+	}) (*api.ListProjectsResponse, error) {
 		ps, err := cfg.DB.ListProjects(ctx)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
@@ -73,6 +87,21 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		outs := make([]api.ProjectOut, len(ps))
 		for i, p := range ps {
 			outs[i] = dbProjectToOut(p)
+		}
+		if includeContains(in.Include, "stats") {
+			stats, err := cfg.DB.BatchProjectStats(ctx)
+			if err != nil {
+				return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			}
+			for i, p := range ps {
+				if s, ok := stats[p.ID]; ok {
+					outs[i].Stats = &api.ProjectStatsOut{
+						Open:        s.Open,
+						Closed:      s.Closed,
+						LastEventAt: s.LastEventAt,
+					}
+				}
+			}
 		}
 		out := &api.ListProjectsResponse{}
 		out.Body.Projects = outs
