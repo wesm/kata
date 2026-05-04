@@ -331,12 +331,27 @@ func TestSearchFTS_OperatorWordsAsLiterals(t *testing.T) {
 		ProjectID: p.ID, Title: "merge after review", Author: "tester",
 	})
 	require.NoError(t, err)
+	// Seeded specifically so that AND/NEAR-as-literals can be exercised: each
+	// row contains the operator word as a regular token. A regression that
+	// stopped quoting these into phrases would either error out (FTS5 syntax)
+	// or match unrelated rows (operator semantics), so a positive literal
+	// match is the right pin.
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "build AND deploy pipeline", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "place item NEAR exit", Author: "tester",
+	})
+	require.NoError(t, err)
 
 	cases := []struct {
 		name, query, wantTitle string
 	}{
 		{"NOT as literal", "NOT merge", "do NOT merge yet"},
 		{"OR as literal", "blocked OR", "do NOT merge yet"},
+		{"AND as literal", "build AND deploy", "build AND deploy pipeline"},
+		{"NEAR as literal", "item NEAR exit", "place item NEAR exit"},
 		{"star is literal not prefix", "merg*", ""},
 	}
 	for _, tc := range cases {
@@ -347,7 +362,7 @@ func TestSearchFTS_OperatorWordsAsLiterals(t *testing.T) {
 				assert.Len(t, got, 0, "wildcard must not act as prefix-match")
 				return
 			}
-			require.Len(t, got, 1)
+			require.Len(t, got, 1, "query %q must match exactly one row", tc.query)
 			assert.Equal(t, tc.wantTitle, got[0].Issue.Title)
 		})
 	}
