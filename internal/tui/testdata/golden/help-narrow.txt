@@ -6,7 +6,7 @@ q/ctrl+c  quit
 R         scope toggle (gated)
 L         toggle layout
 
-Queue
+Graph
 k/up    up
 j/down  down
 pgup    page up
@@ -16,7 +16,7 @@ G       last
 enter   open detail
 space   expand/collapse
 n       new issue (form)
-o       toggle child order
+o       toggle graph order
 x       close
 r       reopen
 

@@ -333,7 +333,7 @@ func (lm listModel) applyChildSortKey(msg tea.KeyMsg, km keymap) (listModel, boo
 	} else {
 		lm.childSort = childSortTemporal
 	}
-	lm.status = "child order: " + lm.childSort.label()
+	lm.status = "graph order: " + lm.childSort.label()
 	return lm.restoreCursorToSelection(), true
 }
 

@@ -180,7 +180,7 @@ type ListIssuesRequest struct {
 // It embeds db.Issue (every persistence column flattens to the top
 // level on JSON marshal) and adds row metadata the daemon hydrates
 // from relationship tables: labels, parent/child summary, and outgoing
-// blocker edges used by the TUI queue's child ordering. Kept
+// blocker edges used by the TUI graph's child ordering. Kept
 // separate from db.Issue so the persistence struct stays free of
 // wire-only state; rolling labels into db.Issue would force every db
 // query path to know whether labels were hydrated, which they aren't

@@ -44,7 +44,7 @@ func newKeymap() keymap {
 		NewIssue:       key{Keys: []string{"n"}, Help: "new issue (form)"},
 		NewChild:       key{Keys: []string{"N"}, Help: "new child"},
 		ExpandCollapse: key{Keys: []string{" "}, Help: "expand/collapse"},
-		SortChildren:   key{Keys: []string{"o"}, Help: "toggle child order"},
+		SortChildren:   key{Keys: []string{"o"}, Help: "toggle graph order"},
 		Search:         key{Keys: []string{"/"}, Help: "search"},
 		FilterStatus:   key{Keys: []string{"s"}, Help: "cycle status filter"},
 		FilterForm:     key{Keys: []string{"f"}, Help: "filter (form)"},
