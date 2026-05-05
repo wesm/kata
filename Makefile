@@ -1,4 +1,4 @@
-.PHONY: build install test test-short lint lint-ci vet clean fmt nilaway
+.PHONY: build install test test-short lint vet clean fmt nilaway
 
 GOFLAGS_TEST := -shuffle=on
 
@@ -16,9 +16,6 @@ test-short:
 
 lint:
 	golangci-lint run --config .golangci.yml
-
-lint-ci:
-	golangci-lint run --config .golangci.yml --no-fix
 
 vet:
 	go vet ./...
