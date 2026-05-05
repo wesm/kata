@@ -210,6 +210,46 @@ describe("KataClient", () => {
     expect(calls).toContainEqual(["unassign-throw", "15"]);
   });
 
+  it("rejects tasks owned by another agent before claiming", async () => {
+    const { runner, calls } = recordingRunner([
+      json({
+        issue: { number: 19, title: "Owned task", body: "Do work", status: "open", owner: "other-agent" },
+        labels: [{ label: "agent:worker" }],
+        links: [],
+        comments: [],
+      }),
+    ]);
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.claimForExecution("19")).rejects.toThrow("already owned by other-agent");
+
+    expect(calls).toEqual([["show", "19", "--json"]]);
+  });
+
+  it("does not unassign pre-existing ownership when claim rollback fails", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { number: 20, title: "Already mine", body: "Do work", status: "open", owner: "pi-agent" },
+          labels: [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "comment") {
+        throw new Error("comment failed");
+      }
+      return json({ issue: { number: 20, title: "Already mine", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.claimForExecution("20")).rejects.toThrow("comment failed");
+
+    expect(calls).not.toContainEqual(["unassign", "20", "--json"]);
+  });
+
   it("serializes concurrent claims for the same task", async () => {
     const calls: string[][] = [];
     let claimed = false;

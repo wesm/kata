@@ -122,6 +122,9 @@ export class KataClient {
     const detail = await this.showTask(taskId);
     if (detail.issue.status === "closed") throw new Error(`Task #${taskId} is already completed`);
     if (detail.labels.includes("in_progress")) throw new Error(`Task #${taskId} is already in progress`);
+    if (detail.issue.owner && detail.issue.owner !== this.author) {
+      throw new Error(`Task #${taskId} is already owned by ${detail.issue.owner}`);
+    }
 
     const openBlockers: number[] = [];
     for (const blocker of blockersFor(detail.issue.number, detail.links)) {
@@ -135,11 +138,11 @@ export class KataClient {
     const agentType = options.agentType ?? agentTypeFromLabels(detail.labels);
     if (!agentType) throw new Error(`Task #${taskId} has no agent type; add label agent:<type> or pass agent_type.`);
 
-    let assigned = false;
+    let assignedByClaim = false;
     let labeled = false;
     try {
       await this.assign(taskId, this.author);
-      assigned = true;
+      assignedByClaim = !detail.issue.owner;
       await this.addLabel(taskId, "in_progress");
       labeled = true;
       await this.comment(taskId, `TaskExecute started by ${this.author} using agent type ${agentType}.`);
@@ -151,7 +154,7 @@ export class KataClient {
           // Continue rollback so unassignment still runs; preserve the original failure.
         }
       }
-      if (assigned) {
+      if (assignedByClaim) {
         try {
           await this.unassign(taskId);
         } catch {
