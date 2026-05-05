@@ -71,8 +71,6 @@ func (m Model) dispatchLabelFetch(pid int64) (Model, tea.Cmd) {
 	entry.fetching = true
 	entry.err = nil
 	m.projectLabels.byProject[pid] = entry
-	// m.api is *Client — convert to labelLister carefully so a typed-
-	// nil pointer doesn't become a non-nil interface inside the cmd.
 	var api labelLister
 	if m.api != nil {
 		api = m.api

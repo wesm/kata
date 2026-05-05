@@ -42,7 +42,7 @@ const (
 // replace it to drive deterministic toast expiry.
 type Model struct {
 	opts           Options
-	api            *Client
+	api            KataAPI
 	scope          scope
 	view           viewID
 	prevView       viewID
@@ -1378,7 +1378,7 @@ func normalizeOwner(buf string) *string {
 // Title is sent untrimmed; Labels and Owner have already been
 // normalized by commitNewIssueForm.
 func dispatchFormCreateIssue(
-	api *Client, pid int64, body CreateIssueBody, formGen int64,
+	api listAPI, pid int64, body CreateIssueBody, formGen int64,
 ) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1395,7 +1395,7 @@ func dispatchFormCreateIssue(
 // with origin="form" + the captured formGen so routeFormMutation can
 // match the response to the still-open form.
 func dispatchFormAddComment(
-	api *Client, target formTarget, body, actor string, formGen int64,
+	api detailAPI, target formTarget, body, actor string, formGen int64,
 ) tea.Cmd {
 	pid, num := target.projectID, target.issueNumber
 	return func() tea.Msg {
@@ -1412,7 +1412,7 @@ func dispatchFormAddComment(
 // dispatchFormEditBody is the form-side EditBody dispatch. Same
 // shape as dispatchFormAddComment.
 func dispatchFormEditBody(
-	api *Client, target formTarget, body, actor string, formGen int64,
+	api detailAPI, target formTarget, body, actor string, formGen int64,
 ) tea.Cmd {
 	pid, num := target.projectID, target.issueNumber
 	return func() tea.Msg {
