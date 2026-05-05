@@ -10,7 +10,7 @@ Claude Code's task lifecycle can currently drift away from kata: Claude may crea
 
 The key behavior is feedback, not automation-at-all-costs:
 
-- On `TaskCreated`, if a task should be tracked in kata, the hook can block the Claude task creation with exit code `2` and tell Claude to create or reference a kata issue first.
+- On `TaskCreated`, if a task should be tracked in kata, the hook creates or finds the kata issue itself, then blocks the Claude task creation with exit code `2` and tells Claude which `kata #N` to use instead.
 - On `TaskCompleted`, the hook can block completion with exit code `2` and tell Claude to update, comment on, or close the corresponding kata issue first.
 - If kata has not been initialized for the workspace, the hook should notify Claude that the user needs to run `kata init`; it must not run `kata init` automatically.
 
@@ -23,6 +23,7 @@ Claude Code's hook reference documents that command hooks receive event JSON on 
 - Do not add or change kata's `$KATA_HOME/hooks.toml` dispatcher. That dispatcher observes kata events after commit; this feature configures Claude Code lifecycle hooks before Claude task state changes.
 - Do not auto-run `kata init`.
 - Do not invent a project identity from Claude hook input. Project resolution continues to go through kata's existing cwd / `.kata.toml` / alias rules.
+- Do not use Claude Code `task_id` for correlation, idempotency, diagnostics, or mapping. It is Claude's internal task identity, not kata's durable work identity.
 - Do not add a persistent Claude task to kata issue mapping store in v1.
 - Do not require `jq`, shell scripts, or generated hook files for the runtime behavior.
 - Do not parse Claude transcripts in v1. The hook JSON contains enough data for the first pass.
@@ -155,7 +156,7 @@ The runtime command accepts the common Claude hook fields plus task-specific fie
 }
 ```
 
-For kata's behavior, `hook_event_name` and `task_subject` are required on task events. `cwd` is preferred for project resolution but may be empty, in which case the runtime falls back to the process cwd. `task_id` is accepted and retained for diagnostics, but v1 does not require it because issue correlation is text-reference based.
+For kata's behavior, `hook_event_name` and `task_subject` are required on task events. `cwd` is preferred for project resolution but may be empty, in which case the runtime falls back to the process cwd. `task_id` may appear in Claude's payload, but v1 ignores it completely; it is not stored, logged as a correlation key, used for idempotency, or echoed back to Claude.
 
 String fields from Claude are decoded defensively:
 
@@ -190,11 +191,11 @@ Other resolution errors are operational failures. They should surface as normal 
 
 The hook timeout is 10 seconds. Runtime behavior should be fast enough for a warm daemon path. If daemon auto-start or project resolution exceeds the timeout, Claude Code will terminate the command; the installer cannot guarantee a polished stderr in that case. To reduce cold-start risk, the runtime should use the existing CLI daemon ensure path and the default `KATA_HTTP_TIMEOUT`, but the design does not add a hook-specific longer timeout because these hooks run in Claude's task lifecycle and should not stall it for long periods.
 
-## 7. Issue reference and lookup rule
+## 7. Issue creation, reference, and lookup rule
 
-V1 uses explicit issue references in Claude task text instead of a persistent mapping table.
+V1 uses kata issues as the only durable work identity. Claude task IDs are ignored.
 
-The runtime scans `task_subject` and `task_description` for:
+The runtime first scans `task_subject` and `task_description` for:
 
 - `kata #123`
 - `#123`
@@ -205,7 +206,16 @@ The scan is intentionally conservative:
 - The issue number must be a positive integer.
 - False positives are acceptable only when the text is clearly issue-like. If this proves noisy, implementation can tighten to require the `kata #123` form first, while still accepting bare `#123` as a compatibility fallback.
 
-When an issue number is found, the runtime verifies that the issue exists in the resolved project by using the same daemon API path as `kata show`: `GET /api/v1/projects/{project_id}/issues/{number}`. The response's `issue.status` field determines whether `TaskCompleted` allows completion (`closed`) or blocks with update/close guidance (`open`). A 404 `issue_not_found` is treated like no usable reference: Claude is told to find or create the correct kata issue. Other lookup failures are operational errors.
+When an issue number is found, the runtime verifies that the issue exists in the resolved project by using the same daemon API path as `kata show`: `GET /api/v1/projects/{project_id}/issues/{number}`. The response's `issue.status` field determines whether `TaskCompleted` allows completion (`closed`) or blocks with update/close guidance (`open`). A 404 `issue_not_found` is treated like no usable reference.
+
+When `TaskCreated` has no usable issue reference, the runtime creates or reuses a kata issue before returning feedback to Claude:
+
+1. Search the current project for an existing open issue whose title exactly matches `task_subject`.
+2. If exactly one match exists, reuse it.
+3. If no exact match exists, create a new issue with `task_subject` as the title and `task_description` as the body when non-empty.
+4. If multiple exact matches exist, do not create another issue; exit `2` asking Claude to disambiguate by including the correct `kata #N`.
+
+The create path must not use Claude `task_id` for idempotency. Duplicate protection comes from kata's own search-before-create behavior plus the exact-title lookup above. Other lookup or create failures are operational errors.
 
 ## 8. `TaskCreated` behavior
 
@@ -217,21 +227,28 @@ Flow:
 2. Resolve kata project from `cwd`.
 3. Scan subject and description for an issue reference.
 4. If a valid kata issue reference is present and resolves in the project, exit `0`.
-5. Otherwise exit `2` with Claude-facing guidance.
+5. Otherwise create or reuse a kata issue per §7.
+6. Exit `2` with Claude-facing guidance naming the kata issue number.
 
 Recommended stderr when no issue reference is present:
 
 ```text
-Create or find a kata issue before creating this Claude task. Use the task subject as the kata issue title and the task description as the body when useful. Then include `kata #N` in the Claude task subject or description and retry.
+Created kata #N for this work instead of a Claude task. Do not create a Claude task for it. Continue by referencing `kata #N` in your notes and use kata commands to update, comment on, or close the issue.
 ```
 
 If the task has an issue-looking reference that does not resolve:
 
 ```text
-The Claude task references a kata issue that could not be found in this workspace. Find the correct kata issue or create one, then include `kata #N` in the task subject or description and retry.
+The Claude task references a kata issue that could not be found in this workspace. Find the correct kata issue or create one with kata, then include `kata #N` in the task subject or description and retry.
 ```
 
-This intentionally blocks the Claude task creation. Claude Code will feed stderr back to the model, giving it a chance to run the appropriate kata command.
+If the exact-title lookup finds multiple open issues:
+
+```text
+Multiple open kata issues already match this task title. Do not create a Claude task. Pick the correct kata issue and include `kata #N` in the task subject or description before retrying.
+```
+
+This intentionally blocks the Claude task creation. Claude Code will feed stderr back to the model, steering it to use the kata issue that exists instead of creating an internal Claude task.
 
 ## 9. `TaskCompleted` behavior
 
@@ -273,7 +290,7 @@ flowchart TD
   G --> H{"event"}
   H -- "TaskCreated" --> I{"valid issue ref?"}
   I -- "yes" --> J["exit 0"]
-  I -- "no" --> K["stderr create/find issue guidance; exit 2"]
+  I -- "no" --> K["create/reuse kata issue; stderr kata #N guidance; exit 2"]
   H -- "TaskCompleted" --> L{"valid issue ref closed?"}
   L -- "closed" --> J
   L -- "open or missing" --> M["stderr update/close issue guidance; exit 2"]
@@ -347,9 +364,12 @@ Unit tests:
 - Runtime exits `0` for unknown hook events.
 - Runtime fixture tests cover the documented 2026-05-05 Claude `TaskCreated` and `TaskCompleted` payloads.
 - Runtime fixture tests cover missing `cwd`, missing or empty `task_description`, JSON `null` optional string fields, and unknown extra fields.
+- Runtime ignores Claude `task_id`; changing or removing it does not affect issue selection, idempotency, or emitted guidance.
 - Runtime returns exit `2` with init guidance on `project_not_initialized`.
 - `TaskCreated` exits `0` when `kata #N` resolves.
-- `TaskCreated` exits `2` when no issue reference exists.
+- `TaskCreated` creates a kata issue and exits `2` with the created `kata #N` when no issue reference exists.
+- `TaskCreated` reuses the single exact-title open issue and exits `2` with that `kata #N`.
+- `TaskCreated` exits `2` with disambiguation guidance when multiple exact-title open issues exist.
 - `TaskCreated` exits `2` when an issue-looking reference does not resolve.
 - `TaskCompleted` exits `2` when a referenced issue is open.
 - `TaskCompleted` exits `0` when a referenced issue is already closed.
@@ -368,10 +388,10 @@ Implement this in reviewable slices:
 2. Settings installer: resolve absolute executable path, merge Claude settings, preserve unrelated config, implement ownership detection and `--force`.
 3. Runtime parser: decode documented Claude fixtures, defensive optional string handling, unknown event allow path, validation errors.
 4. Project resolution: resolve project from hook `cwd`, handle `project_not_initialized` as Claude-facing exit `2`, surface other errors normally.
-5. Issue lookup: parse `kata #N` / `#N`, call `GET /api/v1/projects/{project_id}/issues/{number}`, classify open/closed/missing.
-6. Event behavior: implement `TaskCreated` and `TaskCompleted` blocking guidance.
+5. Issue lookup and create/reuse: parse `kata #N` / `#N`, call `GET /api/v1/projects/{project_id}/issues/{number}`, exact-title search for unreferenced `TaskCreated`, create the kata issue when needed, classify open/closed/missing.
+6. Event behavior: implement `TaskCreated` and `TaskCompleted` blocking guidance, including the created/reused `kata #N` for unreferenced task creation.
 7. End-to-end coverage: install local hook config and run real fixture payloads against an initialized test project.
 
 ## 16. Open follow-up
 
-A future version may add a durable mapping from Claude `task_id` to kata issue UID. V1 avoids that storage because Claude task IDs are only useful inside Claude's task system, while explicit `kata #N` references are visible, portable, and easy for agents and humans to repair.
+A future version may add richer natural-language matching for already-existing kata issues. It should still avoid using Claude `task_id` as durable identity: Claude task IDs are only useful inside Claude's task system, while explicit `kata #N` references are visible, portable, and easy for agents and humans to repair.
