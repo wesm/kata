@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { KataClient, type KataRunner } from "./kata.js";
+import { KataClient, kataCommandForError, type KataRunner } from "./kata.js";
 
 function json(data: Record<string, unknown>) {
   return JSON.stringify({ kata_api_version: 1, ...data });
@@ -20,6 +20,21 @@ function recordingRunner(responses: string[] = []): { runner: KataRunner; calls:
 }
 
 describe("KataClient", () => {
+  it("redacts value-bearing CLI arguments in runner error labels", () => {
+    const label = kataCommandForError([
+      "--workspace",
+      "/secret/repo",
+      "comment",
+      "7",
+      "--body",
+      "token=secret",
+      "--json",
+    ]);
+
+    expect(label).toBe("kata comment");
+    expect(label).not.toContain("secret");
+  });
+
   it("creates a Kata issue with body, agent label, idempotency key, and workspace", async () => {
     const { runner, calls } = recordingRunner([
       json({ issue: { number: 7, title: "Fix auth", body: "Details", status: "open" }, changed: true }),

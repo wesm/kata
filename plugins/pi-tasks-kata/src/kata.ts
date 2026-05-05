@@ -317,9 +317,26 @@ export const defaultKataRunner: KataRunner = (args, options = {}) =>
         resolve(stdout);
         return;
       }
-      reject(new Error(`kata ${args.join(" ")} failed with exit ${code}: ${stderr || stdout}`));
+      reject(new Error(`${kataCommandForError(args)} failed with exit ${code}: ${stderr || stdout}`));
     });
   });
+
+export function kataCommandForError(args: string[]): string {
+  return `kata ${kataSubcommand(args) ?? "command"}`;
+}
+
+function kataSubcommand(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--workspace") {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    return arg;
+  }
+  return undefined;
+}
 
 function normalizeLabels(labels: KataEnvelope["labels"]): string[] {
   if (!labels) return [];
