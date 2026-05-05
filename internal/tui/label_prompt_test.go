@@ -36,35 +36,30 @@ func labelPromptFixture() Model {
 	return m
 }
 
+// assertHighlight fails the test unless the suggestion menu's
+// highlight index matches want.
+func assertHighlight(t *testing.T, m Model, want int) {
+	t.Helper()
+	if got := m.input.suggestHighlight; got != want {
+		t.Fatalf("suggestHighlight = %d, want %d", got, want)
+	}
+}
+
 // TestLabelPrompt_ArrowKeys_MoveHighlight_WithWrap: pressing ↓ four
 // times wraps from index 0 → 1 → 2 → 0 (3 entries). Then ↑ wraps
 // 0 → 2.
 func TestLabelPrompt_ArrowKeys_MoveHighlight_WithWrap(t *testing.T) {
 	m := labelPromptFixture()
-	// Down to 1.
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = out.(Model)
-	if got := m.input.suggestHighlight; got != 1 {
-		t.Fatalf("highlight = %d after 1 down, want 1", got)
-	}
-	// Down to 2.
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = out.(Model)
-	if got := m.input.suggestHighlight; got != 2 {
-		t.Fatalf("highlight = %d after 2 down, want 2", got)
-	}
+	m = sendKey(m, tea.KeyDown)
+	assertHighlight(t, m, 1)
+	m = sendKey(m, tea.KeyDown)
+	assertHighlight(t, m, 2)
 	// Down wraps to 0.
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = out.(Model)
-	if got := m.input.suggestHighlight; got != 0 {
-		t.Fatalf("highlight = %d after wrap-down, want 0", got)
-	}
+	m = sendKey(m, tea.KeyDown)
+	assertHighlight(t, m, 0)
 	// Up wraps from 0 → 2.
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = out.(Model)
-	if got := m.input.suggestHighlight; got != 2 {
-		t.Fatalf("highlight = %d after wrap-up, want 2", got)
-	}
+	m = sendKey(m, tea.KeyUp)
+	assertHighlight(t, m, 2)
 }
 
 // TestLabelPrompt_TabCompletesHighlightedSuggestion: with the
@@ -74,10 +69,8 @@ func TestLabelPrompt_TabCompletesHighlightedSuggestion(t *testing.T) {
 	m := labelPromptFixture()
 	// Move highlight to beta (sorted by count desc: alpha=5, beta=3,
 	// gamma=1, so beta is index 1).
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = out.(Model)
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = out.(Model)
+	m = sendKey(m, tea.KeyDown)
+	m = sendKey(m, tea.KeyTab)
 	if got := m.input.activeField().value(); got != "beta" {
 		t.Fatalf("buffer = %q after tab on beta, want %q", got, "beta")
 	}
@@ -143,22 +136,16 @@ func TestLabelPrompt_EnterCommitsCurrentBuffer(t *testing.T) {
 	m := labelPromptFixture()
 	m.input.activeField().input.SetValue("freshlabel")
 	m.input.fields[0] = *m.input.activeField()
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	nm := out.(Model)
-	if nm.input.kind != inputNone {
-		t.Fatalf("input kind after enter = %v, want inputNone", nm.input.kind)
-	}
+	nm := sendKey(m, tea.KeyEnter)
+	assertInputKind(t, nm, inputNone)
 }
 
 // TestLabelPrompt_EscClosesPromptAndMenu: esc cancels the input,
 // closing both the prompt and the menu.
 func TestLabelPrompt_EscClosesPromptAndMenu(t *testing.T) {
 	m := labelPromptFixture()
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	nm := out.(Model)
-	if nm.input.kind != inputNone {
-		t.Fatalf("input kind after esc = %v, want inputNone", nm.input.kind)
-	}
+	nm := sendKey(m, tea.KeyEsc)
+	assertInputKind(t, nm, inputNone)
 }
 
 // TestSuggestMenu_BodyKeepsFullHeight_AndChromeStaysAtBottom: when

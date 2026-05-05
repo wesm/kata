@@ -16,24 +16,15 @@ import (
 )
 
 func TestDaemonStatus_NoDaemonReportsAbsent(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	setupKataEnv(t)
 
-	cmd := newDaemonCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"status"})
-	err := cmd.Execute()
-	require.NoError(t, err)
-	assert.Contains(t, buf.String(), "no daemon")
+	out := executeRoot(t, newDaemonCmd(), "status")
+	assert.Contains(t, string(out), "no daemon")
 }
 
 func TestDaemonStatus_JSONReportsDaemonsWithVersion(t *testing.T) {
 	resetFlags(t)
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	tmp := setupKataEnv(t)
 
 	ns, err := daemon.NewNamespace()
 	require.NoError(t, err)
@@ -48,11 +39,7 @@ func TestDaemonStatus_JSONReportsDaemonsWithVersion(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"daemon", "status", "--json"})
-	require.NoError(t, cmd.Execute())
+	out := executeRoot(t, newRootCmd(), "daemon", "status", "--json")
 
 	var got struct {
 		KataAPIVersion int `json:"kata_api_version"`
@@ -64,7 +51,7 @@ func TestDaemonStatus_JSONReportsDaemonsWithVersion(t *testing.T) {
 			StartedAt string `json:"started_at"`
 		} `json:"daemons"`
 	}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	require.NoError(t, json.Unmarshal(out, &got))
 	require.Equal(t, 1, got.KataAPIVersion)
 	require.Len(t, got.Daemons, 1)
 	assert.Equal(t, os.Getpid(), got.Daemons[0].PID)
@@ -76,21 +63,15 @@ func TestDaemonStatus_JSONReportsDaemonsWithVersion(t *testing.T) {
 
 func TestDaemonStatus_JSONReportsEmptyDaemonList(t *testing.T) {
 	resetFlags(t)
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	setupKataEnv(t)
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"daemon", "status", "--json"})
-	require.NoError(t, cmd.Execute())
+	out := executeRoot(t, newRootCmd(), "daemon", "status", "--json")
 
 	var got struct {
 		KataAPIVersion int             `json:"kata_api_version"`
 		Daemons        json.RawMessage `json:"daemons"`
 	}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	require.NoError(t, json.Unmarshal(out, &got))
 	assert.Equal(t, 1, got.KataAPIVersion)
 	assert.JSONEq(t, "[]", string(got.Daemons))
 }
@@ -181,9 +162,7 @@ func TestEnsureDaemon_ReturnsExistingURL(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
 	}
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	tmp := setupKataEnv(t)
 
 	addr, cleanup := pipeServer(t)
 	t.Cleanup(cleanup)

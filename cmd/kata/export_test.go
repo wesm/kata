@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -13,11 +12,8 @@ import (
 )
 
 func TestExportWritesJSONLToOutput(t *testing.T) {
-	resetFlags(t)
-	home := t.TempDir()
+	home := setupKataEnv(t)
 	dbPath := filepath.Join(home, "kata.db")
-	t.Setenv("KATA_HOME", home)
-	t.Setenv("KATA_DB", dbPath)
 	d, err := db.Open(context.Background(), dbPath)
 	require.NoError(t, err)
 	p, err := d.CreateProject(context.Background(), "github.com/wesm/kata", "kata")
@@ -31,25 +27,19 @@ func TestExportWritesJSONLToOutput(t *testing.T) {
 	require.NoError(t, d.Close())
 
 	outPath := filepath.Join(home, "export.jsonl")
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"export", "--output", outPath})
-	require.NoError(t, cmd.Execute())
+	out, err := runCmdOutput(t, nil, "export", "--output", outPath)
+	require.NoError(t, err)
 
 	bs, err := os.ReadFile(outPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(bs), `"kind":"meta"`)
 	assert.Contains(t, string(bs), "exported issue")
-	assert.Contains(t, buf.String(), outPath)
+	assert.Contains(t, out, outPath)
 }
 
 func TestExportRefusesRunningDaemonUnlessAllowed(t *testing.T) {
-	resetFlags(t)
-	home := t.TempDir()
+	home := setupKataEnv(t)
 	dbPath := filepath.Join(home, "kata.db")
-	t.Setenv("KATA_HOME", home)
-	t.Setenv("KATA_DB", dbPath)
 	d, err := db.Open(context.Background(), dbPath)
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -57,12 +47,7 @@ func TestExportRefusesRunningDaemonUnlessAllowed(t *testing.T) {
 	t.Cleanup(cleanup)
 	require.NoError(t, writeRuntimeFor(home, addr))
 
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"export", "--output", filepath.Join(home, "export.jsonl")})
-	err = cmd.Execute()
-
-	require.Error(t, err)
-	var ce *cliError
-	require.ErrorAs(t, err, &ce)
+	_, err = runCmdOutput(t, nil, "export", "--output", filepath.Join(home, "export.jsonl"))
+	ce := requireCLIError(t, err, ExitValidation)
 	assert.Contains(t, ce.Message, "daemon is running")
 }

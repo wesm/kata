@@ -64,12 +64,8 @@ func TestInstanceUIDCachedAcrossDirectSQLMutation(t *testing.T) {
 	assert.Equal(t, original, d.InstanceUID(),
 		"cached InstanceUID must not move when meta.instance_uid is mutated mid-run")
 
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
-	_, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "post-mutation", Author: "tester",
-	})
-	require.NoError(t, err)
+	p := createKataProject(ctx, t, d)
+	_, evt := createTesterIssue(ctx, t, d, p.ID, "post-mutation")
 	assert.Equal(t, original, evt.OriginInstanceUID,
 		"insert path must stamp the cached origin, not the freshly-mutated row value")
 }
@@ -80,14 +76,8 @@ func TestInstanceUIDCachedAcrossDirectSQLMutation(t *testing.T) {
 func TestEventInsertCarriesUIDAndOrigin(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
-	_, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID,
-		Title:     "uid-stamping",
-		Author:    "tester",
-	})
-	require.NoError(t, err)
+	p := createKataProject(ctx, t, d)
+	_, evt := createTesterIssue(ctx, t, d, p.ID, "uid-stamping")
 	assert.True(t, uid.Valid(evt.UID), "event UID %q invalid", evt.UID)
 	assert.Equal(t, d.InstanceUID(), evt.OriginInstanceUID)
 }
@@ -97,12 +87,8 @@ func TestEventInsertCarriesUIDAndOrigin(t *testing.T) {
 func TestPurgeInsertCarriesUIDAndOrigin(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "purge me", Author: "tester",
-	})
-	require.NoError(t, err)
+	p := createKataProject(ctx, t, d)
+	issue, _ := createTesterIssue(ctx, t, d, p.ID, "purge me")
 	pl, err := d.PurgeIssue(ctx, issue.ID, "tester", nil)
 	require.NoError(t, err)
 	assert.True(t, uid.Valid(pl.UID), "purge UID %q invalid", pl.UID)
@@ -114,11 +100,10 @@ func TestPurgeInsertCarriesUIDAndOrigin(t *testing.T) {
 func TestEventUIDNotNullRejected(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
+	p := createKataProject(ctx, t, d)
 
 	// uid omitted entirely.
-	_, err = d.ExecContext(ctx, `
+	_, err := d.ExecContext(ctx, `
 		INSERT INTO events(origin_instance_uid, project_id, project_identity, type, actor, payload, created_at)
 		VALUES (?, ?, 'github.com/wesm/kata', 'issue.created', 'tester', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 		d.InstanceUID(), p.ID)

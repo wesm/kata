@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/hooks"
 )
 
@@ -42,47 +43,34 @@ type nopLogger struct{}
 func (nopLogger) Printf(string, ...any) {}
 
 func TestRunReloadLoop_DispatchesOnSignal(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("KATA_HOME", dir)
+	dir := setupKataEnv(t)
 	path := filepath.Join(dir, "hooks.toml")
-	if err := os.WriteFile(path, []byte(`[[hook]]
+	require.NoError(t, os.WriteFile(path, []byte(`[[hook]]
 event = "issue.created"
 command = "/bin/true"
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+`), 0o600))
 	rec := &recordingDispatcher{}
 	sigs := make(chan os.Signal, 1)
-	logBuf := nopLogger{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		runReloadLoop(ctx, sigs, path, rec, logBuf)
+		runReloadLoop(ctx, sigs, path, rec, nopLogger{})
 		close(done)
 	}()
 
 	sigs <- syscall.SIGHUP
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	require.Eventually(t, func() bool {
 		rec.mu.Lock()
-		n := len(rec.reloadCalls)
-		rec.mu.Unlock()
-		if n >= 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		defer rec.mu.Unlock()
+		return len(rec.reloadCalls) >= 1
+	}, 2*time.Second, 10*time.Millisecond)
 	cancel()
 	<-done
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.reloadCalls) != 1 {
-		t.Fatalf("Reload calls = %d, want 1", len(rec.reloadCalls))
-	}
-	if len(rec.reloadCalls[0].Snapshot.Hooks) != 1 {
-		t.Fatal("expected one hook in reloaded snapshot")
-	}
+	require.Len(t, rec.reloadCalls, 1)
+	require.Len(t, rec.reloadCalls[0].Snapshot.Hooks, 1, "expected one hook in reloaded snapshot")
 }

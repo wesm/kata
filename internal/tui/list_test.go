@@ -42,24 +42,33 @@ func listFixture() []Issue {
 	}
 }
 
-// TestList_Render_Fixture confirms the seed reaches the screen so the
-// rendering layer can be reviewed independent of the network layer. The
-// [deleted] assertion guards statusChip's soft-delete branch.
-func TestList_Render_Fixture(t *testing.T) {
+// setupListTeatest boots a teatest model at 120x30, seeds the standard
+// listFixture, and registers a ctrl+c fast-quit cleanup. q opens the
+// quit-confirm modal in M3.5b; ctrl+c bypasses the confirm so tests
+// terminate without an extra `y` keystroke + race on the modal.
+func setupListTeatest(t *testing.T) *teatest.TestModel {
+	t.Helper()
 	m := initialModel(Options{})
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(initialFetchMsg{dispatchKey: cacheKey{limit: queueFetchLimit}, issues: listFixture()})
+	t.Cleanup(func() {
+		tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+		tm.WaitFinished(t)
+	})
+	return tm
+}
+
+// TestList_Render_Fixture confirms the seed reaches the screen so the
+// rendering layer can be reviewed independent of the network layer. The
+// [deleted] assertion guards statusChip's soft-delete branch.
+func TestList_Render_Fixture(t *testing.T) {
+	tm := setupListTeatest(t)
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		s := string(b)
 		return strings.Contains(s, "fix login bug on Safari") &&
 			strings.Contains(s, "[deleted]")
 	}, teatest.WithDuration(2*time.Second))
-	// q opens the quit-confirm modal in M3.5b; ctrl+c is the fast-quit
-	// path that bypasses the confirm. Use ctrl+c here so the test can
-	// terminate without an extra `y` keystroke + race on the modal.
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
-	tm.WaitFinished(t)
 }
 
 // TestList_Cursor_DownAndUp drives j/j/k against the three-row fixture
@@ -69,10 +78,7 @@ func TestList_Render_Fixture(t *testing.T) {
 // columns, so we scan output line-by-line for one that contains both the
 // marker and the row's issue number.
 func TestList_Cursor_DownAndUp(t *testing.T) {
-	m := initialModel(Options{})
-	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
-	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
-	tm.Send(initialFetchMsg{dispatchKey: cacheKey{limit: queueFetchLimit}, issues: listFixture()})
+	tm := setupListTeatest(t)
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		return strings.Contains(string(b), "purge stale tokens")
 	}, teatest.WithDuration(2*time.Second))
@@ -87,9 +93,4 @@ func TestList_Cursor_DownAndUp(t *testing.T) {
 		}
 		return false
 	}, teatest.WithDuration(2*time.Second))
-	// q opens the quit-confirm modal in M3.5b; ctrl+c is the fast-quit
-	// path that bypasses the confirm. Use ctrl+c here so the test can
-	// terminate without an extra `y` keystroke + race on the modal.
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
-	tm.WaitFinished(t)
 }

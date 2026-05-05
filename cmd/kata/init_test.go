@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,22 +23,14 @@ func TestInit_FreshGitRepoBindsViaRemote(t *testing.T) {
 	runGit(t, dir, "init", "--quiet")
 	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
 
+	resetFlags(t)
 	flags.JSON = true
-	t.Cleanup(func() { flags.JSON = false })
 
 	ctx := context.Background()
 	out, err := callInit(ctx, env.URL, dir, callInitOpts{})
 	require.NoError(t, err)
 	assert.Contains(t, out, `"identity":"github.com/wesm/kata"`)
 	assert.FileExists(t, filepath.Join(dir, ".kata.toml"))
-}
-
-func runGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...) //nolint:gosec // git binary is trusted; args are test-controlled
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "git %v: %s", args, out)
 }
 
 func TestInit_AddsLocalToGitignoreWhenAbsent(t *testing.T) {

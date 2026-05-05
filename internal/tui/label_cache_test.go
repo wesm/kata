@@ -17,6 +17,15 @@ func buildModelWithLabelCache(_ *testing.T) Model {
 	}
 }
 
+// setupScopedModel returns a label-cache-initialized Model with the
+// active project scope set to pid — the shared starting state for
+// every dispatch/acceptance test in this file.
+func setupScopedModel(t *testing.T, pid int64) Model {
+	m := buildModelWithLabelCache(t)
+	m.scope = scope{projectID: pid}
+	return m
+}
+
 // fakeLabelLister is a labelLister stub that returns a canned slice
 // without touching the network. Used by the race-fix coverage so the
 // test exercises the rejection path with a real (non-empty) response,
@@ -46,9 +55,8 @@ func (f *fakeLabelLister) ListLabels(_ context.Context, _ int64) ([]LabelCount, 
 // the gen-stamp into the cmd (or dropped the gen check in the
 // handler) would let the stale labels overwrite the cache.
 func TestLabelCache_DispatchStampsGenBeforeResponse(t *testing.T) {
-	m := buildModelWithLabelCache(t)
 	pid := int64(7)
-	m.scope = scope{projectID: pid}
+	m := setupScopedModel(t, pid)
 	fake := &fakeLabelLister{labels: []LabelCount{{Label: "from-first", Count: 1}}}
 	// First dispatch — gen stamped to 1, fetching=true. Capture the
 	// cmd; do NOT run it yet so the second dispatch can bump gen.
@@ -68,8 +76,7 @@ func TestLabelCache_DispatchStampsGenBeforeResponse(t *testing.T) {
 	}
 	// Now run the first cmd — it produces labelsFetchedMsg{gen: 1, ...}.
 	msg := firstCmd()
-	out, _ := m.Update(msg)
-	nm := out.(Model)
+	nm, _ := updateModel(m, msg)
 	entry := nm.projectLabels.byProject[pid]
 	if len(entry.labels) != 0 {
 		t.Fatalf("stale gen=1 response must be rejected because "+
@@ -86,15 +93,14 @@ func TestLabelCache_DispatchStampsGenBeforeResponse(t *testing.T) {
 // are silently discarded so a slow first-dispatch can't overwrite a
 // freshly-invalidated cache entry.
 func TestLabelCache_StaleGenResponseDropped(t *testing.T) {
-	m := buildModelWithLabelCache(t)
 	pid := int64(7)
-	m.scope = scope{projectID: pid}
+	m := setupScopedModel(t, pid)
 	m, _ = m.dispatchLabelFetch(pid) // gen=1
 	m, _ = m.dispatchLabelFetch(pid) // gen=2 (newer)
-	out, _ := m.Update(labelsFetchedMsg{
+	nm, _ := updateModel(m, labelsFetchedMsg{
 		pid: pid, gen: 1, labels: []LabelCount{{Label: "old", Count: 1}},
 	})
-	entry := out.(Model).projectLabels.byProject[pid]
+	entry := nm.projectLabels.byProject[pid]
 	if len(entry.labels) != 0 {
 		t.Fatalf("stale gen=1 response must NOT populate cache "+
 			"(cache.gen=2); got labels=%v", entry.labels)
@@ -115,8 +121,7 @@ func TestLabelCache_StaleGenResponseDropped(t *testing.T) {
 // scope to pid=8, then send the pid=7 response. Assert the pid=7
 // entry IS populated AND fetching=false — that's the new contract.
 func TestLabelCache_InactiveProjectResponseStillPopulatesCache(t *testing.T) {
-	m := buildModelWithLabelCache(t)
-	m.scope = scope{projectID: 7} // active project is 7
+	m := setupScopedModel(t, 7) // active project is 7
 	// Dispatch creates the entry for pid=7 with gen=1, fetching=true.
 	m, _ = m.dispatchLabelFetch(7)
 	// User switches project to pid=8 BEFORE the response lands.
@@ -124,11 +129,11 @@ func TestLabelCache_InactiveProjectResponseStillPopulatesCache(t *testing.T) {
 	// Response for pid=7 arrives from the now-inactive fetch. The
 	// per-project cache must accept it — the entry's pid matches the
 	// message's pid, so the data goes in the right slot.
-	out, _ := m.Update(labelsFetchedMsg{
+	nm, _ := updateModel(m, labelsFetchedMsg{
 		pid: 7, gen: 1,
 		labels: []LabelCount{{Label: "from7", Count: 1}},
 	})
-	entry := out.(Model).projectLabels.byProject[7]
+	entry := nm.projectLabels.byProject[7]
 	if len(entry.labels) != 1 || entry.labels[0].Label != "from7" {
 		t.Fatalf("response for pid=7 must populate the pid=7 cache "+
 			"entry even when target is pid=8 (cache is per-project); "+
@@ -148,8 +153,7 @@ func TestLabelCache_InactiveProjectResponseStillPopulatesCache(t *testing.T) {
 // ListLabels fetch. Mirrors maybeRefetchLabels's SSE gate so the two
 // invalidation paths behave identically.
 func TestBatchLabelRefresh_GatesOnCacheExistence(t *testing.T) {
-	m := buildModelWithLabelCache(t)
-	m.scope = scope{projectID: 7}
+	m := setupScopedModel(t, 7)
 	// No cache entry for pid=7 — the user never opened the menu.
 	mut := mutationDoneMsg{
 		kind: "label.add",
@@ -172,8 +176,7 @@ func TestBatchLabelRefresh_GatesOnCacheExistence(t *testing.T) {
 // against the project at least once), a successful label mutation
 // MUST dispatch a refresh so the menu's count column stays accurate.
 func TestBatchLabelRefresh_DispatchesWhenEntryExists(t *testing.T) {
-	m := buildModelWithLabelCache(t)
-	m.scope = scope{projectID: 7}
+	m := setupScopedModel(t, 7)
 	// Prime an entry as if the user had previously opened the menu.
 	m.projectLabels.byProject[7] = labelCacheEntry{
 		pid: 7, gen: 1,
@@ -224,9 +227,8 @@ func TestMutAffectsLabelCounts_AllRelevantKinds(t *testing.T) {
 // list/detail refetch path is independent — this test asserts the
 // suggestion-cache invalidation specifically.
 func TestLabelCache_SSEEventInvalidatesSuggestionCacheOnly(t *testing.T) {
-	m := buildModelWithLabelCache(t)
 	pid := int64(7)
-	m.scope = scope{projectID: pid}
+	m := setupScopedModel(t, pid)
 	m.cache = newIssueCache()
 	m.sseCh = nil // no SSE bridge to re-arm
 	m.nextLabelsGen = 5
@@ -234,10 +236,9 @@ func TestLabelCache_SSEEventInvalidatesSuggestionCacheOnly(t *testing.T) {
 		labels: []LabelCount{{Label: "stale", Count: 1}},
 		gen:    5, pid: pid,
 	}
-	out, _ := m.Update(eventReceivedMsg{
+	nm, _ := updateModel(m, eventReceivedMsg{
 		eventType: "issue.labeled", projectID: pid, issueNumber: 42,
 	})
-	nm := out.(Model)
 	entry := nm.projectLabels.byProject[pid]
 	if !entry.fetching {
 		t.Fatal("SSE event must trigger refetch (fetching=true)")

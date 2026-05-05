@@ -2,11 +2,11 @@ package db_test
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
 )
 
 // TestAllSchemaTablesExist guards against a future migration accidentally
@@ -23,11 +23,7 @@ func TestAllSchemaTablesExist(t *testing.T) {
 		"meta", "issues_fts",
 	}
 	for _, name := range wanted {
-		var n int
-		err := d.QueryRowContext(context.Background(),
-			`SELECT 1 FROM sqlite_master WHERE name = ?`, name).Scan(&n)
-		require.NoErrorf(t, err, "table %q missing from schema", name)
-		assert.Equal(t, 1, n, name)
+		assertSchemaObject(t, d, name)
 	}
 }
 
@@ -64,9 +60,7 @@ func TestSchemaUIDColumnsIndexesAndTriggers(t *testing.T) {
 	}
 }
 
-func assertColumn(t *testing.T, d interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, table, column, typ string, notNull bool) {
+func assertColumn(t *testing.T, d *db.DB, table, column, typ string, notNull bool) {
 	t.Helper()
 	rows, err := d.QueryContext(context.Background(), `PRAGMA table_info(`+table+`)`)
 	require.NoError(t, err)
@@ -91,9 +85,7 @@ func assertColumn(t *testing.T, d interface {
 	t.Fatalf("column %s.%s missing", table, column)
 }
 
-func assertSchemaObject(t *testing.T, d interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, name string) {
+func assertSchemaObject(t *testing.T, d *db.DB, name string) {
 	t.Helper()
 	var got string
 	err := d.QueryRowContext(context.Background(),

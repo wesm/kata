@@ -83,6 +83,28 @@ func assertGolden(t *testing.T, name, got string) {
 	}
 }
 
+// snapViewChrome returns the steady-state viewChrome used by every
+// list snapshot: project 7 / "kata" scope, SSE connected, version
+// "v0.1.0". Tests that need to mutate (e.g. add an input bar) assign
+// to a local and modify the field they care about.
+func snapViewChrome() viewChrome {
+	return viewChrome{
+		scope:     scope{projectID: 7, projectName: "kata"},
+		sseStatus: sseConnected,
+		version:   "v0.1.0",
+	}
+}
+
+// snapListModel returns a listModel pre-loaded with the given issues
+// and loading flipped off — the universal starting point for every
+// TestSnapshot_List_* fixture.
+func snapListModel(issues []Issue) listModel {
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = issues
+	return lm
+}
+
 // snapListFixture mirrors listFixture but pegs every UpdatedAt at a
 // known offset from snapshotFixedNow so humanizeRelative renders
 // deterministic deltas. The deleted row also has a fixed DeletedAt.
@@ -194,16 +216,9 @@ func snapDetailHierarchyFixture() detailModel {
 // covers open, closed, and soft-deleted statusChip branches.
 func TestSnapshot_List_DefaultMixedStatus(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapListFixture()
+	lm := snapListModel(snapListFixture())
 	lm.cursor = 1
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 30, chrome)
+	got := lm.View(120, 30, snapViewChrome())
 	assertGolden(t, "list-default-mixed-status", got)
 }
 
@@ -221,16 +236,9 @@ func TestSnapshot_List_DefaultMixedStatus(t *testing.T) {
 // empty-state hint appears.
 func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapListFixture()
+	lm := snapListModel(snapListFixture())
 	lm.filter = ListFilter{Search: "no-match-anywhere"}
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 30, chrome)
+	got := lm.View(120, 30, snapViewChrome())
 	assertGolden(t, "list-empty-after-filter", got)
 }
 
@@ -239,16 +247,9 @@ func TestSnapshot_List_EmptyAfterFilter(t *testing.T) {
 // rendered background; underlying content stays painted around it.
 func TestSnapshot_QuitConfirmModal(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapListFixture()
+	lm := snapListModel(snapListFixture())
 	lm.cursor = 1
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	bg := lm.View(120, 30, chrome)
+	bg := lm.View(120, 30, snapViewChrome())
 	got := overlayModal(bg, renderQuitConfirmModal(), 120, 30)
 	assertGolden(t, "quit-confirm-modal", got)
 }
@@ -258,15 +259,9 @@ func TestSnapshot_QuitConfirmModal(t *testing.T) {
 // The footer help row swaps to the bar's enter/esc/ctrl+u keys.
 func TestSnapshot_List_SearchBarActive(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapListFixture()
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-		input:     newSearchBar(ListFilter{Search: "login"}),
-	}
+	lm := snapListModel(snapListFixture())
+	chrome := snapViewChrome()
+	chrome.input = newSearchBar(ListFilter{Search: "login"})
 	got := lm.View(120, 30, chrome)
 	assertGolden(t, "list-search-bar-active", got)
 }
@@ -277,8 +272,6 @@ func TestSnapshot_List_SearchBarActive(t *testing.T) {
 // indicator surfaces as `[start-end of N issues]` aligned right.
 func TestSnapshot_List_ScrollIndicator(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
 	issues := make([]Issue, 50)
 	for i := range issues {
 		issues[i] = Issue{
@@ -290,14 +283,9 @@ func TestSnapshot_List_ScrollIndicator(t *testing.T) {
 			),
 		}
 	}
-	lm.issues = issues
+	lm := snapListModel(issues)
 	lm.cursor = 25 // mid-list so the scroll window has both start and end visible
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 30, chrome)
+	got := lm.View(120, 30, snapViewChrome())
 	assertGolden(t, "list-scroll-indicator", got)
 }
 
@@ -309,95 +297,53 @@ func ptrFormat(n int64) string {
 
 func TestSnapshot_List_WithFilterChips(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = []Issue{{
+	lm := snapListModel([]Issue{{
 		Number: 1, Title: "narrowed by chips", Status: "open",
 		Owner:     ptrString("alice"),
 		UpdatedAt: snapshotFixedNow.Add(-30 * time.Minute),
-	}}
+	}})
 	lm.filter = ListFilter{Status: "open", Owner: "alice"}
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 30, chrome)
+	got := lm.View(120, 30, snapViewChrome())
 	assertGolden(t, "list-with-filter-chips", got)
 }
 
 func TestSnapshot_List_TreeCollapsed(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapTreeFixture()
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 22, chrome)
+	lm := snapListModel(snapTreeFixture())
+	got := lm.View(120, 22, snapViewChrome())
 	assertGolden(t, "list-tree-collapsed", got)
 }
 
 func TestSnapshot_List_TreeExpanded(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapTreeFixture()
+	lm := snapListModel(snapTreeFixture())
 	lm.expanded = expansionSet{{projectID: 7, number: 10}: true}
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 22, chrome)
+	got := lm.View(120, 22, snapViewChrome())
 	assertGolden(t, "list-tree-expanded", got)
 }
 
 func TestSnapshot_List_TreeAutoExpandedMatch(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapTreeFixture()
+	lm := snapListModel(snapTreeFixture())
 	lm.filter = ListFilter{Search: "jump target"}
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 22, chrome)
+	got := lm.View(120, 22, snapViewChrome())
 	assertGolden(t, "list-tree-auto-expanded-match", got)
 }
 
 func TestSnapshot_List_TreeContextRow(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapTreeFixture()
+	lm := snapListModel(snapTreeFixture())
 	lm.filter = ListFilter{Search: "hint bars"}
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 22, chrome)
+	got := lm.View(120, 22, snapViewChrome())
 	assertGolden(t, "list-tree-context-row", got)
 }
 
 func TestSnapshot_List_TreeNoColor(t *testing.T) {
 	defer snapshotInit(t)()
-	lm := newListModel()
-	lm.loading = false
-	lm.issues = snapTreeFixture()
+	lm := snapListModel(snapTreeFixture())
 	lm.expanded = expansionSet{{projectID: 7, number: 10}: true}
 	lm.filter = ListFilter{Search: "hint bars"}
-	chrome := viewChrome{
-		scope:     scope{projectID: 7, projectName: "kata"},
-		sseStatus: sseConnected,
-		version:   "v0.1.0",
-	}
-	got := lm.View(120, 22, chrome)
+	got := lm.View(120, 22, snapViewChrome())
 	if !strings.Contains(got, "-") || !strings.Contains(got, "~") {
 		t.Fatalf("no-color tree snapshot missing fallback disclosure or context marker:\n%s", got)
 	}
@@ -532,17 +478,12 @@ func TestSnapshot_Detail_DocumentWide160x32(t *testing.T) {
 		UpdatedAt: snapshotFixedNow.Add(-21 * time.Hour),
 	}
 	dm := detailModel{issue: &iss, scopePID: 7}
-	dm = dm.applyFetched(commentsFetchedMsg{gen: dm.gen, comments: nil})
-	dm = dm.applyFetched(eventsFetchedMsg{
-		gen: dm.gen,
-		events: []EventLogEntry{
-			{
-				ID: 1, Type: "issue.created", Actor: "anonymous",
-				CreatedAt: time.Date(2026, 5, 2, 19, 16, 0, 0, time.UTC),
-			},
+	dm = seedActivity(dm, nil, []EventLogEntry{
+		{
+			ID: 1, Type: "issue.created", Actor: "anonymous",
+			CreatedAt: time.Date(2026, 5, 2, 19, 16, 0, 0, time.UTC),
 		},
-	})
-	dm = dm.applyFetched(linksFetchedMsg{gen: dm.gen, links: nil})
+	}, nil)
 	got := dm.View(160, 32, viewChrome{
 		scope:   scope{projectID: 7, projectName: "kata"},
 		version: "dev",

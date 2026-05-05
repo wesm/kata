@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,13 +49,12 @@ func TestImportRoundTripsExportedRows(t *testing.T) {
 func TestImportSQLiteSequenceUsesUpdateOrInsert(t *testing.T) {
 	ctx := context.Background()
 	target := openImportTargetDB(t)
-	input := strings.Join([]string{
-		`{"kind":"meta","data":{"key":"export_version","value":"1"}}`,
-		`{"kind":"sqlite_sequence","data":{"name":"issues","seq":150}}`,
-		`{"kind":"sqlite_sequence","data":{"name":"issues","seq":150}}`,
-	}, "\n") + "\n"
 
-	require.NoError(t, jsonl.Import(ctx, strings.NewReader(input), target))
+	require.NoError(t, importJSONL(ctx, target,
+		validExportVersion,
+		`{"kind":"sqlite_sequence","data":{"name":"issues","seq":150}}`,
+		`{"kind":"sqlite_sequence","data":{"name":"issues","seq":150}}`,
+	))
 
 	var rows int
 	require.NoError(t, target.QueryRowContext(ctx,
@@ -70,17 +68,17 @@ func TestImportSQLiteSequenceUsesUpdateOrInsert(t *testing.T) {
 
 func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 	ctx := context.Background()
-	input := strings.Join([]string{
-		`{"kind":"meta","data":{"key":"export_version","value":"1"}}`,
+	rows := []string{
+		validExportVersion,
 		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":2}}`,
 		`{"kind":"issue","data":{"id":1,"project_id":1,"number":1,"title":"v1 issue","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
 		`{"kind":"event","data":{"id":1,"project_id":1,"project_identity":"github.com/wesm/kata","issue_id":1,"issue_number":1,"related_issue_id":null,"type":"issue.created","actor":"tester","payload":{},"created_at":"2026-05-03T00:00:01.000Z"}}`,
-	}, "\n") + "\n"
+	}
 
 	first := openImportTargetDB(t)
-	require.NoError(t, jsonl.Import(ctx, strings.NewReader(input), first))
+	require.NoError(t, importJSONL(ctx, first, rows...))
 	second := openImportTargetDB(t)
-	require.NoError(t, jsonl.Import(ctx, strings.NewReader(input), second))
+	require.NoError(t, importJSONL(ctx, second, rows...))
 
 	firstUIDs := readFilledUIDs(t, first)
 	secondUIDs := readFilledUIDs(t, second)
@@ -96,13 +94,12 @@ func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 func TestImportV1RejectsCorruptEventFK(t *testing.T) {
 	ctx := context.Background()
 	target := openImportTargetDB(t)
-	input := strings.Join([]string{
-		`{"kind":"meta","data":{"key":"export_version","value":"1"}}`,
-		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":1}}`,
-		`{"kind":"event","data":{"id":7,"project_id":1,"project_identity":"github.com/wesm/kata","issue_id":999,"issue_number":1,"related_issue_id":null,"type":"issue.created","actor":"tester","payload":{},"created_at":"2026-05-03T00:00:01.000Z"}}`,
-	}, "\n") + "\n"
 
-	err := jsonl.Import(ctx, strings.NewReader(input), target)
+	err := importJSONL(ctx, target,
+		validExportVersion,
+		validV1ProjectRow,
+		`{"kind":"event","data":{"id":7,"project_id":1,"project_identity":"github.com/wesm/kata","issue_id":999,"issue_number":1,"related_issue_id":null,"type":"issue.created","actor":"tester","payload":{},"created_at":"2026-05-03T00:00:01.000Z"}}`,
+	)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "corrupt_event_fk")
@@ -112,12 +109,11 @@ func TestImportV1RejectsCorruptEventFK(t *testing.T) {
 func TestImportRejectsInvalidExportVersion(t *testing.T) {
 	ctx := context.Background()
 	target := openImportTargetDB(t)
-	input := strings.Join([]string{
-		`{"kind":"meta","data":{"key":"export_version","value":"not-a-version"}}`,
-		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":1}}`,
-	}, "\n") + "\n"
 
-	err := jsonl.Import(ctx, strings.NewReader(input), target)
+	err := importJSONL(ctx, target,
+		`{"kind":"meta","data":{"key":"export_version","value":"not-a-version"}}`,
+		validV1ProjectRow,
+	)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "export_version")
@@ -127,12 +123,11 @@ func TestImportRejectsInvalidExportVersion(t *testing.T) {
 func TestImportRejectsTooNewExportVersion(t *testing.T) {
 	ctx := context.Background()
 	target := openImportTargetDB(t)
-	input := strings.Join([]string{
-		`{"kind":"meta","data":{"key":"export_version","value":"999"}}`,
-		`{"kind":"project","data":{"id":1,"identity":"github.com/wesm/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":1}}`,
-	}, "\n") + "\n"
 
-	err := jsonl.Import(ctx, strings.NewReader(input), target)
+	err := importJSONL(ctx, target,
+		`{"kind":"meta","data":{"key":"export_version","value":"999"}}`,
+		validV1ProjectRow,
+	)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported export_version")
@@ -142,12 +137,11 @@ func TestImportRejectsTooNewExportVersion(t *testing.T) {
 func TestImportRejectsForeignKeyViolationBeforeCommit(t *testing.T) {
 	ctx := context.Background()
 	target := openImportTargetDB(t)
-	input := strings.Join([]string{
-		`{"kind":"meta","data":{"key":"export_version","value":"1"}}`,
-		`{"kind":"project_alias","data":{"id":1,"project_id":999,"alias_identity":"missing","alias_kind":"git","root_path":"/tmp/missing","created_at":"2026-05-03T00:00:00.000Z","last_seen_at":"2026-05-03T00:00:00.000Z"}}`,
-	}, "\n") + "\n"
 
-	err := jsonl.Import(ctx, strings.NewReader(input), target)
+	err := importJSONL(ctx, target,
+		validExportVersion,
+		`{"kind":"project_alias","data":{"id":1,"project_id":999,"alias_identity":"missing","alias_kind":"git","root_path":"/tmp/missing","created_at":"2026-05-03T00:00:00.000Z","last_seen_at":"2026-05-03T00:00:00.000Z"}}`,
+	)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "foreign_key_check")

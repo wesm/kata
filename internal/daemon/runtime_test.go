@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -33,9 +32,13 @@ func TestRuntimeFile_RoundTripWriteRead(t *testing.T) {
 func TestListRuntimeFiles_FindsAllInDir(t *testing.T) {
 	dir := t.TempDir()
 	for _, pid := range []int{1, 2, 3} {
-		require.NoError(t, os.WriteFile( //nolint:gosec // runtime files are world-readable per §2.3
-			filepath.Join(dir, "daemon."+strconv.Itoa(pid)+".json"),
-			[]byte(`{"pid":`+strconv.Itoa(pid)+`,"address":"x","db_path":"x","started_at":"2026-01-01T00:00:00Z"}`), 0o644))
+		_, err := daemon.WriteRuntimeFile(dir, daemon.RuntimeRecord{
+			PID:       pid,
+			Address:   "x",
+			DBPath:    "x",
+			StartedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		})
+		require.NoError(t, err)
 	}
 
 	got, err := daemon.ListRuntimeFiles(dir)

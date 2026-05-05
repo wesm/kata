@@ -1,7 +1,6 @@
 package db_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,9 +9,7 @@ import (
 )
 
 func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
+	d, ctx, p := setupTestProject(t)
 
 	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID,
@@ -40,9 +37,7 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 }
 
 func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
+	d, ctx, p := setupTestProject(t)
 
 	for i := 1; i <= 3; i++ {
 		issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
@@ -54,22 +49,15 @@ func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
 }
 
 func TestGetIssueByNumber_NotFound(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
+	d, ctx, p := setupTestProject(t)
 	_, err := d.IssueByNumber(ctx, p.ID, 99)
 	assert.ErrorIs(t, err, db.ErrNotFound)
 }
 
 func TestListIssues_DefaultsToOpenOnlyAndExcludesDeleted(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
+	d, ctx, p := setupTestProject(t)
 	for _, title := range []string{"a", "b", "c"} {
-		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-			ProjectID: p.ID, Title: title, Author: "x",
-		})
-		require.NoError(t, err)
+		createTesterIssue(ctx, t, d, p.ID, title)
 	}
 
 	got, err := d.ListIssues(ctx, db.ListIssuesParams{ProjectID: p.ID, Status: "open"})
@@ -81,19 +69,12 @@ func TestListIssues_DefaultsToOpenOnlyAndExcludesDeleted(t *testing.T) {
 // ProjectID==0 every project's issues are returned, soft-deleted rows are
 // excluded, and the ordering is created_at DESC, id DESC.
 func TestListAllIssues_CoversAllProjectsAndOrders(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p1, err := d.CreateProject(ctx, "alpha", "alpha")
-	require.NoError(t, err)
-	p2, err := d.CreateProject(ctx, "beta", "beta")
-	require.NoError(t, err)
+	d, ctx, p1 := setupTestProject(t)
+	p2 := createProject(ctx, t, d, "beta", "beta")
 
-	a1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p1.ID, Title: "alpha-1", Author: "x"})
-	require.NoError(t, err)
-	b1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p2.ID, Title: "beta-1", Author: "x"})
-	require.NoError(t, err)
-	a2, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p1.ID, Title: "alpha-2", Author: "x"})
-	require.NoError(t, err)
+	a1, _ := createTesterIssue(ctx, t, d, p1.ID, "alpha-1")
+	b1, _ := createTesterIssue(ctx, t, d, p2.ID, "beta-1")
+	a2, _ := createTesterIssue(ctx, t, d, p1.ID, "alpha-2")
 
 	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{})
 	require.NoError(t, err)
@@ -109,16 +90,10 @@ func TestListAllIssues_CoversAllProjectsAndOrders(t *testing.T) {
 // TestListAllIssues_ProjectFilterScopes pins the optional project_id query:
 // passing ProjectID>0 returns only that project's issues.
 func TestListAllIssues_ProjectFilterScopes(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p1, err := d.CreateProject(ctx, "alpha", "alpha")
-	require.NoError(t, err)
-	p2, err := d.CreateProject(ctx, "beta", "beta")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p1.ID, Title: "a1", Author: "x"})
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p2.ID, Title: "b1", Author: "x"})
-	require.NoError(t, err)
+	d, ctx, p1 := setupTestProject(t)
+	p2 := createProject(ctx, t, d, "beta", "beta")
+	createTesterIssue(ctx, t, d, p1.ID, "a1")
+	createTesterIssue(ctx, t, d, p2.ID, "b1")
 
 	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{ProjectID: p2.ID})
 	require.NoError(t, err)
@@ -129,15 +104,10 @@ func TestListAllIssues_ProjectFilterScopes(t *testing.T) {
 // TestListAllIssues_StatusFilterApplies pins the status filter across
 // projects: closed/open are honored.
 func TestListAllIssues_StatusFilterApplies(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	open1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "open", Author: "x"})
-	require.NoError(t, err)
-	closed1, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "to-close", Author: "x"})
-	require.NoError(t, err)
-	_, _, _, err = d.CloseIssue(ctx, closed1.ID, "done", "x")
+	d, ctx, p := setupTestProject(t)
+	open1, _ := createTesterIssue(ctx, t, d, p.ID, "open")
+	closed1, _ := createTesterIssue(ctx, t, d, p.ID, "to-close")
+	_, _, _, err := d.CloseIssue(ctx, closed1.ID, "done", "x")
 	require.NoError(t, err)
 
 	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{Status: "open"})
@@ -149,15 +119,10 @@ func TestListAllIssues_StatusFilterApplies(t *testing.T) {
 // TestListAllIssues_ExcludesSoftDeleted pins that purged/soft-deleted issues
 // don't surface in the cross-project list.
 func TestListAllIssues_ExcludesSoftDeleted(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	live, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "live", Author: "x"})
-	require.NoError(t, err)
-	doomed, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "doomed", Author: "x"})
-	require.NoError(t, err)
-	_, _, _, err = d.SoftDeleteIssue(ctx, doomed.ID, "x")
+	d, ctx, p := setupTestProject(t)
+	live, _ := createTesterIssue(ctx, t, d, p.ID, "live")
+	doomed, _ := createTesterIssue(ctx, t, d, p.ID, "doomed")
+	_, _, _, err := d.SoftDeleteIssue(ctx, doomed.ID, "x")
 	require.NoError(t, err)
 
 	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{})
@@ -168,14 +133,8 @@ func TestListAllIssues_ExcludesSoftDeleted(t *testing.T) {
 
 // TestListAllIssues_LimitCaps pins the limit knob on cross-project listing.
 func TestListAllIssues_LimitCaps(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	for i := 0; i < 5; i++ {
-		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "i", Author: "x"})
-		require.NoError(t, err)
-	}
+	d, ctx, p := setupTestProject(t)
+	createTesterIssues(ctx, t, d, p.ID, 5)
 
 	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{Limit: 2})
 	require.NoError(t, err)
@@ -183,10 +142,7 @@ func TestListAllIssues_LimitCaps(t *testing.T) {
 }
 
 func TestCreateComment_EmitsEvent(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
-	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+	d, ctx, p, issue := setupTestIssue(t)
 
 	cmt, evt, err := d.CreateComment(ctx, db.CreateCommentParams{
 		IssueID: issue.ID, Author: "agent", Body: "hi",
@@ -200,10 +156,7 @@ func TestCreateComment_EmitsEvent(t *testing.T) {
 }
 
 func TestCloseIssue_SetsStatusAndEmitsEvent(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
-	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+	d, ctx, _, issue := setupTestIssue(t)
 
 	updated, evt, changed, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
 	require.NoError(t, err)
@@ -216,10 +169,7 @@ func TestCloseIssue_SetsStatusAndEmitsEvent(t *testing.T) {
 }
 
 func TestCloseIssue_OnAlreadyClosedIsNoOp(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
-	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+	d, ctx, _, issue := setupTestIssue(t)
 	_, _, _, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
 	require.NoError(t, err)
 
@@ -230,11 +180,9 @@ func TestCloseIssue_OnAlreadyClosedIsNoOp(t *testing.T) {
 }
 
 func TestReopenIssue_ClearsStatusAndEmitsEvent(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
-	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
-	_, _, _, _ = d.CloseIssue(ctx, issue.ID, "done", "agent")
+	d, ctx, _, issue := setupTestIssue(t)
+	_, _, _, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	require.NoError(t, err)
 
 	updated, evt, changed, err := d.ReopenIssue(ctx, issue.ID, "agent")
 	require.NoError(t, err)
@@ -246,10 +194,7 @@ func TestReopenIssue_ClearsStatusAndEmitsEvent(t *testing.T) {
 }
 
 func TestEditIssue_SetsFieldsAndEmitsEvent(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
-	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "old", Body: "ob", Author: "x"})
+	d, ctx, _, issue := setupTestIssue(t)
 
 	newTitle := "new"
 	updated, evt, changed, err := d.EditIssue(ctx, db.EditIssueParams{
@@ -263,10 +208,7 @@ func TestEditIssue_SetsFieldsAndEmitsEvent(t *testing.T) {
 }
 
 func TestEditIssue_NoFieldsIsValidationError(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
-	issue, _, _ := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "x"})
+	d, ctx, _, issue := setupTestIssue(t)
 
 	_, _, _, err := d.EditIssue(ctx, db.EditIssueParams{IssueID: issue.ID, Actor: "agent"})
 	assert.ErrorIs(t, err, db.ErrNoFields)

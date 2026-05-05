@@ -17,24 +17,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// newTestClient stands up an httptest server with handler, registers
+// cleanup, and returns a daemon Client pointed at it.
+func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return NewClient(srv.URL, srv.Client())
+}
+
+// respondJSON writes body as a JSON response with the right Content-Type.
+func respondJSON(t *testing.T, w http.ResponseWriter, body any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		t.Fatalf("encode response: %v", err)
+	}
+}
+
 func TestClient_ListIssues_BuildsExpectedURLAndDecodes(t *testing.T) {
 	var gotURL string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotURL = r.URL.String()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		respondJSON(t, w, map[string]any{
 			"issues": []map[string]any{
 				{"number": 1, "title": "a", "status": "open"},
 				{"number": 2, "title": "b", "status": "open"},
 			},
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.ListIssues(context.Background(), 7, ListFilter{Status: "open"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if !strings.Contains(gotURL, "/api/v1/projects/7/issues") {
 		t.Fatalf("unexpected URL: %s", gotURL)
 	}
@@ -48,16 +61,13 @@ func TestClient_ListIssues_BuildsExpectedURLAndDecodes(t *testing.T) {
 
 func TestClient_ListIssues_SendsLimit(t *testing.T) {
 	var gotQuery string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"issues":[]}`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
-	if _, err := c.ListIssues(context.Background(), 7, ListFilter{Limit: 2001}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	_, err := c.ListIssues(context.Background(), 7, ListFilter{Limit: 2001})
+	require.NoError(t, err)
 	if !strings.Contains(gotQuery, "limit=2001") {
 		t.Fatalf("limit not sent: %q", gotQuery)
 	}
@@ -68,14 +78,13 @@ func TestClient_ListIssues_SendsLimit(t *testing.T) {
 
 func TestModel_FetchInitialUsesQueueFetchFilter(t *testing.T) {
 	var gotQuery string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"issues":[]}`))
-	}))
-	defer srv.Close()
+	})
 	m := Model{
-		api:   NewClient(srv.URL, srv.Client()),
+		api:   c,
 		scope: scope{projectID: 7},
 		list:  listModel{filter: ListFilter{Status: "closed"}},
 	}
@@ -84,9 +93,7 @@ func TestModel_FetchInitialUsesQueueFetchFilter(t *testing.T) {
 	if !ok {
 		t.Fatalf("fetchInitial msg = %T, want initialFetchMsg", msg)
 	}
-	if fetched.err != nil {
-		t.Fatal(fetched.err)
-	}
+	require.NoError(t, fetched.err)
 	if !strings.Contains(gotQuery, "limit=2001") {
 		t.Fatalf("limit not sent: %q", gotQuery)
 	}
@@ -100,10 +107,9 @@ func TestModel_FetchInitialUsesQueueFetchFilter(t *testing.T) {
 
 func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		respondJSON(t, w, map[string]any{
 			"issue": map[string]any{
 				"uid": "01JZ0000000000000000000001", "project_uid": "01JZ0000000000000000000002",
 				"number": 42, "title": "fix", "status": "open",
@@ -118,13 +124,9 @@ func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 			},
 			"labels": []any{},
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	detail, err := c.GetIssueDetail(context.Background(), 7, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if gotPath != "/api/v1/projects/7/issues/42" {
 		t.Fatalf("unexpected path: %s", gotPath)
 	}
@@ -139,9 +141,7 @@ func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 		t.Fatalf("project UID = %q", got.ProjectUID)
 	}
 	links, err := c.ListLinks(context.Background(), 7, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(links) != 1 || links[0].FromIssueUID != "01JZ0000000000000000000001" ||
 		links[0].ToIssueUID != "01JZ0000000000000000000003" {
 		t.Fatalf("link UIDs not decoded: %+v", links)
@@ -149,9 +149,8 @@ func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 }
 
 func TestClient_ShowIssue_DecodesHierarchy(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		respondJSON(t, w, map[string]any{
 			"issue": map[string]any{"number": 42, "title": "fix", "status": "open"},
 			"parent": map[string]any{
 				"number": 12, "title": "workspace polish", "status": "open",
@@ -172,13 +171,9 @@ func TestClient_ShowIssue_DecodesHierarchy(t *testing.T) {
 				{"issue_id": 1, "label": "bug", "author": "a"},
 			},
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.GetIssueDetail(context.Background(), 7, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if got.Issue == nil || got.Issue.Number != 42 {
 		t.Fatalf("unexpected issue: %+v", got.Issue)
 	}
@@ -201,37 +196,30 @@ func TestClient_ShowIssue_DecodesHierarchy(t *testing.T) {
 
 func TestClient_CreateIssue_SendsIdempotencyHeader(t *testing.T) {
 	var gotKey string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotKey = r.Header.Get("Idempotency-Key")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		respondJSON(t, w, map[string]any{
 			"issue":   map[string]any{"number": 1, "title": "t", "status": "open"},
 			"changed": true,
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	_, err := c.CreateIssue(context.Background(), 7, CreateIssueBody{
 		Title: "t", Actor: "alice", IdempotencyKey: "my-key",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if gotKey != "my-key" {
 		t.Fatalf("Idempotency-Key not forwarded: %q", gotKey)
 	}
 }
 
 func TestClient_DecodeError_ReturnsAPIError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(
 			`{"status":404,"error":{"code":"project_not_initialized",` +
 				`"message":"no .kata.toml ancestor","hint":"run kata init"}}`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	_, err := c.GetIssueDetail(context.Background(), 7, 42)
 	if err == nil {
 		t.Fatal("expected error")
@@ -256,22 +244,17 @@ func TestClient_DecodeError_ReturnsAPIError(t *testing.T) {
 
 func TestClient_RemoveLabel_PathEscapesLabel(t *testing.T) {
 	var gotRawURI, gotMethod, gotActor string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotRawURI = r.RequestURI
 		gotMethod = r.Method
 		gotActor = r.URL.Query().Get("actor")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		respondJSON(t, w, map[string]any{
 			"issue":   map[string]any{"number": 1, "title": "t", "status": "open"},
 			"changed": true,
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	_, err := c.RemoveLabel(context.Background(), 7, 42, "team/backend", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if gotMethod != http.MethodDelete {
 		t.Fatalf("method = %s, want DELETE", gotMethod)
 	}
@@ -285,22 +268,17 @@ func TestClient_RemoveLabel_PathEscapesLabel(t *testing.T) {
 
 func TestClient_ListComments_RoutesThroughShowIssue(t *testing.T) {
 	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		respondJSON(t, w, map[string]any{
 			"issue":    map[string]any{"number": 42, "title": "t", "status": "open"},
 			"comments": []map[string]any{{"id": 1, "author": "a", "body": "hi"}},
 			"links":    []any{},
 			"labels":   []any{},
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.ListComments(context.Background(), 7, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if gotPath != "/api/v1/projects/7/issues/42" {
 		t.Fatalf("unexpected path: %s", gotPath)
 	}
@@ -311,32 +289,26 @@ func TestClient_ListComments_RoutesThroughShowIssue(t *testing.T) {
 
 func TestClient_AssignEmptyOwnerRoutesToUnassign(t *testing.T) {
 	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		respondJSON(t, w, map[string]any{
 			"issue":   map[string]any{"number": 1, "title": "t", "status": "open"},
 			"changed": true,
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	_, err := c.Assign(context.Background(), 7, 42, "", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if !strings.HasSuffix(gotPath, "/actions/unassign") {
 		t.Fatalf("expected unassign path, got %s", gotPath)
 	}
 }
 
 func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/projects/7/events" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		respondJSON(t, w, map[string]any{
 			"events": []map[string]any{
 				{
 					"event_id": 1, "type": "issue.commented", "issue_number": 42, "actor": "a",
@@ -355,13 +327,9 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 			"next_after_id":  3,
 			"reset_required": false,
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.ListEvents(context.Background(), 7, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(got) != 2 {
 		t.Fatalf("got %d events for #42, want 2", len(got))
 	}
@@ -383,16 +351,12 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 // returned resp.Issues evaluated *before* c.do filled it (the do call was
 // the second operand of the comma-statement, so resp was nil at capture).
 func TestClient_ListIssues_NotNilOnSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"issues":[{"number":1,"title":"a","status":"open"}]}`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.ListIssues(context.Background(), 7, ListFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(got) != 1 || got[0].Number != 1 {
 		t.Fatalf("got %+v, want one issue with number=1", got)
 	}
@@ -401,16 +365,12 @@ func TestClient_ListIssues_NotNilOnSuccess(t *testing.T) {
 // TestClient_ListAllIssues_NotNilOnSuccess covers the same regression on
 // the cross-project endpoint.
 func TestClient_ListAllIssues_NotNilOnSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"issues":[{"number":2,"title":"b","status":"open"}]}`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.ListAllIssues(context.Background(), ListFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(got) != 1 || got[0].Number != 2 {
 		t.Fatalf("got %+v, want one issue with number=2", got)
 	}
@@ -418,16 +378,12 @@ func TestClient_ListAllIssues_NotNilOnSuccess(t *testing.T) {
 
 // TestClient_ListProjects_NotNilOnSuccess is the analogue for ListProjects.
 func TestClient_ListProjects_NotNilOnSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"projects":[{"id":7,"identity":"x","name":"k"}]}`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.ListProjects(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(got) != 1 || got[0].ID != 7 {
 		t.Fatalf("got %+v, want one project with id=7", got)
 	}
@@ -438,22 +394,19 @@ func TestClient_ListProjects_NotNilOnSuccess(t *testing.T) {
 // the struct for client-side filtering but must not leak as URL params.
 func TestClient_ListIssues_FilterShape(t *testing.T) {
 	var gotURL string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotURL = r.URL.String()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"issues":[]}`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
-	if _, err := c.ListIssues(context.Background(), 7, ListFilter{
+	})
+	_, err := c.ListIssues(context.Background(), 7, ListFilter{
 		Status: "open",
 		Owner:  "alice",
 		Author: "bob",
 		Search: "foo",
 		Labels: []string{"x"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	require.NoError(t, err)
 	if !strings.Contains(gotURL, "status=open") {
 		t.Fatalf("status not sent: %s", gotURL)
 	}
@@ -471,9 +424,8 @@ func TestClient_ListIssues_FilterShape(t *testing.T) {
 // is automatic — this test pins that promise so a future struct-tag
 // removal doesn't silently drop labels from the list view.
 func TestListIssues_TUIDecodePopulatesLabels(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		respondJSON(t, w, map[string]any{
 			"issues": []map[string]any{
 				{
 					"number": 1, "title": "first", "status": "open",
@@ -489,13 +441,9 @@ func TestListIssues_TUIDecodePopulatesLabels(t *testing.T) {
 				},
 			},
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	got, err := c.ListIssues(context.Background(), 7, ListFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(got) != 3 {
 		t.Fatalf("got %d issues, want 3", len(got))
 	}
@@ -526,9 +474,8 @@ func TestListIssues_TUIDecodePopulatesLabels(t *testing.T) {
 // Issue struct) means a show response with no labels leaves a
 // previously-populated Labels slice empty — covered by other tests.
 func TestShowIssue_PopulatesLabelsFromTopLevel(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		respondJSON(t, w, map[string]any{
 			"issue":    map[string]any{"number": 42, "title": "fix", "status": "open"},
 			"comments": []any{},
 			"links":    []any{},
@@ -538,13 +485,9 @@ func TestShowIssue_PopulatesLabelsFromTopLevel(t *testing.T) {
 				{"issue_id": 1, "label": "needs-design", "author": "a"},
 			},
 		})
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	resp, err := c.showIssue(context.Background(), 7, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got := resp.Issue.Labels
 	want := []string{"bug", "needs-design", "prio-1"}
 	if len(got) != len(want) {
@@ -561,11 +504,9 @@ func TestShowIssue_PopulatesLabelsFromTopLevel(t *testing.T) {
 // Code and Message are both blank. Without the fallback, Error() would
 // return ": ".
 func TestAPIError_EmptyBodyFallback(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 	_, err := c.GetIssueDetail(context.Background(), 7, 42)
 	if err == nil {
 		t.Fatal("expected error")
@@ -587,7 +528,7 @@ func TestAPIError_EmptyBodyFallback(t *testing.T) {
 // decodes the ?include=stats wire shape into ProjectSummaryWithStats,
 // including the optional Stats field. Spec §7.3.
 func TestClient_ListProjectsWithStats_Decodes(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/api/v1/projects", r.URL.Path)
 		require.Equal(t, "stats", r.URL.Query().Get("include"))
 		w.Header().Set("Content-Type", "application/json")
@@ -599,9 +540,7 @@ func TestClient_ListProjectsWithStats_Decodes(t *testing.T) {
                  "stats": {"open": 0, "closed": 0, "last_event_at": null}}
             ]
         }`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 
 	got, err := c.ListProjectsWithStats(t.Context())
 	require.NoError(t, err)
@@ -622,12 +561,10 @@ func TestClient_ListProjectsWithStats_Decodes(t *testing.T) {
 // array returns []ProjectSummaryWithStats{}, never nil — callers iterate
 // without nil-checks. Spec §7.3.
 func TestClient_ListProjectsWithStats_NotNilOnSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"projects": []}`))
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, srv.Client())
+	})
 
 	got, err := c.ListProjectsWithStats(t.Context())
 	require.NoError(t, err)

@@ -3,7 +3,6 @@ package jsonl_test
 import (
 	"bytes"
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,16 +16,12 @@ func TestRoundtripRichDatabaseIsByteEquivalent(t *testing.T) {
 	fixture := buildRichJSONLFixture(t)
 	src := fixture.DB
 
-	var first bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, src, &first, jsonl.ExportOptions{IncludeDeleted: true}))
+	first := exportToBuffer(ctx, t, src)
 
-	dst, err := db.Open(ctx, filepath.Join(t.TempDir(), "roundtrip.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = dst.Close() })
+	dst := openExportTestDB(t)
 	require.NoError(t, jsonl.Import(ctx, bytes.NewReader(first.Bytes()), dst))
 
-	var second bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, dst, &second, jsonl.ExportOptions{IncludeDeleted: true}))
+	second := exportToBuffer(ctx, t, dst)
 
 	assert.Equal(t, first.String(), second.String())
 	assertRoundtripTableCounts(t, src, dst)

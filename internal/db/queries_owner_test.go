@@ -1,7 +1,6 @@
 package db_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -10,11 +9,7 @@ import (
 )
 
 func TestUpdateOwner_AssignFromNil(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
 	owner := "alice"
 	updated, evt, changed, err := d.UpdateOwner(ctx, i.ID, &owner, "tester")
@@ -28,14 +23,7 @@ func TestUpdateOwner_AssignFromNil(t *testing.T) {
 }
 
 func TestUpdateOwner_UnassignFromValue(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
-	owner := "alice"
-	_, _, _, err = d.UpdateOwner(ctx, i.ID, &owner, "tester")
-	require.NoError(t, err)
+	d, ctx, _, i := setupAssignedIssue(t, "alice")
 
 	updated, evt, changed, err := d.UpdateOwner(ctx, i.ID, nil, "tester")
 	require.NoError(t, err)
@@ -47,15 +35,9 @@ func TestUpdateOwner_UnassignFromValue(t *testing.T) {
 }
 
 func TestUpdateOwner_NoOpSameOwner(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
-	owner := "alice"
-	_, _, _, err = d.UpdateOwner(ctx, i.ID, &owner, "tester")
-	require.NoError(t, err)
+	d, ctx, _, i := setupAssignedIssue(t, "alice")
 
+	owner := "alice"
 	_, evt, changed, err := d.UpdateOwner(ctx, i.ID, &owner, "tester")
 	require.NoError(t, err)
 	assert.False(t, changed)
@@ -63,11 +45,7 @@ func TestUpdateOwner_NoOpSameOwner(t *testing.T) {
 }
 
 func TestUpdateOwner_NoOpAlreadyUnassigned(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
 	_, evt, changed, err := d.UpdateOwner(ctx, i.ID, nil, "tester")
 	require.NoError(t, err)
@@ -80,11 +58,7 @@ func TestUpdateOwner_NoOpAlreadyUnassigned(t *testing.T) {
 // json_valid CHECK and rolling back the assignment. Now built via
 // encoding/json so any schema-accepted owner value round-trips cleanly.
 func TestUpdateOwner_ControlByteOwnerProducesValidJSON(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
 	owner := "alice\x00bob"
 	updated, evt, changed, err := d.UpdateOwner(ctx, i.ID, &owner, "tester")

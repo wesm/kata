@@ -2,7 +2,7 @@ package tui
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,11 +18,8 @@ import (
 // not produce a frame; the issue.created frame after it must.
 func TestSSEParser_KeepalivesAreSkipped(t *testing.T) {
 	in := ": keepalive\n\n" +
-		"id: 1\nevent: issue.created\ndata: {\"event_id\":1,\"type\":\"issue.created\"}\n\n"
-	frames, err := parseAllFrames(strings.NewReader(in))
-	if err != nil && !errors.Is(err, io.EOF) {
-		t.Fatal(err)
-	}
+		formatSSEFrame(1, "issue.created", `{"event_id":1,"type":"issue.created"}`)
+	frames := assertParse(t, in)
 	if len(frames) != 1 {
 		t.Fatalf("got %d frames, want 1", len(frames))
 	}
@@ -36,12 +33,9 @@ func TestSSEParser_KeepalivesAreSkipped(t *testing.T) {
 
 // TestSSEParser_MultipleFrames: two consecutive event blocks both arrive.
 func TestSSEParser_MultipleFrames(t *testing.T) {
-	in := "id: 1\nevent: issue.created\ndata: {\"event_id\":1}\n\n" +
-		"id: 2\nevent: issue.commented\ndata: {\"event_id\":2}\n\n"
-	frames, err := parseAllFrames(strings.NewReader(in))
-	if err != nil {
-		t.Fatal(err)
-	}
+	in := formatSSEFrame(1, "issue.created", `{"event_id":1}`) +
+		formatSSEFrame(2, "issue.commented", `{"event_id":2}`)
+	frames := assertParse(t, in)
 	if len(frames) != 2 {
 		t.Fatalf("got %d frames, want 2", len(frames))
 	}
@@ -55,12 +49,9 @@ func TestSSEParser_MultipleFrames(t *testing.T) {
 // per api.EventReset's contract); the JSON payload's reset_after_id is
 // intentionally not lifted onto the frame.
 func TestSSEParser_ResetRequired(t *testing.T) {
-	in := "id: 42\nevent: sync.reset_required\n" +
-		"data: {\"event_id\":42,\"reset_after_id\":42}\n\n"
-	frames, err := parseAllFrames(strings.NewReader(in))
-	if err != nil {
-		t.Fatal(err)
-	}
+	in := formatSSEFrame(42, "sync.reset_required",
+		`{"event_id":42,"reset_after_id":42}`)
+	frames := assertParse(t, in)
 	if len(frames) != 1 {
 		t.Fatalf("got %d frames, want 1", len(frames))
 	}
@@ -76,12 +67,11 @@ func TestSSEParser_ResetRequired(t *testing.T) {
 // dropped, the next well-formed frame still arrives. Regression for
 // "single bad frame wedges the consumer."
 func TestSSEParser_MalformedFrameSkipped(t *testing.T) {
-	in := "id: 1\nevent: issue.created\n\n" + // no data line
-		"id: 2\nevent: issue.commented\ndata: {\"event_id\":2}\n\n"
-	frames, err := parseAllFrames(strings.NewReader(in))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// First frame intentionally omits the data: line — the malformedness
+	// is the subject of the test, so it cannot be built via formatSSEFrame.
+	in := "id: 1\nevent: issue.created\n\n" +
+		formatSSEFrame(2, "issue.commented", `{"event_id":2}`)
+	frames := assertParse(t, in)
 	if len(frames) != 1 {
 		t.Fatalf("got %d frames, want 1 (malformed dropped)", len(frames))
 	}
@@ -93,11 +83,10 @@ func TestSSEParser_MalformedFrameSkipped(t *testing.T) {
 // TestSSEParser_EOFNoTrailingFrame: an in-progress frame at EOF is
 // dropped (no blank-line terminator means no commit).
 func TestSSEParser_EOFNoTrailingFrame(t *testing.T) {
+	// No trailing blank line — the missing terminator is the subject of
+	// the test, so it cannot be built via formatSSEFrame.
 	in := "id: 1\nevent: issue.created\ndata: {\"event_id\":1}\n"
-	frames, err := parseAllFrames(strings.NewReader(in))
-	if err != nil {
-		t.Fatal(err)
-	}
+	frames := assertParse(t, in)
 	if len(frames) != 0 {
 		t.Fatalf("got %d frames, want 0 (no terminator)", len(frames))
 	}
@@ -197,22 +186,16 @@ func TestNextBackoff_Doubles_Caps(t *testing.T) {
 // sseConnected status (deferred until the first frame arrives); the two
 // frames follow. Last-Event-ID is omitted on the first connect.
 func TestSSE_StreamForwardsMessages(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newSSEMockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Last-Event-ID") != "" {
 			t.Errorf("Last-Event-ID set on first connect: %q",
 				r.Header.Get("Last-Event-ID"))
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w,
-			"id: 1\nevent: issue.created\ndata: {\"type\":\"issue.created\","+
-				"\"project_id\":7}\n\n")
-		w.(http.Flusher).Flush()
-		_, _ = io.WriteString(w,
-			"id: 2\nevent: sync.reset_required\ndata: {\"reset_after_id\":2}\n\n")
-		w.(http.Flusher).Flush()
-	}))
-	defer srv.Close()
+		writeSSEFrame(t, w, 1, "issue.created",
+			`{"type":"issue.created","project_id":7}`)
+		writeSSEFrame(t, w, 2, "sync.reset_required",
+			`{"reset_after_id":2}`)
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -250,12 +233,9 @@ func TestSSE_StreamForwardsMessages(t *testing.T) {
 // regression-locks Fix I1: a flapping daemon must not flicker
 // connected ↔ reconnecting between frame-less retries.
 func TestSSE_NoConnectedStatusBeforeFirstFrame(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
+	srv := newSSEMockServer(t, func(_ http.ResponseWriter, _ *http.Request) {
 		// Return immediately — body closes with no frames.
-	}))
-	defer srv.Close()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -279,7 +259,7 @@ func TestSSE_NoConnectedStatusBeforeFirstFrame(t *testing.T) {
 func TestSSE_ReconnectSendsLastEventID(t *testing.T) {
 	var connects int32
 	var secondHeader atomic.Value
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newSSEMockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&connects, 1)
 		if n >= 2 {
 			secondHeader.Store(r.Header.Get("Last-Event-ID"))
@@ -287,15 +267,10 @@ func TestSSE_ReconnectSendsLastEventID(t *testing.T) {
 			<-r.Context().Done()
 			return
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w,
-			"id: 5\nevent: issue.created\ndata: {\"type\":\"issue.created\","+
-				"\"project_id\":7}\n\n")
-		w.(http.Flusher).Flush()
+		writeSSEFrame(t, w, 5, "issue.created",
+			`{"type":"issue.created","project_id":7}`)
 		// Close the connection by returning.
-	}))
-	defer srv.Close()
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan tea.Msg, 8)
@@ -385,4 +360,47 @@ func TestSSE_BuildRequest_SingleProjectAddsQuery(t *testing.T) {
 	if got := req.Header.Get("Last-Event-ID"); got != "9" {
 		t.Fatalf("Last-Event-ID = %q, want 9", got)
 	}
+}
+
+// formatSSEFrame builds a well-formed SSE frame: id + event + data
+// terminated by a blank line. Parser tests use this instead of raw string
+// concatenation so a missing newline can't masquerade as a real bug.
+func formatSSEFrame(id int64, event, data string) string {
+	return fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", id, event, data)
+}
+
+// writeSSEFrame writes a well-formed SSE frame to w and flushes. Mock SSE
+// handlers compose calls to this rather than juggling io.WriteString plus
+// the http.Flusher cast.
+func writeSSEFrame(t *testing.T, w http.ResponseWriter, id int64, event, data string) {
+	t.Helper()
+	if _, err := io.WriteString(w, formatSSEFrame(id, event, data)); err != nil {
+		t.Fatalf("write sse frame: %v", err)
+	}
+	w.(http.Flusher).Flush()
+}
+
+// newSSEMockServer wraps httptest.NewServer with the boilerplate every SSE
+// test repeats: Content-Type: text/event-stream + 200 OK before delegating
+// to handler. The server is closed via t.Cleanup.
+func newSSEMockServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		handler(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// assertParse runs parseAllFrames against in and fails t on error,
+// returning only the frames the parser produced.
+func assertParse(t *testing.T, in string) []frame {
+	t.Helper()
+	frames, err := parseAllFrames(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frames
 }

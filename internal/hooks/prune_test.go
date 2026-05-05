@@ -12,13 +12,9 @@ import (
 
 func TestPrune_StartupSeed_TotalsBytesInDir(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "1.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "1.0.err"), 50)
+	writeHookLogs(t, dir, 1, 0, 100, 50)
 	mustWrite(t, filepath.Join(dir, "2.0.out"), 200)
-	p := newPruner(dir, 1024, log.New(&bytes.Buffer{}, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
+	p := setupSeededPruner(t, dir, 1024)
 	if got := p.Total(); got != 350 {
 		t.Fatalf("seed total = %d, want 350", got)
 	}
@@ -26,79 +22,46 @@ func TestPrune_StartupSeed_TotalsBytesInDir(t *testing.T) {
 
 func TestPrune_MaybeSweep_OldestGroupFirst(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "10.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "10.0.err"), 50)
-	mustWrite(t, filepath.Join(dir, "20.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "20.0.err"), 50)
-	mustWrite(t, filepath.Join(dir, "30.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "30.0.err"), 50)
-	logBuf := &bytes.Buffer{}
-	p := newPruner(dir, 250, log.New(logBuf, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
+	writeHookLogs(t, dir, 10, 0, 100, 50)
+	writeHookLogs(t, dir, 20, 0, 100, 50)
+	writeHookLogs(t, dir, 30, 0, 100, 50)
+	p := setupSeededPruner(t, dir, 250)
 	p.MaybeSweep()
 	// 450 -> cap 250 -> must delete oldest groups (10.0 and 20.0) leaving 150.
-	if _, err := os.Stat(filepath.Join(dir, "10.0.out")); err == nil {
-		t.Fatal("oldest group should have been deleted")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "30.0.out")); err != nil {
-		t.Fatalf("newest group must survive: %v", err)
-	}
+	assertPruned(t, filepath.Join(dir, "10.0.out"))
+	assertRetained(t, filepath.Join(dir, "30.0.out"))
 }
 
 func TestPrune_AtomicGroup_DeletesOutAndErrTogether(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "10.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "10.0.err"), 50)
-	mustWrite(t, filepath.Join(dir, "20.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "20.0.err"), 50)
-	p := newPruner(dir, 100, log.New(&bytes.Buffer{}, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
+	writeHookLogs(t, dir, 10, 0, 100, 50)
+	writeHookLogs(t, dir, 20, 0, 100, 50)
+	p := setupSeededPruner(t, dir, 100)
 	p.MaybeSweep()
-	if _, err := os.Stat(filepath.Join(dir, "10.0.out")); err == nil {
-		t.Fatal("10.0.out should be gone")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "10.0.err")); err == nil {
-		t.Fatal("10.0.err should also be gone (atomic group delete)")
-	}
+	assertPruned(t, filepath.Join(dir, "10.0.out"))
+	assertPruned(t, filepath.Join(dir, "10.0.err"))
 }
 
 func TestPrune_PartialGroup_NotFatal(t *testing.T) {
 	dir := t.TempDir()
 	// Only .out exists for this group; .err is missing.
 	mustWrite(t, filepath.Join(dir, "10.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "20.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "20.0.err"), 50)
-	p := newPruner(dir, 100, log.New(&bytes.Buffer{}, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
+	writeHookLogs(t, dir, 20, 0, 100, 50)
+	p := setupSeededPruner(t, dir, 100)
 	p.MaybeSweep()
-	if _, err := os.Stat(filepath.Join(dir, "10.0.out")); err == nil {
-		t.Fatal("partial group should still be eligible for delete")
-	}
+	assertPruned(t, filepath.Join(dir, "10.0.out"))
 }
 
 func TestPrune_AddAfterRun_TriggersSweep(t *testing.T) {
 	dir := t.TempDir()
-	p := newPruner(dir, 100, log.New(&bytes.Buffer{}, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
-	mustWrite(t, filepath.Join(dir, "1.0.out"), 80)
-	mustWrite(t, filepath.Join(dir, "1.0.err"), 0)
+	p := setupSeededPruner(t, dir, 100)
+	writeHookLogs(t, dir, 1, 0, 80, 0)
 	p.AddRun(1, 0, 80, 0)
-	mustWrite(t, filepath.Join(dir, "2.0.out"), 80)
-	mustWrite(t, filepath.Join(dir, "2.0.err"), 0)
+	writeHookLogs(t, dir, 2, 0, 80, 0)
 	p.AddRun(2, 0, 80, 0)
 	// Total now 160 over cap 100 -> after second AddRun, sweep should run
 	// and delete oldest (1.0) leaving 80.
-	if _, err := os.Stat(filepath.Join(dir, "1.0.out")); err == nil {
-		t.Fatal("oldest run should have been pruned by AddRun-triggered sweep")
-	}
+	assertPruned(t, filepath.Join(dir, "1.0.out"))
 }
 
 // TestPrune_SkipsActiveGroup pins the contract that MaybeSweep never
@@ -108,26 +71,16 @@ func TestPrune_AddAfterRun_TriggersSweep(t *testing.T) {
 // ordering.
 func TestPrune_SkipsActiveGroup(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "10.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "10.0.err"), 50)
-	mustWrite(t, filepath.Join(dir, "20.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "20.0.err"), 50)
-	mustWrite(t, filepath.Join(dir, "30.0.out"), 100)
-	mustWrite(t, filepath.Join(dir, "30.0.err"), 50)
-	p := newPruner(dir, 200, log.New(&bytes.Buffer{}, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
+	writeHookLogs(t, dir, 10, 0, 100, 50)
+	writeHookLogs(t, dir, 20, 0, 100, 50)
+	writeHookLogs(t, dir, 30, 0, 100, 50)
+	p := setupSeededPruner(t, dir, 200)
 	p.SetActiveCheck(func(k groupKey) bool {
 		return k.eventID == 10
 	})
 	p.MaybeSweep()
-	if _, err := os.Stat(filepath.Join(dir, "10.0.out")); err != nil {
-		t.Fatalf("active group 10.0 must be preserved: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "20.0.out")); err == nil {
-		t.Fatal("inactive next-oldest 20.0 should have been deleted")
-	}
+	assertRetained(t, filepath.Join(dir, "10.0.out"))
+	assertPruned(t, filepath.Join(dir, "20.0.out"))
 }
 
 // TestPrune_StaleScan_NoDoubleDecrement guards the
@@ -137,10 +90,7 @@ func TestPrune_SkipsActiveGroup(t *testing.T) {
 func TestPrune_StaleScan_NoDoubleDecrement(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "1.0.out"), 100)
-	p := newPruner(dir, 1024, log.New(&bytes.Buffer{}, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
+	p := setupSeededPruner(t, dir, 1024)
 	startTotal := p.Total()
 	stale := groupInfo{
 		key:     groupKey{eventID: 999, hookIndex: 0},
@@ -164,13 +114,9 @@ func TestPrune_ConcurrentSweep_TotalMatchesDisk(t *testing.T) {
 	const groups = 12
 	const perStream = 100
 	for i := 1; i <= groups; i++ {
-		mustWrite(t, filepath.Join(dir, fmt.Sprintf("%d.0.out", i)), perStream)
-		mustWrite(t, filepath.Join(dir, fmt.Sprintf("%d.0.err", i)), perStream)
+		writeHookLogs(t, dir, i, 0, perStream, perStream)
 	}
-	p := newPruner(dir, 400, log.New(&bytes.Buffer{}, "", 0))
-	if err := p.Seed(); err != nil {
-		t.Fatal(err)
-	}
+	p := setupSeededPruner(t, dir, 400)
 	var wg sync.WaitGroup
 	for w := 0; w < 4; w++ {
 		wg.Add(1)
@@ -202,5 +148,40 @@ func mustWrite(t *testing.T, path string, n int) {
 	t.Helper()
 	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), n), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// setupSeededPruner builds a pruner with a discarded-log writer and
+// runs Seed, failing the test if seeding errors.
+func setupSeededPruner(t *testing.T, dir string, capBytes int64) *pruner {
+	t.Helper()
+	p := newPruner(dir, capBytes, log.New(&bytes.Buffer{}, "", 0))
+	if err := p.Seed(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// writeHookLogs writes the .out and .err pair for a (eventID, hookIndex)
+// group with the given byte sizes.
+func writeHookLogs(t *testing.T, dir string, eventID, hookIndex, outSize, errSize int) {
+	t.Helper()
+	mustWrite(t, filepath.Join(dir, fmt.Sprintf("%d.%d.out", eventID, hookIndex)), outSize)
+	mustWrite(t, filepath.Join(dir, fmt.Sprintf("%d.%d.err", eventID, hookIndex)), errSize)
+}
+
+// assertPruned fails the test if path still exists on disk.
+func assertPruned(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected %s to be pruned, but it still exists", path)
+	}
+}
+
+// assertRetained fails the test if path does not exist on disk.
+func assertRetained(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected %s to be retained: %v", path, err)
 	}
 }

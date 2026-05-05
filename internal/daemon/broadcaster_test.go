@@ -16,13 +16,7 @@ func TestBroadcaster_SubscribeAndUnsubLifecycle(t *testing.T) {
 	sub.Unsub()
 	// Calling Unsub twice must be safe — closes only once.
 	sub.Unsub()
-	// Channel must be closed.
-	select {
-	case _, ok := <-sub.Ch:
-		assert.False(t, ok, "channel must be closed after Unsub")
-	case <-time.After(time.Second):
-		t.Fatal("channel was not closed within 1s")
-	}
+	assertChannelClosed(t, sub.Ch, time.Second, "sub.Ch after Unsub")
 }
 
 func TestBroadcaster_BroadcastFansToMatchingFiltersOnly(t *testing.T) {
@@ -34,28 +28,16 @@ func TestBroadcaster_BroadcastFansToMatchingFiltersOnly(t *testing.T) {
 	defer a.Unsub()
 	defer other.Unsub()
 
-	evt := &db.Event{ID: 100, ProjectID: 1, Type: "issue.created"}
-	b.Broadcast(daemon.StreamMsg{Kind: "event", Event: evt, ProjectID: 1})
+	broadcastEvent(b, 1, 100)
 
-	select {
-	case got := <-all.Ch:
-		assert.Equal(t, "event", got.Kind)
-		assert.Equal(t, int64(100), got.Event.ID)
-	case <-time.After(time.Second):
-		t.Fatal("cross-project subscriber should have received the event")
-	}
-	select {
-	case got := <-a.Ch:
-		assert.Equal(t, int64(100), got.Event.ID)
-	case <-time.After(time.Second):
-		t.Fatal("project-1 subscriber should have received the event")
-	}
-	select {
-	case got := <-other.Ch:
-		t.Fatalf("project-2 subscriber must not receive a project-1 event, got %+v", got)
-	case <-time.After(50 * time.Millisecond):
-		// expected: no delivery
-	}
+	gotAll := receiveMsg(t, all.Ch, time.Second, "cross-project subscriber")
+	assert.Equal(t, "event", gotAll.Kind)
+	assert.Equal(t, int64(100), gotAll.Event.ID)
+
+	gotA := receiveMsg(t, a.Ch, time.Second, "project-1 subscriber")
+	assert.Equal(t, int64(100), gotA.Event.ID)
+
+	assertNoReceive(t, other.Ch, 50*time.Millisecond, "project-2 subscriber must not receive a project-1 event")
 }
 
 func TestBroadcaster_ResetFansToAllMatchingFilters(t *testing.T) {
@@ -68,13 +50,9 @@ func TestBroadcaster_ResetFansToAllMatchingFilters(t *testing.T) {
 	b.Broadcast(daemon.StreamMsg{Kind: "reset", ResetID: 999, ProjectID: 1})
 
 	for i, ch := range []<-chan daemon.StreamMsg{all.Ch, a.Ch} {
-		select {
-		case got := <-ch:
-			assert.Equal(t, "reset", got.Kind)
-			assert.Equal(t, int64(999), got.ResetID)
-		case <-time.After(time.Second):
-			t.Fatalf("subscriber %d did not receive reset", i)
-		}
+		got := receiveMsg(t, ch, time.Second, "reset subscriber")
+		assert.Equalf(t, "reset", got.Kind, "subscriber %d", i)
+		assert.Equalf(t, int64(999), got.ResetID, "subscriber %d", i)
 	}
 }
 
@@ -87,26 +65,10 @@ func TestBroadcaster_OverflowDisconnectsSlowSubscriberOnly(t *testing.T) {
 	// the broadcaster to close it.
 
 	for i := int64(0); i < 300; i++ {
-		evt := &db.Event{ID: i + 1, ProjectID: 1, Type: "issue.created"}
-		b.Broadcast(daemon.StreamMsg{Kind: "event", Event: evt, ProjectID: 1})
+		broadcastEvent(b, 1, i+1)
 	}
 
-	// slow.Ch must close (overflow disconnect).
-	closed := false
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case _, ok := <-slow.Ch:
-			if !ok {
-				closed = true
-			}
-		case <-time.After(20 * time.Millisecond):
-		}
-		if closed {
-			break
-		}
-	}
-	assert.True(t, closed, "slow subscriber's channel must close on overflow")
+	assertChannelClosed(t, slow.Ch, time.Second, "slow subscriber's channel must close on overflow")
 
 	// fast must still be live: drain it and assert at least one delivery.
 	got := 0

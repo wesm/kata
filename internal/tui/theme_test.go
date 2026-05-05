@@ -125,13 +125,7 @@ func TestApplyColorMode_RebuildsAllStyles(t *testing.T) {
 // from statusStyle.
 func TestApplyColorMode_DeletedStyleIsRedFaint(t *testing.T) {
 	applyColorMode(colorDark, io.Discard)
-	fg, ok := deletedStyle.GetForeground().(lipgloss.Color)
-	if !ok {
-		t.Fatalf("deletedStyle.GetForeground() = %T, want lipgloss.Color", deletedStyle.GetForeground())
-	}
-	if string(fg) != "196" {
-		t.Fatalf("deletedStyle dark foreground = %q, want %q", string(fg), "196")
-	}
+	assertStyleForeground(t, deletedStyle, "deletedStyle dark", "196")
 	if !deletedStyle.GetFaint() {
 		t.Fatal("deletedStyle must be faint so the red doesn't read as an error chip")
 	}
@@ -139,29 +133,11 @@ func TestApplyColorMode_DeletedStyleIsRedFaint(t *testing.T) {
 
 func TestApplyColorMode_StatusColorsStayDistinctInWarmDisplays(t *testing.T) {
 	applyColorMode(colorDark, io.Discard)
-	openDark, ok := openStyle.GetForeground().(lipgloss.Color)
-	if !ok {
-		t.Fatalf("openStyle dark foreground = %T, want lipgloss.Color", openStyle.GetForeground())
-	}
-	closedDark, ok := closedStyle.GetForeground().(lipgloss.Color)
-	if !ok {
-		t.Fatalf("closedStyle dark foreground = %T, want lipgloss.Color", closedStyle.GetForeground())
-	}
-	if string(openDark) != "46" {
-		t.Fatalf("openStyle dark foreground = %q, want %q", string(openDark), "46")
-	}
-	if string(closedDark) != "245" {
-		t.Fatalf("closedStyle dark foreground = %q, want neutral gray %q", string(closedDark), "245")
-	}
+	assertStyleForeground(t, openStyle, "openStyle dark", "46")
+	assertStyleForeground(t, closedStyle, "closedStyle dark", "245")
 
 	applyColorMode(colorLight, io.Discard)
-	closedLight, ok := closedStyle.GetForeground().(lipgloss.Color)
-	if !ok {
-		t.Fatalf("closedStyle light foreground = %T, want lipgloss.Color", closedStyle.GetForeground())
-	}
-	if string(closedLight) != "240" {
-		t.Fatalf("closedStyle light foreground = %q, want neutral gray %q", string(closedLight), "240")
-	}
+	assertStyleForeground(t, closedStyle, "closedStyle light", "240")
 }
 
 // TestApplyColorMode_PanelBorderColorsBound asserts the M3+ panel
@@ -176,10 +152,6 @@ func TestApplyColorMode_PanelBorderColorsBound(t *testing.T) {
 	if panelInactiveBorder == nil {
 		t.Fatal("panelInactiveBorder must be bound by applyColorMode(colorDark)")
 	}
-	if c, ok := panelActiveBorder.(lipgloss.Color); ok && string(c) != "205" {
-		t.Fatalf("panelActiveBorder dark = %q, want %q", string(c), "205")
-	}
-	if c, ok := panelInactiveBorder.(lipgloss.Color); ok && string(c) != "246" {
-		t.Fatalf("panelInactiveBorder dark = %q, want %q", string(c), "246")
-	}
+	assertTerminalColor(t, panelActiveBorder, "panelActiveBorder dark", "205")
+	assertTerminalColor(t, panelInactiveBorder, "panelInactiveBorder dark", "246")
 }

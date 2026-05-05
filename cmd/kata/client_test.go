@@ -24,11 +24,7 @@ func TestEnvHTTPTimeout(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("KATA_HTTP_TIMEOUT", tc.env)
-			got := envHTTPTimeout(def)
-			if got != tc.want {
-				t.Fatalf("envHTTPTimeout(%q) = %v, want %v", tc.env, got, tc.want)
-			}
+			assertEnvDurationOverride(t, "KATA_HTTP_TIMEOUT", tc.env, def, tc.want, envHTTPTimeout)
 		})
 	}
 }
@@ -51,5 +47,14 @@ func TestEnsureDaemon_RemoteUnavailableMapsToCLIError(t *testing.T) {
 	}
 	if ce.ExitCode != ExitDaemonUnavail {
 		t.Errorf("expected ExitCode=%d, got %d", ExitDaemonUnavail, ce.ExitCode)
+	}
+}
+
+func assertEnvDurationOverride(t *testing.T, envKey, envVal string, fallback, want time.Duration, parseFn func(time.Duration) time.Duration) {
+	t.Helper()
+	t.Setenv(envKey, envVal)
+	got := parseFn(fallback)
+	if got != want {
+		t.Fatalf("%s=%q override failed: got %v, want %v", envKey, envVal, got, want)
 	}
 }

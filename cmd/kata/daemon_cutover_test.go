@@ -12,10 +12,7 @@ import (
 )
 
 func TestDaemonStartRunsAutoCutoverBeforeOpen(t *testing.T) {
-	home := t.TempDir()
-	dbPath := filepath.Join(home, "kata.db")
-	t.Setenv("KATA_HOME", home)
-	t.Setenv("KATA_DB", dbPath)
+	dbPath := filepath.Join(setupKataEnv(t), "kata.db")
 	d, err := db.Open(context.Background(), dbPath)
 	require.NoError(t, err)
 	_, err = d.ExecContext(context.Background(), `UPDATE meta SET value='0' WHERE key='schema_version'`)

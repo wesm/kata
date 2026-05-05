@@ -8,6 +8,29 @@ import (
 	"github.com/wesm/kata/internal/similarity"
 )
 
+const epsilon = 1e-9
+
+type tokenizeTestCase struct {
+	name string
+	in   string
+	want []string
+}
+
+func runTokenizeTests(t *testing.T, cases []tokenizeTestCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, similarity.Tokenize(tc.in))
+		})
+	}
+}
+
+func assertScore(t *testing.T, want float64, titleA, bodyA, titleB, bodyB string, msgAndArgs ...interface{}) {
+	t.Helper()
+	got := similarity.Score(titleA, bodyA, titleB, bodyB)
+	assert.InDelta(t, want, got, epsilon, msgAndArgs...)
+}
+
 func TestCanonical(t *testing.T) {
 	// Decomposed "café" = e + combining acute (U+0065 U+0301).
 	decomposed := string([]rune{'c', 'a', 'f', 'e', '́'})
@@ -24,7 +47,7 @@ func TestCanonical(t *testing.T) {
 		{"preserves_case", "Fix Login Bug", "Fix Login Bug"},
 		{"nfc_normalizes_combining_marks", precomposed, precomposed},
 		{"nfc_normalizes_decomposed_form", decomposed, precomposed},
-		{"non_ascii_whitespace_is_collapsed", "foo bar", "foo bar"},
+		{"non_ascii_whitespace_is_collapsed", "foo\u00a0bar", "foo bar"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -34,11 +57,7 @@ func TestCanonical(t *testing.T) {
 }
 
 func TestTokenize(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
+	runTokenizeTests(t, []tokenizeTestCase{
 		{"empty", "", nil},
 		{"single_word", "fix", []string{"fix"}},
 		{"drops_stop_words", "the bug is in login", []string{"bug", "login"}},
@@ -48,12 +67,7 @@ func TestTokenize(t *testing.T) {
 			[]string{"fix", "crash", "test"}},
 		{"drops_short_tokens", "a b is fix", []string{"fix"}},
 		{"splits_on_punctuation", "fix-login: crash!", []string{"fix", "login", "crash"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, similarity.Tokenize(tc.in))
-		})
-	}
+	})
 }
 
 func TestJaccard(t *testing.T) {
@@ -70,33 +84,31 @@ func TestJaccard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.InDelta(t, tc.want, similarity.Jaccard(tc.a, tc.b), 1e-9)
+			assert.InDelta(t, tc.want, similarity.Jaccard(tc.a, tc.b), epsilon)
 		})
 	}
 }
 
 func TestScore_WeightedSum(t *testing.T) {
-	got := similarity.Score("fix login crash", "stack trace here",
+	assertScore(t, 1.0,
+		"fix login crash", "stack trace here",
 		"fix login crash", "stack trace here")
-	assert.InDelta(t, 1.0, got, 1e-9)
-
-	got = similarity.Score("fix login crash", "stack trace here",
+	assertScore(t, 0.6,
+		"fix login crash", "stack trace here",
 		"fix login crash", "completely different body")
-	assert.InDelta(t, 0.6, got, 1e-9)
-
-	got = similarity.Score("fix login crash", "shared body text",
+	assertScore(t, 0.4,
+		"fix login crash", "shared body text",
 		"unrelated title", "shared body text")
-	assert.InDelta(t, 0.4, got, 1e-9)
-
-	got = similarity.Score("alpha", "beta", "gamma", "delta")
-	assert.InDelta(t, 0.0, got, 1e-9)
+	assertScore(t, 0.0,
+		"alpha", "beta", "gamma", "delta")
 }
 
 func TestScore_Body500CharLimit(t *testing.T) {
 	prefix := strings.Repeat("x", 500)
-	got := similarity.Score("same", prefix+" alpha-divergent",
-		"same", prefix+" beta-divergent")
-	assert.InDelta(t, 1.0, got, 1e-9, "divergence past 500 chars must not affect the score")
+	assertScore(t, 1.0,
+		"same", prefix+" alpha-divergent",
+		"same", prefix+" beta-divergent",
+		"divergence past 500 chars must not affect the score")
 }
 
 // TestTokenize_AllStopWordsAreFiltered guards against stopword/stem ordering
@@ -120,38 +132,20 @@ func TestTokenize_AllStopWordsAreFiltered(t *testing.T) {
 // phrase containing only stopwords (some of which would stem to nonsense
 // tokens if processed in the wrong order) yields an empty token slice.
 func TestTokenize_StopWordsBeforeStem(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
+	runTokenizeTests(t, []tokenizeTestCase{
 		{"this_was_a_bug", "this was a bug", []string{"bug"}},
 		{"all_stopwords_strippable", "this was has", nil},
 		{"mixed_phrase", "this issue has the login crash", []string{"issue", "login", "crash"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, similarity.Tokenize(tc.in))
-		})
-	}
+	})
 }
 
 // TestTokenize_DropsSingleRuneNonASCII pins the rune-count short-token filter:
 // "é" is one rune (two bytes) and must be dropped per the documented
 // "shorter than 2 runes" rule, not retained because of byte length.
 func TestTokenize_DropsSingleRuneNonASCII(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
+	runTokenizeTests(t, []tokenizeTestCase{
 		{"single_nonascii_rune", "é", nil},
 		{"single_ascii_letter", "a", nil},
 		{"two_runes_nonascii_kept", "éé", []string{"éé"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, similarity.Tokenize(tc.in))
-		})
-	}
+	})
 }

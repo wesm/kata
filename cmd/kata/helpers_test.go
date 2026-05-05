@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -17,46 +18,83 @@ func writeStringFile(t *testing.T, path, body string) {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 }
 
-func TestResolveBody_FlagWins(t *testing.T) {
-	got, err := resolveBody(BodySources{Body: "hello", BodySet: true}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "hello", got)
+// runEmitJSON invokes emitJSON against a fresh buffer and returns its output,
+// removing the var-buf-then-String dance from each test case.
+func runEmitJSON(t *testing.T, payload any) (string, error) {
+	t.Helper()
+	var buf bytes.Buffer
+	err := emitJSON(&buf, payload)
+	return buf.String(), err
 }
 
-func TestResolveBody_ExplicitEmptyIsHonored(t *testing.T) {
-	got, err := resolveBody(BodySources{Body: "", BodySet: true}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "", got)
-}
-
-func TestResolveBody_FromFile(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/b.txt"
-	writeStringFile(t, path, "from file")
-	got, err := resolveBody(BodySources{File: path, FileSet: true}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "from file", got)
-}
-
-func TestResolveBody_FromStdin(t *testing.T) {
-	in := bytes.NewBufferString("from stdin")
-	got, err := resolveBody(BodySources{Stdin: true}, in)
-	require.NoError(t, err)
-	assert.Equal(t, "from stdin", got)
-}
-
-func TestResolveBody_TwoSourcesIsError(t *testing.T) {
-	_, err := resolveBody(BodySources{Body: "x", BodySet: true, Stdin: true}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one")
-}
-
-// An explicit `--body ""` together with `--body-stdin` is still a conflict —
-// the previous (count by non-empty value) implementation missed this case.
-func TestResolveBody_TwoSourcesEmptyBodyIsError(t *testing.T) {
-	_, err := resolveBody(BodySources{Body: "", BodySet: true, Stdin: true}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exactly one")
+func TestResolveBody(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T) (BodySources, io.Reader)
+		want    string
+		wantErr string
+	}{
+		{
+			name: "flag wins",
+			setup: func(*testing.T) (BodySources, io.Reader) {
+				return BodySources{Body: "hello", BodySet: true}, nil
+			},
+			want: "hello",
+		},
+		{
+			name: "explicit empty is honored",
+			setup: func(*testing.T) (BodySources, io.Reader) {
+				return BodySources{Body: "", BodySet: true}, nil
+			},
+			want: "",
+		},
+		{
+			name: "from file",
+			setup: func(t *testing.T) (BodySources, io.Reader) {
+				path := t.TempDir() + "/b.txt"
+				writeStringFile(t, path, "from file")
+				return BodySources{File: path, FileSet: true}, nil
+			},
+			want: "from file",
+		},
+		{
+			name: "from stdin",
+			setup: func(*testing.T) (BodySources, io.Reader) {
+				return BodySources{Stdin: true}, bytes.NewBufferString("from stdin")
+			},
+			want: "from stdin",
+		},
+		{
+			name: "two sources is error",
+			setup: func(*testing.T) (BodySources, io.Reader) {
+				return BodySources{Body: "x", BodySet: true, Stdin: true}, nil
+			},
+			wantErr: "exactly one",
+		},
+		{
+			// An explicit `--body ""` together with `--body-stdin` is still a
+			// conflict — the previous (count by non-empty value) implementation
+			// missed this case.
+			name: "two sources with empty body is error",
+			setup: func(*testing.T) (BodySources, io.Reader) {
+				return BodySources{Body: "", BodySet: true, Stdin: true}, nil
+			},
+			wantErr: "exactly one",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sources, stdin := tc.setup(t)
+			got, err := resolveBody(sources, stdin)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestResolveActor_Precedence(t *testing.T) {
@@ -87,30 +125,30 @@ func TestResolveActor_Precedence(t *testing.T) {
 }
 
 func TestEmitJSON_AddsAPIVersion(t *testing.T) {
-	var buf bytes.Buffer
-	require.NoError(t, emitJSON(&buf, map[string]string{"x": "y"}))
-	out := buf.String()
+	out, err := runEmitJSON(t, map[string]string{"x": "y"})
+	require.NoError(t, err)
 	assert.Contains(t, out, `"kata_api_version":1`)
 	assert.Contains(t, out, `"x":"y"`)
 	assert.True(t, strings.HasSuffix(out, "\n"))
 }
 
 func TestEmitJSON_EmptyObject(t *testing.T) {
-	var buf bytes.Buffer
-	require.NoError(t, emitJSON(&buf, struct{}{}))
-	assert.Equal(t, "{\"kata_api_version\":1}\n", buf.String())
+	out, err := runEmitJSON(t, struct{}{})
+	require.NoError(t, err)
+	assert.Equal(t, "{\"kata_api_version\":1}\n", out)
 }
 
 func TestEmitJSON_RejectsNonObject(t *testing.T) {
-	var buf bytes.Buffer
-	require.Error(t, emitJSON(&buf, "scalar"))
-	require.Error(t, emitJSON(&buf, []int{1, 2, 3}))
-	require.Error(t, emitJSON(&buf, nil))
+	_, err := runEmitJSON(t, "scalar")
+	require.Error(t, err)
+	_, err = runEmitJSON(t, []int{1, 2, 3})
+	require.Error(t, err)
+	_, err = runEmitJSON(t, nil)
+	require.Error(t, err)
 }
 
 func TestEmitJSON_RejectsReservedKey(t *testing.T) {
-	var buf bytes.Buffer
-	err := emitJSON(&buf, map[string]any{"kata_api_version": "evil"})
+	_, err := runEmitJSON(t, map[string]any{"kata_api_version": "evil"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kata_api_version")
 }
@@ -122,14 +160,13 @@ func TestEmitJSON_RejectsReservedKey(t *testing.T) {
 // bytes.Contains(`"kata_api_version"`) guard would have let this slip
 // through and produced a duplicate-keyed envelope downstream.
 func TestEmitJSON_RejectsEscapedReservedKey(t *testing.T) {
-	var buf bytes.Buffer
 	// Build the escape sequence explicitly — backtick raw strings interpret
 	// the bytes literally, but writing `k` here avoids any rendering
 	// ambiguity in the source file.
 	payload := json.RawMessage([]byte(`{"\u006bata_api_version":"evil"}`))
 	require.NotContains(t, string(payload), `"kata_api_version"`,
 		"test fixture itself must contain the escape, not the literal key")
-	err := emitJSON(&buf, payload)
+	_, err := runEmitJSON(t, payload)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kata_api_version")
 }

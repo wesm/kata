@@ -2,13 +2,11 @@ package tui
 
 import "testing"
 
-func int64Ptr(v int64) *int64 { return &v }
-
 func TestBuildQueueRows_CollapsedShowsTopLevelOnly(t *testing.T) {
 	issues := []Issue{
-		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 1, Total: 1}},
-		{ProjectID: 7, Number: 2, Title: "child", ParentNumber: int64Ptr(1)},
-		{ProjectID: 7, Number: 3, Title: "unrelated"},
+		testIssue(1, withCounts(1, 1)),
+		testIssue(2, withParent(1)),
+		testIssue(3),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{}, nil)
@@ -20,10 +18,10 @@ func TestBuildQueueRows_CollapsedShowsTopLevelOnly(t *testing.T) {
 
 func TestBuildQueueRows_ExpandedShowsDirectChildren(t *testing.T) {
 	issues := []Issue{
-		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 2, Total: 2}},
-		{ProjectID: 7, Number: 2, Title: "child 1", ParentNumber: int64Ptr(1), ChildCounts: &ChildCounts{Open: 1, Total: 1}},
-		{ProjectID: 7, Number: 3, Title: "child 2", ParentNumber: int64Ptr(1)},
-		{ProjectID: 7, Number: 4, Title: "grandchild", ParentNumber: int64Ptr(2)},
+		testIssue(1, withCounts(2, 2)),
+		testIssue(2, withParent(1), withCounts(1, 1)),
+		testIssue(3, withParent(1)),
+		testIssue(4, withParent(2)),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{}, expansionSet{{projectID: 7, number: 1}: true})
@@ -44,10 +42,10 @@ func TestBuildQueueRows_ExpandedShowsDirectChildren(t *testing.T) {
 
 func TestBuildQueueRows_DefaultsExpandedChildrenToTopologicalOrder(t *testing.T) {
 	issues := []Issue{
-		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 3, Total: 3}},
-		{ProjectID: 7, Number: 2, Title: "blocked child", ParentNumber: int64Ptr(1)},
-		{ProjectID: 7, Number: 3, Title: "blocker child", ParentNumber: int64Ptr(1), Blocks: []int64{2}},
-		{ProjectID: 7, Number: 4, Title: "unrelated child", ParentNumber: int64Ptr(1)},
+		testIssue(1, withCounts(3, 3)),
+		testIssue(2, withParent(1)),
+		testIssue(3, withParent(1), withBlocks(2)),
+		testIssue(4, withParent(1)),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{}, expansionSet{{projectID: 7, number: 1}: true})
@@ -56,10 +54,10 @@ func TestBuildQueueRows_DefaultsExpandedChildrenToTopologicalOrder(t *testing.T)
 
 func TestBuildQueueRows_TemporalChildSortPreservesFetchOrder(t *testing.T) {
 	issues := []Issue{
-		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 3, Total: 3}},
-		{ProjectID: 7, Number: 2, Title: "blocked child", ParentNumber: int64Ptr(1)},
-		{ProjectID: 7, Number: 3, Title: "blocker child", ParentNumber: int64Ptr(1), Blocks: []int64{2}},
-		{ProjectID: 7, Number: 4, Title: "unrelated child", ParentNumber: int64Ptr(1)},
+		testIssue(1, withCounts(3, 3)),
+		testIssue(2, withParent(1)),
+		testIssue(3, withParent(1), withBlocks(2)),
+		testIssue(4, withParent(1)),
 	}
 
 	rows := buildQueueRowsWithSort(
@@ -73,9 +71,9 @@ func TestBuildQueueRows_TemporalChildSortPreservesFetchOrder(t *testing.T) {
 
 func TestBuildQueueRows_FilteredChildAutoShowsAncestorContext(t *testing.T) {
 	issues := []Issue{
-		{ProjectID: 7, Number: 1, Title: "parent"},
-		{ProjectID: 7, Number: 2, Title: "detail hint bars incomplete", ParentNumber: int64Ptr(1)},
-		{ProjectID: 7, Number: 3, Title: "unrelated"},
+		testIssue(1),
+		testIssue(2, withTitle("detail hint bars incomplete"), withParent(1)),
+		testIssue(3),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{Search: "hint bars"}, nil)
@@ -93,8 +91,8 @@ func TestBuildQueueRows_FilteredChildAutoShowsAncestorContext(t *testing.T) {
 
 func TestBuildQueueRows_StatusFilterIsClientSide(t *testing.T) {
 	issues := []Issue{
-		{ProjectID: 7, Number: 1, Status: "open"},
-		{ProjectID: 7, Number: 2, Status: "closed"},
+		testIssue(1, withStatus("open")),
+		testIssue(2, withStatus("closed")),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{Status: "closed"}, nil)
@@ -103,8 +101,8 @@ func TestBuildQueueRows_StatusFilterIsClientSide(t *testing.T) {
 
 func TestBuildQueueRows_LabelsFilterAnyOf(t *testing.T) {
 	issues := []Issue{
-		{ProjectID: 7, Number: 1, Labels: []string{"bug", "ux"}},
-		{ProjectID: 7, Number: 2, Labels: []string{"daemon"}},
+		testIssue(1, withLabels("bug", "ux")),
+		testIssue(2, withLabels("daemon")),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{Labels: []string{"ux", "docs"}}, nil)

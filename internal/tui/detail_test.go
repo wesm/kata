@@ -12,6 +12,33 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+// newDetailHostModel builds a Model wired with a stub API client and a
+// single-project scope so detail-level handler tests can drive
+// Model.Update without re-typing the boilerplate.
+func newDetailHostModel(opts Options, projectID int64) Model {
+	m := initialModel(opts)
+	m.api = &Client{}
+	m.scope = scope{projectID: projectID}
+	return m
+}
+
+// assertJumpDetailCmd evaluates cmd, asserts it returns a jumpDetailMsg
+// targeting want, and fails otherwise.
+func assertJumpDetailCmd(t *testing.T, cmd tea.Cmd, want int64) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected jump cmd, got nil")
+	}
+	msg := cmd()
+	jm, ok := msg.(jumpDetailMsg)
+	if !ok {
+		t.Fatalf("expected jumpDetailMsg, got %T", msg)
+	}
+	if jm.number != want {
+		t.Fatalf("jumpDetailMsg.number = %d, want %d", jm.number, want)
+	}
+}
+
 // detailFixture seeds a detailModel with one issue, two comments, two
 // events, and one link so every per-tab renderer has data to render.
 // The body has many lines so j scrolling has somewhere to go.
@@ -148,18 +175,14 @@ func TestDetail_RenderHierarchySections(t *testing.T) {
 		{Number: 44, Title: "new issue form parent field", Status: "closed"},
 	}
 	out := stripANSI(dm.View(100, 28, viewChrome{}))
-	for _, want := range []string{
+	assertContainsAll(t, out,
 		"parent: #12 workspace polish parent",
 		"children: 1 open / 2 total",
 		"Children",
 		"#43",
 		"detail hint bars incomplete",
 		"#44",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("detail hierarchy render missing %q:\n%s", want, out)
-		}
-	}
+	)
 }
 
 // TestDetail_TabCycle_NextPrev: tab cycles forward, shift+tab cycles
@@ -383,9 +406,7 @@ func TestDetail_Back_EmitsPopMsg(t *testing.T) {
 // a tea.Cmd. (We can't introspect a tea.Batch directly without running
 // it, but we can verify the model state mutated correctly.)
 func TestDetail_OpenFromList_DispatchesBatch(t *testing.T) {
-	m := initialModel(Options{})
-	m.api = &Client{} // non-nil so handleOpenDetail dispatches the batch
-	m.scope = scope{projectID: 7}
+	m := newDetailHostModel(Options{}, 7)
 	m.list.loading = false
 	m.list.issues = []Issue{
 		{ProjectID: 7, Number: 1, Title: "first"},
@@ -592,9 +613,7 @@ func TestDetailApplyFetched_PopulatesParentAndChildren(t *testing.T) {
 // model-level handler seeds all three per-tab loading flags so the
 // initial render shows "(loading…)" until the tab fetches return.
 func TestDetail_OpenDetail_SeedsLoadingFlags(t *testing.T) {
-	m := initialModel(Options{})
-	m.api = &Client{}
-	m.scope = scope{projectID: 7}
+	m := newDetailHostModel(Options{}, 7)
 	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
 	out, _ := m.Update(openDetailMsg{issue: iss})
 	m = out.(Model)
@@ -975,18 +994,13 @@ func TestDetail_RenderEventsTab_FormatsCommonEventTypes(t *testing.T) {
 			Payload: map[string]any{"owner": "wesm"}},
 	}
 	out := renderEventsTab(es, 200, 20, -1, tabState{})
-	checks := []string{
+	assertContainsAll(t, out,
 		"[issue.created] 2025-01-02 15:04 a — created",
 		"[issue.closed] 2025-01-02 15:04 a — closed (wontfix)",
 		"[issue.labeled] 2025-01-02 15:04 b — labeled bug",
 		"[issue.linked] 2025-01-02 15:04 c — linked blocks #11",
 		"[issue.assigned] 2025-01-02 15:04 d — assigned wesm",
-	}
-	for _, want := range checks {
-		if !strings.Contains(out, want) {
-			t.Fatalf("missing %q:\n%s", want, out)
-		}
-	}
+	)
 }
 
 // TestDetail_RenderEventsTab_UnknownTypeFallback: an unrecognized event
@@ -1129,16 +1143,7 @@ func TestDetailChildren_EnterJumpsToChild(t *testing.T) {
 	km := newKeymap()
 
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, &fakeDetailAPI{})
-	if cmd == nil {
-		t.Fatal("enter on focused child should emit jump command")
-	}
-	jm, ok := cmd().(jumpDetailMsg)
-	if !ok {
-		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
-	}
-	if jm.number != 44 {
-		t.Fatalf("jumpDetailMsg.number = %d, want 44", jm.number)
-	}
+	assertJumpDetailCmd(t, cmd, 44)
 }
 
 // runBatch unwraps a tea.Batch wrapper and runs every nested cmd in
@@ -1181,16 +1186,7 @@ func TestDetail_EnterOnEventWithIssueRef_JumpsAndStacks(t *testing.T) {
 	dm.tabCursor = 0
 	km := newKeymap()
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
-	if cmd == nil {
-		t.Fatal("expected jump cmd from Enter")
-	}
-	jm, ok := cmd().(jumpDetailMsg)
-	if !ok {
-		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
-	}
-	if jm.number != 11 {
-		t.Fatalf("jumpDetailMsg.number = %d, want 11", jm.number)
-	}
+	assertJumpDetailCmd(t, cmd, 11)
 }
 
 // TestDetail_EnterOnLinkEntry_JumpsToTarget: pressing Enter on a link
@@ -1204,16 +1200,7 @@ func TestDetail_EnterOnLinkEntry_JumpsToTarget(t *testing.T) {
 	dm.tabCursor = 0
 	km := newKeymap()
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
-	if cmd == nil {
-		t.Fatal("expected jump cmd from Enter on link")
-	}
-	jm, ok := cmd().(jumpDetailMsg)
-	if !ok {
-		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
-	}
-	if jm.number != 7 {
-		t.Fatalf("jumpDetailMsg.number = %d, want 7", jm.number)
-	}
+	assertJumpDetailCmd(t, cmd, 7)
 }
 
 // TestDetail_EnterOnIncomingLink_JumpsToFromNumber: when the cursor is
@@ -1236,17 +1223,7 @@ func TestDetail_EnterOnIncomingLink_JumpsToFromNumber(t *testing.T) {
 	}
 	km := newKeymap()
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
-	if cmd == nil {
-		t.Fatal("expected jump cmd from Enter on incoming link")
-	}
-	jm, ok := cmd().(jumpDetailMsg)
-	if !ok {
-		t.Fatalf("expected jumpDetailMsg, got %T", cmd())
-	}
-	if jm.number != 99 {
-		t.Fatalf("jumpDetailMsg.number = %d, want 99 (incoming → FromNumber)",
-			jm.number)
-	}
+	assertJumpDetailCmd(t, cmd, 99)
 }
 
 // TestLinkJumpTarget_OutgoingPicksToNumber: when ToNumber differs from
@@ -1477,9 +1454,7 @@ func TestDetail_ApplyActivityCursor_UsesTextMarker(t *testing.T) {
 // fetch for A lands after the user has popped and reopened B. The B
 // view must not pick up A's comments/events/links/issue.
 func TestDetail_StaleFetch_DroppedAcrossOpen(t *testing.T) {
-	m := initialModel(Options{})
-	m.api = &Client{}
-	m.scope = scope{projectID: 7}
+	m := newDetailHostModel(Options{}, 7)
 	m.list.loading = false
 	m.list.issues = []Issue{
 		{ProjectID: 7, Number: 1, Title: "A"},
@@ -1524,9 +1499,7 @@ func TestDetail_StaleFetch_DroppedAcrossOpen(t *testing.T) {
 // the jump must not seed the post-jump view. The flow is exercised at
 // the Model level so the monotonic m.nextGen counter is the authority.
 func TestDetail_StaleFetch_DroppedAcrossJump(t *testing.T) {
-	m := initialModel(Options{})
-	m.api = &Client{}
-	m.scope = scope{projectID: 7}
+	m := newDetailHostModel(Options{}, 7)
 	m.view = viewDetail
 	m.detail = detailFixture()
 	m.detail.activeTab = tabLinks
@@ -1572,9 +1545,7 @@ func TestDetail_StaleFetch_DroppedAcrossJump(t *testing.T) {
 // asserts C's data survives — the gen on C must be strictly greater
 // than B's gen.
 func TestModel_GenMonotonicAcrossJumpBackOpen(t *testing.T) {
-	m := initialModel(Options{})
-	m.api = &Client{}
-	m.scope = scope{projectID: 7}
+	m := newDetailHostModel(Options{}, 7)
 	// List has issues A (#1) and C (#3); B (#2) is the jump target.
 	m.list.loading = false
 	m.list.issues = []Issue{
@@ -1724,9 +1695,7 @@ func TestList_DetailMutation_Ignored(t *testing.T) {
 // the resolved identity instead of the empty string.
 func TestDetail_Open_SeedsActorFromList(t *testing.T) {
 	t.Setenv("KATA_AUTHOR", "wes")
-	m := initialModel(Options{})
-	m.api = &Client{}
-	m.scope = scope{projectID: 7}
+	m := newDetailHostModel(Options{}, 7)
 	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
 	out, _ := m.Update(openDetailMsg{issue: iss})
 	m = out.(Model)
@@ -1797,9 +1766,7 @@ func TestDetail_Jump_PreservesActor(t *testing.T) {
 // twice advances the generation each time so any in-flight fetch from
 // the first open is dropped on the second.
 func TestDetail_Open_AdvancesGenAcrossReopens(t *testing.T) {
-	m := initialModel(Options{})
-	m.api = &Client{}
-	m.scope = scope{projectID: 7}
+	m := newDetailHostModel(Options{}, 7)
 	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
 	out, _ := m.Update(openDetailMsg{issue: iss})
 	m = out.(Model)

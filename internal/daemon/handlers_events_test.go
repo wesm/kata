@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -26,20 +25,47 @@ func mkProject(t *testing.T, env *testenv.Env, identity, name string) int64 {
 
 func mkIssue(t *testing.T, env *testenv.Env, projectID int64, title string) db.Issue {
 	t.Helper()
-	is, _, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
+	is, _ := mkIssueWithEvent(t, env, projectID, title)
+	return is
+}
+
+func mkIssueWithEvent(t *testing.T, env *testenv.Env, projectID int64, title string) (db.Issue, db.Event) {
+	t.Helper()
+	is, evt, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
 		ProjectID: projectID, Title: title, Author: "tester",
 	})
 	require.NoError(t, err)
-	return is
+	return is, evt
+}
+
+// setupLiveSSE creates a project, injects a sentinel issue, opens an SSE
+// stream just before that sentinel, and consumes the sentinel frame so the
+// returned framer is parked in the live wakeup loop. Use this when a test
+// needs to exercise post-drain handler behavior (e.g. broadcaster races,
+// purge-reset rechecks) and must not have the events under test land in the
+// initial drain phase.
+func setupLiveSSE(t *testing.T, env *testenv.Env) (int64, db.Issue, *sseFramer) {
+	t.Helper()
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	sentinelIssue, sentinelEvt := mkIssueWithEvent(t, env, pid, "sentinel")
+
+	hwm, err := env.DB.MaxEventID(context.Background())
+	require.NoError(t, err)
+	resp := openSSE(t, env, "after_id="+strconv.FormatInt(hwm-1, 10), nil)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	require.Equal(t, 200, resp.StatusCode)
+
+	framer := newSSEFramer(resp.Body)
+	first, ok := framer.Next(t, 2*time.Second)
+	require.True(t, ok, "sentinel drain frame should arrive")
+	require.Equal(t, strconv.FormatInt(sentinelEvt.ID, 10), first.id)
+	return pid, sentinelIssue, framer
 }
 
 func TestPollEvents_EmptyResultIsNonNullArray(t *testing.T) {
 	env := testenv.New(t)
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	resp, bs := envGetRaw(t, env, "/api/v1/events?after_id=0&limit=10")
 	require.Equal(t, 200, resp.StatusCode)
-	bs, _ := io.ReadAll(resp.Body)
 	body := string(bs)
 	assert.Contains(t, body, `"events":[]`, "must be empty array, never null")
 	assert.Contains(t, body, `"reset_required":false`)
@@ -54,10 +80,6 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	project, err := env.DB.ProjectByID(context.Background(), pid)
 	require.NoError(t, err)
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var b struct {
 		ResetRequired bool `json:"reset_required"`
 		Events        []struct {
@@ -68,7 +90,7 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	envGetJSON(t, env, "/api/v1/events?after_id=0&limit=10", &b)
 	require.Len(t, b.Events, 2)
 	assert.Equal(t, int64(1), b.Events[0].EventID)
 	assert.Equal(t, int64(2), b.Events[1].EventID)
@@ -95,10 +117,6 @@ func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=2&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var b struct {
 		Events []struct {
 			Type            string  `json:"type"`
@@ -107,7 +125,7 @@ func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
 			RelatedIssueUID *string `json:"related_issue_uid"`
 		} `json:"events"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	envGetJSON(t, env, "/api/v1/events?after_id=2&limit=10", &b)
 	require.Len(t, b.Events, 1)
 	assert.Equal(t, "issue.linked", b.Events[0].Type)
 	assert.Equal(t, project.UID, b.Events[0].ProjectUID)
@@ -122,11 +140,8 @@ func TestPollEvents_NextAfterIDEchoesAfterIDOnEmpty(t *testing.T) {
 	pid := mkProject(t, env, "github.com/test/a", "a")
 	mkIssue(t, env, pid, "only")
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=99&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	resp, bs := envGetRaw(t, env, "/api/v1/events?after_id=99&limit=10")
 	require.Equal(t, 200, resp.StatusCode)
-	bs, _ := io.ReadAll(resp.Body)
 	body := string(bs)
 	assert.Contains(t, body, `"next_after_id":99`)
 	assert.Contains(t, body, `"events":[]`)
@@ -139,16 +154,12 @@ func TestPollEvents_PerProjectFiltersOtherProjects(t *testing.T) {
 	mkIssue(t, env, pa, "a1")
 	mkIssue(t, env, pb, "b1")
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/" + strconv.FormatInt(pa, 10) + "/events?after_id=0&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var b struct {
 		Events []struct {
 			ProjectID int64 `json:"project_id"`
 		} `json:"events"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	envGetJSON(t, env, "/api/v1/projects/"+strconv.FormatInt(pa, 10)+"/events?after_id=0&limit=10", &b)
 	require.Len(t, b.Events, 1)
 	assert.Equal(t, pa, b.Events[0].ProjectID)
 }
@@ -161,10 +172,6 @@ func TestPollEvents_ResetRequiredAfterPurge(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cursor below the reset → reset_required:true
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var b struct {
 		ResetRequired bool  `json:"reset_required"`
 		ResetAfterID  int64 `json:"reset_after_id"`
@@ -173,7 +180,7 @@ func TestPollEvents_ResetRequiredAfterPurge(t *testing.T) {
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	envGetJSON(t, env, "/api/v1/events?after_id=0&limit=10", &b)
 	assert.True(t, b.ResetRequired)
 	assert.Greater(t, b.ResetAfterID, int64(0))
 	assert.Equal(t, b.ResetAfterID, b.NextAfterID, "next_after_id == reset_after_id when reset")
@@ -186,22 +193,15 @@ func TestPollEvents_LimitClampsAt1000(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		mkIssue(t, env, pid, "x")
 	}
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0&limit=99999")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	resp, _ := envGetRaw(t, env, "/api/v1/events?after_id=0&limit=99999")
 	assert.Equal(t, 200, resp.StatusCode, "values >1000 must clamp silently, not 400")
 }
 
 func TestPollEvents_LimitNonPositiveIs400(t *testing.T) {
 	env := testenv.New(t)
 	for _, q := range []string{"after_id=0&limit=0", "after_id=0&limit=-5"} {
-		resp, err := env.HTTP.Get(env.URL + "/api/v1/events?" + q)
-		require.NoError(t, err)
-		bs, _ := io.ReadAll(resp.Body)
-		body := string(bs)
-		_ = resp.Body.Close()
-		assert.Equal(t, 400, resp.StatusCode, "limit %s should be 400", q)
-		assert.Contains(t, body, `"code":"validation"`)
+		resp, bs := envGetRaw(t, env, "/api/v1/events?"+q)
+		assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 	}
 }
 
@@ -209,26 +209,19 @@ func TestPollEvents_NegativeAfterIDIs400(t *testing.T) {
 	env := testenv.New(t)
 	pid := mkProject(t, env, "github.com/test/a", "a")
 	pidStr := strconv.FormatInt(pid, 10)
-	urls := []string{
-		env.URL + "/api/v1/events?after_id=-1",
-		env.URL + "/api/v1/projects/" + pidStr + "/events?after_id=-1",
+	paths := []string{
+		"/api/v1/events?after_id=-1",
+		"/api/v1/projects/" + pidStr + "/events?after_id=-1",
 	}
-	for _, u := range urls {
-		resp, err := env.HTTP.Get(u) //nolint:gosec // G107: test server URL, not user-controlled
-		require.NoError(t, err)
-		bs, _ := io.ReadAll(resp.Body)
-		body := string(bs)
-		_ = resp.Body.Close()
-		assert.Equal(t, 400, resp.StatusCode, "url %s should be 400", u)
-		assert.Contains(t, body, `"code":"validation"`)
+	for _, p := range paths {
+		resp, bs := envGetRaw(t, env, p)
+		assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 	}
 }
 
 func TestPollEvents_LimitNonNumericIs400(t *testing.T) {
 	env := testenv.New(t)
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0&limit=foo")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	resp, _ := envGetRaw(t, env, "/api/v1/events?after_id=0&limit=foo")
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
@@ -239,16 +232,12 @@ func TestPollEvents_LimitAbsentUsesDefault(t *testing.T) {
 	mkIssue(t, env, pid, "second")
 
 	// No limit query param at all — should default to 100 and return both rows.
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/events?after_id=0")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var b struct {
 		Events []struct {
 			EventID int64 `json:"event_id"`
 		} `json:"events"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	envGetJSON(t, env, "/api/v1/events?after_id=0", &b)
 	require.Len(t, b.Events, 2, "missing limit should default to pollLimitDefault, not reject the request")
 }
 
@@ -257,12 +246,8 @@ func TestPollEvents_LimitAbsentUsesDefault(t *testing.T) {
 // cross-project sentinel (projectID == 0) and leak every project's events.
 func TestPollEvents_PerProject_NonPositiveProjectIDIs400(t *testing.T) {
 	env := testenv.New(t)
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/0/events?after_id=0&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, 400, resp.StatusCode)
-	bs, _ := io.ReadAll(resp.Body)
-	assert.Contains(t, string(bs), `"code":"validation"`)
+	resp, bs := envGetRaw(t, env, "/api/v1/projects/0/events?after_id=0&limit=10")
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 }
 
 // TestPollEvents_PerProject_UnknownProjectIs404 mirrors sibling project-scoped
@@ -270,12 +255,8 @@ func TestPollEvents_PerProject_NonPositiveProjectIDIs400(t *testing.T) {
 // than returning an empty list for a project that does not exist.
 func TestPollEvents_PerProject_UnknownProjectIs404(t *testing.T) {
 	env := testenv.New(t)
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/9999/events?after_id=0&limit=10")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, 404, resp.StatusCode)
-	bs, _ := io.ReadAll(resp.Body)
-	assert.Contains(t, string(bs), `"code":"project_not_found"`)
+	resp, bs := envGetRaw(t, env, "/api/v1/projects/9999/events?after_id=0&limit=10")
+	assertAPIError(t, resp.StatusCode, bs, 404, "project_not_found")
 }
 
 type sseFrame struct {
@@ -384,52 +365,33 @@ func openSSE(t *testing.T, env *testenv.Env, query string, header http.Header) *
 func TestSSE_AcceptNegotiation(t *testing.T) {
 	env := testenv.New(t)
 
-	// Missing Accept → 406
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
-		env.URL+"/api/v1/events/stream", nil)
-	req.Header.Del("Accept")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	bs, _ := io.ReadAll(resp.Body)
-	body := string(bs)
-	_ = resp.Body.Close()
-	assert.Equal(t, 406, resp.StatusCode)
-	assert.Contains(t, body, `"code":"not_acceptable"`)
+	// Missing Accept → 406. envDoRaw doesn't add an Accept header on its own,
+	// so this exercises the missing-header path.
+	resp, bs := envDoRaw(t, env, http.MethodGet, "/api/v1/events/stream", nil, nil)
+	assertAPIError(t, resp.StatusCode, bs, 406, "not_acceptable")
 
 	// Wrong Accept → 406
-	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet,
-		env.URL+"/api/v1/events/stream", nil)
-	req.Header.Set("Accept", "application/json")
-	resp, err = env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	_ = resp.Body.Close()
+	resp, _ = envDoRaw(t, env, http.MethodGet, "/api/v1/events/stream", nil,
+		map[string]string{"Accept": "application/json"})
 	assert.Equal(t, 406, resp.StatusCode)
 
 	// Right Accept → 200
-	resp = openSSE(t, env, "", http.Header{"Accept": []string{"text/event-stream"}})
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	sseResp := openSSE(t, env, "", http.Header{"Accept": []string{"text/event-stream"}})
+	defer func() { _ = sseResp.Body.Close() }()
+	assert.Equal(t, 200, sseResp.StatusCode)
+	assert.Equal(t, "text/event-stream", sseResp.Header.Get("Content-Type"))
 
 	// */* → 200
-	resp = openSSE(t, env, "", http.Header{"Accept": []string{"*/*"}})
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, 200, resp.StatusCode)
+	sseResp2 := openSSE(t, env, "", http.Header{"Accept": []string{"*/*"}})
+	defer func() { _ = sseResp2.Body.Close() }()
+	assert.Equal(t, 200, sseResp2.StatusCode)
 }
 
 func TestSSE_CursorConflict(t *testing.T) {
 	env := testenv.New(t)
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
-		env.URL+"/api/v1/events/stream?after_id=5", nil)
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Last-Event-ID", "10")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	bs, _ := io.ReadAll(resp.Body)
-	body := string(bs)
-	_ = resp.Body.Close()
-	assert.Equal(t, 400, resp.StatusCode)
-	assert.Contains(t, body, `"code":"cursor_conflict"`)
+	resp, bs := envDoRaw(t, env, http.MethodGet, "/api/v1/events/stream?after_id=5", nil,
+		map[string]string{"Accept": "text/event-stream", "Last-Event-ID": "10"})
+	assertAPIError(t, resp.StatusCode, bs, 400, "cursor_conflict")
 }
 
 // TestSSE_CursorConflictPresenceBased pins the rule that detection is on
@@ -438,17 +400,9 @@ func TestSSE_CursorConflict(t *testing.T) {
 // cursor_conflict, not silently win for the header.
 func TestSSE_CursorConflictPresenceBased(t *testing.T) {
 	env := testenv.New(t)
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
-		env.URL+"/api/v1/events/stream?after_id=", nil)
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Last-Event-ID", "5")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	bs, _ := io.ReadAll(resp.Body)
-	body := string(bs)
-	_ = resp.Body.Close()
-	assert.Equal(t, 400, resp.StatusCode)
-	assert.Contains(t, body, `"code":"cursor_conflict"`)
+	resp, bs := envDoRaw(t, env, http.MethodGet, "/api/v1/events/stream?after_id=", nil,
+		map[string]string{"Accept": "text/event-stream", "Last-Event-ID": "5"})
+	assertAPIError(t, resp.StatusCode, bs, 400, "cursor_conflict")
 }
 
 // TestSSE_NonGETReturnsAllowHeader pins that 405 responses include `Allow: GET`
@@ -456,11 +410,7 @@ func TestSSE_CursorConflictPresenceBased(t *testing.T) {
 func TestSSE_NonGETReturnsAllowHeader(t *testing.T) {
 	env := testenv.New(t)
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
-		req, _ := http.NewRequestWithContext(context.Background(), method,
-			env.URL+"/api/v1/events/stream", nil)
-		resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-		require.NoError(t, err)
-		_ = resp.Body.Close()
+		resp, _ := envDoRaw(t, env, method, "/api/v1/events/stream", nil, nil)
 		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode, "method=%s", method)
 		assert.Equal(t, http.MethodGet, resp.Header.Get("Allow"), "method=%s", method)
 	}
@@ -550,16 +500,8 @@ func TestSSE_DrainFollowedByLiveBroadcast(t *testing.T) {
 	assert.Equal(t, "issue.created", first.event)
 
 	// Now create a second issue via HTTP so the handler fires a live broadcast.
-	pidStr := strconv.FormatInt(pid, 10)
-	issueURL := env.URL + "/api/v1/projects/" + pidStr + "/issues"
-	issueReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, issueURL,
-		strings.NewReader(`{"title":"second","actor":"tester"}`))
-	require.NoError(t, err)
-	issueReq.Header.Set("Content-Type", "application/json")
-	issueResp, err := env.HTTP.Do(issueReq) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	_ = issueResp.Body.Close()
-	require.Equal(t, 200, issueResp.StatusCode)
+	envPostJSON(t, env, projectPath(pid)+"/issues",
+		map[string]string{"title": "second", "actor": "tester"}, nil)
 
 	second, ok := framer.Next(t, 2*time.Second)
 	require.True(t, ok, "live frame should arrive after the broadcast")
@@ -571,7 +513,6 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 	env := testenv.New(t)
 	pid := mkProject(t, env, "github.com/test/a", "a")
 	is := mkIssue(t, env, pid, "doomed")
-	pidStr := strconv.FormatInt(pid, 10)
 
 	resp := openSSE(t, env, "after_id=0", nil)
 	defer func() { _ = resp.Body.Close() }()
@@ -585,15 +526,10 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 	require.True(t, ok, "drain frame should arrive")
 	assert.Equal(t, "issue.created", first.event)
 
-	purgeURL := env.URL + "/api/v1/projects/" + pidStr + "/issues/" + strconv.FormatInt(is.Number, 10) + "/actions/purge"
-	purgeReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, purgeURL,
-		strings.NewReader(`{"actor":"tester"}`))
-	require.NoError(t, err)
-	purgeReq.Header.Set("Content-Type", "application/json")
-	purgeReq.Header.Set("X-Kata-Confirm", "PURGE #"+strconv.FormatInt(is.Number, 10))
-	purgeResp, err := env.HTTP.Do(purgeReq) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	_ = purgeResp.Body.Close()
+	purgeResp, _ := envDoRaw(t, env, http.MethodPost,
+		issuePath(pid, is.Number, "actions/purge"),
+		map[string]string{"actor": "tester"},
+		map[string]string{"X-Kata-Confirm": "PURGE #" + strconv.FormatInt(is.Number, 10)})
 	require.Equal(t, 200, purgeResp.StatusCode)
 
 	reset, ok := framer.Next(t, 2*time.Second)
@@ -616,18 +552,10 @@ func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 	mkIssue(t, env, pid, "first")  // #1, will be initial parent
 	mkIssue(t, env, pid, "second") // #2, will be replacement parent
 	mkIssue(t, env, pid, "child")  // #3, the issue we re-parent
-	pidStr := strconv.FormatInt(pid, 10)
 
 	// Initial parent link 3 → 1.
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		env.URL+"/api/v1/projects/"+pidStr+"/issues/3/links",
-		strings.NewReader(`{"actor":"tester","type":"parent","to_number":1}`))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	require.Equal(t, 200, resp.StatusCode)
+	envPostJSON(t, env, issuePath(pid, 3, "links"),
+		map[string]any{"actor": "tester", "type": "parent", "to_number": 1}, nil)
 
 	// Subscribe AFTER the initial link so we don't see its frame in the drain.
 	maxID, err := env.DB.MaxEventID(context.Background())
@@ -636,15 +564,8 @@ func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 	defer func() { _ = sseResp.Body.Close() }()
 
 	// Re-parent 3 → 2 with replace.
-	req, err = http.NewRequestWithContext(context.Background(), http.MethodPost,
-		env.URL+"/api/v1/projects/"+pidStr+"/issues/3/links",
-		strings.NewReader(`{"actor":"tester","type":"parent","to_number":2,"replace":true}`))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	require.Equal(t, 200, resp.StatusCode)
+	envPostJSON(t, env, issuePath(pid, 3, "links"),
+		map[string]any{"actor": "tester", "type": "parent", "to_number": 2, "replace": true}, nil)
 
 	// Live phase delivers two frames in order: issue.unlinked then issue.linked.
 	frames := readSSEFramesUntilN(t, sseResp.Body, 2, 2*time.Second)
@@ -655,16 +576,9 @@ func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 
 func TestSSE_UnknownProjectIDReturns404(t *testing.T) {
 	env := testenv.New(t)
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
-		env.URL+"/api/v1/events/stream?project_id=99999", nil)
-	req.Header.Set("Accept", "text/event-stream")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	bs, _ := io.ReadAll(resp.Body)
-	body := string(bs)
-	_ = resp.Body.Close()
-	assert.Equal(t, 404, resp.StatusCode)
-	assert.Contains(t, body, `"code":"project_not_found"`)
+	resp, bs := envDoRaw(t, env, http.MethodGet, "/api/v1/events/stream?project_id=99999", nil,
+		map[string]string{"Accept": "text/event-stream"})
+	assertAPIError(t, resp.StatusCode, bs, 404, "project_not_found")
 }
 
 func TestSSE_LiveHeartbeatKeepsConnectionAlive(t *testing.T) {

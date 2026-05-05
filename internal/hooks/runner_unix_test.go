@@ -3,7 +3,6 @@
 package hooks
 
 import (
-	"context"
 	"os/exec"
 	"testing"
 	"time"
@@ -19,22 +18,13 @@ import (
 // expires.
 func TestRunner_KillTree_OrphanedChildrenDieToo(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook: ResolvedHook{
-			Index:      11,
-			Command:    bin,
-			Args:       []string{"spawn-orphan", "30s"},
-			Timeout:    100 * time.Millisecond,
-			WorkingDir: rs.dir,
-		},
-	}
 	rs.deps.GraceWindow = 100 * time.Millisecond
 	start := time.Now()
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) {
+		h.Index = 11
+		h.Args = []string{"spawn-orphan", "30s"}
+		h.Timeout = 100 * time.Millisecond
+	})
 	if got.Result != "timed_out" {
 		t.Fatalf("result = %q, want timed_out (rs log: %s)", got.Result, rs.logBuf.String())
 	}

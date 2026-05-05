@@ -95,6 +95,14 @@ func runeKey(r rune) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
 }
 
+// newListEnv returns the standard test trio for listModel.Update calls:
+// a fresh fakeListAPI, a default keymap, and a single-project scope
+// (projectID: 7). The api is returned by pointer so callers can seed
+// result/error fields before invoking Update.
+func newListEnv() (*fakeListAPI, keymap, scope) {
+	return &fakeListAPI{}, newKeymap(), scope{projectID: 7}
+}
+
 // drainCmd executes the tea.Cmd returned by Update once and feeds the
 // resulting message back into Update so the test sees the post-fetch
 // state. Returns the second-pass model so chains stay one-line.
@@ -113,9 +121,7 @@ func drainCmd(
 // TestList_StatusCycle confirms `s` cycles "" → open → closed → "" without
 // refetching. Status now filters the cached all-status working set.
 func TestList_StatusCycle(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
 	lm := listModel{issues: []Issue{
 		{Number: 1, Status: "open"},
 		{Number: 2, Status: "closed"},
@@ -155,9 +161,7 @@ func TestList_StatusCycle(t *testing.T) {
 }
 
 func TestList_StatusOpenDoesNotAutoExpandMatchingChildren(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
 	parent := int64(1)
 	lm := listModel{issues: []Issue{
 		{
@@ -187,9 +191,7 @@ func TestList_StatusOpenDoesNotAutoExpandMatchingChildren(t *testing.T) {
 }
 
 func TestList_StatusOpenPromotesChildWhenParentClosed(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
 	parent := int64(17)
 	lm := listModel{issues: []Issue{
 		{
@@ -335,10 +337,7 @@ func openBarFromCmd(t *testing.T, m Model, key rune) Model {
 // and does not dispatch a refetch. There is no IncludeDeleted slot today (see
 // ListFilter doc) so the post-state is the zero value.
 func TestList_ClearFilters_ZeroesEveryField(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
-
+	api, km, sc := newListEnv()
 	lm := listModel{filter: ListFilter{
 		Status: "open", Owner: "wes", Search: "bug",
 		Labels: []string{"prio-1"},
@@ -382,9 +381,7 @@ func TestList_ApplyFetched_SetsTruncatedAboveWorkingSetLimitAndTrims(t *testing.
 // previously j moved through all issues and the marker landed on the
 // wrong (sometimes invisible) row.
 func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
 	lm := listModel{
 		filter: ListFilter{Owner: "alice"},
 		issues: []Issue{
@@ -412,9 +409,7 @@ func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
 }
 
 func TestList_ExpandCollapse(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
 	lm := listModel{
 		issues: []Issue{
 			{ProjectID: 7, Number: 1, ChildCounts: &ChildCounts{Open: 1, Total: 1}},
@@ -436,9 +431,7 @@ func TestList_ExpandCollapse(t *testing.T) {
 }
 
 func TestList_ExpandCollapse_LeafNoOp(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
 	lm := listModel{issues: []Issue{{ProjectID: 7, Number: 1}}}
 
 	next, cmd := lm.Update(tea.KeyMsg{Type: tea.KeySpace}, km, api, sc)
@@ -617,9 +610,8 @@ func TestList_QuitGate_RoutesQuitToBuffer(t *testing.T) {
 // TestList_RefetchError_PutsErrOnModel ensures fetch failures surface in
 // lm.err so View renders the error state and the user can retry.
 func TestList_RefetchError_PutsErrOnModel(t *testing.T) {
-	api := &fakeListAPI{listIssuesErr: errors.New("boom")}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
+	api.listIssuesErr = errors.New("boom")
 
 	lm := listModel{}
 	cmd := lm.refetchCmd(api, sc)
@@ -803,11 +795,8 @@ func TestList_AuthorFilter_NarrowsDisplay(t *testing.T) {
 // the row 2 issue's number, threading the actor through. The fixture
 // uses two rows so cursor!=0 is observable.
 func TestList_Close_DispatchesAPI(t *testing.T) {
-	api := &fakeListAPI{
-		closeResult: &MutationResp{Issue: &Issue{Number: 2, Status: "closed"}},
-	}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
+	api.closeResult = &MutationResp{Issue: &Issue{Number: 2, Status: "closed"}}
 	lm := listModel{
 		actor: "tester",
 		issues: []Issue{
@@ -840,11 +829,8 @@ func TestList_Close_DispatchesAPI(t *testing.T) {
 // TestList_Reopen_DispatchesAPI mirrors TestList_Close_DispatchesAPI for
 // the 'r' binding.
 func TestList_Reopen_DispatchesAPI(t *testing.T) {
-	api := &fakeListAPI{
-		reopenResult: &MutationResp{Issue: &Issue{Number: 1, Status: "open"}},
-	}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
+	api.reopenResult = &MutationResp{Issue: &Issue{Number: 1, Status: "open"}}
 	lm := listModel{
 		actor: "tester",
 		issues: []Issue{
@@ -869,9 +855,7 @@ func TestList_Reopen_DispatchesAPI(t *testing.T) {
 // TestList_Close_EmptyListNoOp: 'x' on an empty list does not call
 // api.Close and does not panic.
 func TestList_Close_EmptyListNoOp(t *testing.T) {
-	api := &fakeListAPI{}
-	km := newKeymap()
-	sc := scope{projectID: 7}
+	api, km, sc := newListEnv()
 	lm := listModel{actor: "tester"}
 
 	_, cmd := lm.Update(runeKey('x'), km, api, sc)

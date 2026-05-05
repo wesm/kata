@@ -10,10 +10,20 @@ import (
 	"github.com/wesm/kata/internal/daemon"
 )
 
-func TestNamespace_DataDirIsKataHomeRuntime(t *testing.T) {
+// setupMockEnv creates a temp dir and points $KATA_HOME and $KATA_DB at it
+// for the test's lifetime. Returns the temp dir so callers can construct
+// dbhash-derived paths or layer additional env vars on top before calling
+// daemon.NewNamespace().
+func setupMockEnv(t *testing.T) string {
+	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("KATA_HOME", tmp)
 	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	return tmp
+}
+
+func TestNamespace_DataDirIsKataHomeRuntime(t *testing.T) {
+	tmp := setupMockEnv(t)
 
 	ns, err := daemon.NewNamespace()
 	require.NoError(t, err)
@@ -23,10 +33,8 @@ func TestNamespace_DataDirIsKataHomeRuntime(t *testing.T) {
 }
 
 func TestNamespace_SocketDirHonorsXDGRuntimeDir(t *testing.T) {
-	tmp := t.TempDir()
+	setupMockEnv(t)
 	xdg := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
 	t.Setenv("XDG_RUNTIME_DIR", xdg)
 
 	ns, err := daemon.NewNamespace()
@@ -35,9 +43,7 @@ func TestNamespace_SocketDirHonorsXDGRuntimeDir(t *testing.T) {
 }
 
 func TestNamespace_SocketDirFallsBackToTmpDir(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	setupMockEnv(t)
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("TMPDIR", "/var/folders/xy")
 

@@ -1,35 +1,23 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDaemonReload_NoRunningDaemon_ExitUsage(t *testing.T) {
 	resetFlags(t)
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	setupKataEnv(t)
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"daemon", "reload"})
-	cmd.SetContext(context.Background())
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error when no daemon running")
-	}
+	_, _, err := executeRootCapture(t, context.Background(), "daemon", "reload")
+	require.Error(t, err)
 	var ce *cliError
-	if !errors.As(err, &ce) || ce.ExitCode != ExitUsage {
-		t.Fatalf("err = %v, want ExitUsage cliError", err)
-	}
-	if !strings.Contains(strings.ToLower(ce.Message), "no daemon") {
-		t.Fatalf("message should mention no daemon: %q", ce.Message)
-	}
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, ExitUsage, ce.ExitCode)
+	assert.Contains(t, strings.ToLower(ce.Message), "no daemon")
 }

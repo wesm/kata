@@ -11,10 +11,12 @@ import (
 	"github.com/wesm/kata/internal/jsonl"
 )
 
-func TestDecoderRequiresExportVersionFirst(t *testing.T) {
-	input := strings.NewReader(`{"kind":"project","data":{"id":1}}` + "\n")
+func decodeLines(ctx context.Context, lines ...string) ([]jsonl.Envelope, error) {
+	return jsonl.NewDecoder(strings.NewReader(buildJSONL(lines...))).ReadAll(ctx)
+}
 
-	_, err := jsonl.NewDecoder(input).ReadAll(context.Background())
+func TestDecoderRequiresExportVersionFirst(t *testing.T) {
+	_, err := decodeLines(context.Background(), `{"kind":"project","data":{"id":1}}`)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, jsonl.ErrMissingExportVersion)
@@ -22,12 +24,10 @@ func TestDecoderRequiresExportVersionFirst(t *testing.T) {
 }
 
 func TestDecoderRejectsUnknownKind(t *testing.T) {
-	input := strings.NewReader(
-		`{"kind":"meta","data":{"key":"export_version","value":"1"}}` + "\n" +
-			`{"kind":"bogus","data":{"id":1}}` + "\n",
+	_, err := decodeLines(context.Background(),
+		validExportVersion,
+		`{"kind":"bogus","data":{"id":1}}`,
 	)
-
-	_, err := jsonl.NewDecoder(input).ReadAll(context.Background())
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, jsonl.ErrUnknownKind)
@@ -35,13 +35,11 @@ func TestDecoderRejectsUnknownKind(t *testing.T) {
 }
 
 func TestDecoderRejectsOutOfOrderKind(t *testing.T) {
-	input := strings.NewReader(
-		`{"kind":"meta","data":{"key":"export_version","value":"1"}}` + "\n" +
-			`{"kind":"link","data":{"id":1}}` + "\n" +
-			`{"kind":"issue","data":{"id":1}}` + "\n",
+	_, err := decodeLines(context.Background(),
+		validExportVersion,
+		`{"kind":"link","data":{"id":1}}`,
+		`{"kind":"issue","data":{"id":1}}`,
 	)
-
-	_, err := jsonl.NewDecoder(input).ReadAll(context.Background())
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, jsonl.ErrKindOrderViolation)
@@ -49,25 +47,21 @@ func TestDecoderRejectsOutOfOrderKind(t *testing.T) {
 }
 
 func TestDecoderReportsInvalidJSONLine(t *testing.T) {
-	input := strings.NewReader(
-		`{"kind":"meta","data":{"key":"export_version","value":"1"}}` + "\n" +
-			`{"kind":"project","data":` + "\n",
+	_, err := decodeLines(context.Background(),
+		validExportVersion,
+		`{"kind":"project","data":`,
 	)
-
-	_, err := jsonl.NewDecoder(input).ReadAll(context.Background())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "line 2")
 }
 
 func TestDecoderReadsOrderedEnvelopes(t *testing.T) {
-	input := strings.NewReader(
-		`{"kind":"meta","data":{"key":"export_version","value":"1"},"ignored":true}` + "\n" +
-			`{"kind":"meta","data":{"key":"schema_version","value":"1"}}` + "\n" +
-			`{"kind":"project","data":{"id":1}}` + "\n",
+	got, err := decodeLines(context.Background(),
+		`{"kind":"meta","data":{"key":"export_version","value":"1"},"ignored":true}`,
+		`{"kind":"meta","data":{"key":"schema_version","value":"1"}}`,
+		`{"kind":"project","data":{"id":1}}`,
 	)
-
-	got, err := jsonl.NewDecoder(input).ReadAll(context.Background())
 
 	require.NoError(t, err)
 	require.Len(t, got, 3)
@@ -85,14 +79,14 @@ func TestEncoderWritesCompactJSONLines(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, `{"kind":"meta","data":{"key":"export_version","value":"1"}}`+"\n", out.String())
+	assert.Equal(t, validExportVersion+"\n", out.String())
 }
 
 func TestDecoderReturnsContextError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := jsonl.NewDecoder(strings.NewReader(`{"kind":"meta","data":{"key":"export_version","value":"1"}}` + "\n")).ReadAll(ctx)
+	_, err := decodeLines(ctx, validExportVersion)
 
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.Canceled))

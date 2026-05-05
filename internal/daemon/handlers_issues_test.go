@@ -1,9 +1,7 @@
 package daemon_test
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,36 +14,9 @@ import (
 	"github.com/wesm/kata/internal/uid"
 )
 
-// httptestServerHandle bundles a httptest.Server with the on-disk workspace
-// directory the server was bootstrapped against. The ts field is typed as
-// any to keep cross-helper imports loose; tests cast to *httptest.Server.
-type httptestServerHandle struct {
-	ts  any // *httptest.Server, but kept generic to avoid import cycles in helpers
-	dir string
-	db  *db.DB
-}
-
-// DB returns the *db.DB the test server is wired against, so a test can
-// reach below the HTTP surface to set up state (e.g. soft-delete an issue
-// before retrying create-with-idempotency-key).
-func (h *httptestServerHandle) DB() *db.DB { return h.db }
-
-// bootstrapProject spins up a fresh server + git workspace and runs `kata
-// init` against it, returning the handle and the project rowid. Used as a
-// shared setup for every issue handler test.
-func bootstrapProject(t *testing.T) (*httptestServerHandle, int64) {
-	t.Helper()
-	h := newServerWithGitWorkspace(t, "https://github.com/wesm/kata.git")
-	_, bs := postJSON(t, h.ts.(*httptest.Server), "/api/v1/projects", map[string]any{"start_path": h.dir})
-	var resp struct{ Project struct{ ID int64 } }
-	require.NoError(t, json.Unmarshal(bs, &resp))
-	return h, resp.Project.ID
-}
-
 func TestIssues_CreateRoundtrip(t *testing.T) {
 	h, projectID := bootstrapProject(t)
-	resp, bs := postJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+"/issues",
+	resp, bs := postJSON(t, h.ts.(*httptest.Server), issuesURL(projectID),
 		map[string]any{"actor": "agent-1", "title": "first", "body": "details"})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 
@@ -67,8 +38,7 @@ func TestIssues_CreateRoundtrip(t *testing.T) {
 func TestIssues_UIDWireShapeAndLookup(t *testing.T) {
 	h, projectID := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+"/issues",
+	resp, bs := postJSON(t, ts, issuesURL(projectID),
 		map[string]any{"actor": "agent-1", "title": "uid issue"})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 
@@ -90,76 +60,49 @@ func TestIssues_UIDWireShapeAndLookup(t *testing.T) {
 	require.NotNil(t, created.Event.IssueUID)
 	assert.Equal(t, created.Issue.UID, *created.Event.IssueUID)
 
-	respList, err := http.Get(ts.URL + "/api/v1/projects/" + strconv.FormatInt(projectID, 10) + "/issues")
-	require.NoError(t, err)
-	defer func() { _ = respList.Body.Close() }()
-	listBS, err := io.ReadAll(respList.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(listBS), `"uid":"`+created.Issue.UID+`"`)
-	assert.Contains(t, string(listBS), `"project_uid":"`+created.Issue.ProjectUID+`"`)
+	listBS := getBody(t, ts, issuesURL(projectID))
+	assert.Contains(t, listBS, `"uid":"`+created.Issue.UID+`"`)
+	assert.Contains(t, listBS, `"project_uid":"`+created.Issue.ProjectUID+`"`)
 
-	respByUID, err := http.Get(ts.URL + "/api/v1/issues/" + created.Issue.UID)
-	require.NoError(t, err)
-	defer func() { _ = respByUID.Body.Close() }()
-	byUIDBS, err := io.ReadAll(respByUID.Body)
-	require.NoError(t, err)
-	require.Equal(t, 200, respByUID.StatusCode, string(byUIDBS))
+	byUIDResp, byUIDBS := getStatusBody(t, ts, "/api/v1/issues/"+created.Issue.UID)
+	require.Equal(t, 200, byUIDResp.StatusCode, string(byUIDBS))
 	assert.Contains(t, string(byUIDBS), `"number":`+strconv.FormatInt(created.Issue.Number, 10))
 	assert.Contains(t, string(byUIDBS), `"uid":"`+created.Issue.UID+`"`)
 
-	respBad, err := http.Get(ts.URL + "/api/v1/issues/not-a-ulid")
-	require.NoError(t, err)
-	defer func() { _ = respBad.Body.Close() }()
-	badBS, err := io.ReadAll(respBad.Body)
-	require.NoError(t, err)
-	assert.Equal(t, 400, respBad.StatusCode, string(badBS))
+	badResp, badBS := getStatusBody(t, ts, "/api/v1/issues/not-a-ulid")
+	assert.Equal(t, 400, badResp.StatusCode, string(badBS))
 	assert.Contains(t, string(badBS), `"code":"validation"`)
 }
 
 func TestIssues_ListAndShow(t *testing.T) {
 	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
 	for _, title := range []string{"a", "b"} {
-		_, _ = postJSON(t, h.ts.(*httptest.Server),
-			"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+		_, _ = postJSON(t, ts, issuesURL(pid),
 			map[string]any{"actor": "x", "title": title})
 	}
 
-	resp, err := http.Get(h.ts.(*httptest.Server).URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues?status=open")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	bs, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 200, resp.StatusCode)
-	assert.Contains(t, string(bs), `"title":"a"`)
-	assert.Contains(t, string(bs), `"title":"b"`)
+	listBS := getBody(t, ts, issuesURL(pid)+"?status=open")
+	assert.Contains(t, listBS, `"title":"a"`)
+	assert.Contains(t, listBS, `"title":"b"`)
 
-	resp2, err := http.Get(h.ts.(*httptest.Server).URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues/1")
-	require.NoError(t, err)
-	defer func() { _ = resp2.Body.Close() }()
-	bs2, _ := io.ReadAll(resp2.Body)
-	assert.Equal(t, 200, resp2.StatusCode)
-	assert.Contains(t, string(bs2), `"comments":`)
+	showBS := getBody(t, ts, issueURL(pid, 1, ""))
+	assert.Contains(t, showBS, `"comments":`)
 }
 
 func TestIssues_ListMissingProjectIs404(t *testing.T) {
 	h, _ := bootstrapProject(t)
-	resp, err := http.Get(h.ts.(*httptest.Server).URL + "/api/v1/projects/9999/issues")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	bs, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 404, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"project_not_found"`)
+	resp, bs := getStatusBody(t, h.ts.(*httptest.Server), "/api/v1/projects/9999/issues")
+	assertAPIError(t, resp.StatusCode, bs, 404, "project_not_found")
 }
 
 func TestIssues_PatchEditTitleAndBody(t *testing.T) {
 	h, pid := bootstrapProject(t)
-	_, _ = postJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "x", "title": "old"})
 
-	resp, bs := patchJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1",
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""),
 		map[string]any{"actor": "x", "title": "new"})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"title":"new"`)
@@ -167,43 +110,26 @@ func TestIssues_PatchEditTitleAndBody(t *testing.T) {
 
 func TestCreateIssue_BlankActorIs400(t *testing.T) {
 	h, pid := bootstrapProject(t)
-	resp, bs := postJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+	resp, bs := postJSON(t, h.ts.(*httptest.Server), issuesURL(pid),
 		map[string]any{"actor": "   ", "title": "x"})
-	assert.Equal(t, 400, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"validation"`)
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 }
 
 func TestEditIssue_BlankActorIs400(t *testing.T) {
 	h, pid := bootstrapProject(t)
-	_, _ = postJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "x", "title": "old"})
 
-	resp, bs := patchJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1",
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""),
 		map[string]any{"actor": "   ", "title": "new"})
-	assert.Equal(t, 400, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"validation"`)
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 }
 
 func TestCreateIssue_WithInitialState(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, _ := setupTwoIssues(t, env)
 
-	body, _ := json.Marshal(map[string]any{
-		"actor":  "tester",
-		"title":  "child",
-		"owner":  "alice",
-		"labels": []string{"bug", "needs-review"},
-		"links":  []map[string]any{{"type": "parent", "to_number": parent}},
-	})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Issue struct {
 			Number int64   `json:"number"`
@@ -214,7 +140,13 @@ func TestCreateIssue_WithInitialState(t *testing.T) {
 			Payload string `json:"payload"`
 		} `json:"event"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envPostJSON(t, env, projectPath(pid)+"/issues", map[string]any{
+		"actor":  "tester",
+		"title":  "child",
+		"owner":  "alice",
+		"labels": []string{"bug", "needs-review"},
+		"links":  []map[string]any{{"type": "parent", "to_number": parent}},
+	}, &out)
 	require.NotNil(t, out.Issue.Owner)
 	assert.Equal(t, "alice", *out.Issue.Owner)
 	assert.Equal(t, "issue.created", out.Event.Type)
@@ -226,15 +158,10 @@ func TestCreateIssue_WithInitialState(t *testing.T) {
 func TestCreateIssue_InitialLinkToMissingTargetIs404(t *testing.T) {
 	env := testenv.New(t)
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
-	body, _ := json.Marshal(map[string]any{
+	resp, _ := envDoRaw(t, env, http.MethodPost, projectPath(pid)+"/issues", map[string]any{
 		"actor": "tester", "title": "child",
 		"links": []map[string]any{{"type": "parent", "to_number": 99}},
-	})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	}, nil)
 	assert.Equal(t, 404, resp.StatusCode)
 }
 
@@ -251,25 +178,18 @@ func TestCreateIssue_RejectsArchivedProject(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	resp, bs := postJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(projectID, 10)+"/issues",
+	resp, bs := postJSON(t, h.ts.(*httptest.Server), issuesURL(projectID),
 		map[string]any{"actor": "agent-1", "title": "should fail", "body": "details"})
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"project_not_found"`)
+	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
 }
 
 func TestCreateIssue_InvalidLabelIs400(t *testing.T) {
 	env := testenv.New(t)
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
-	body, _ := json.Marshal(map[string]any{
+	resp, _ := envDoRaw(t, env, http.MethodPost, projectPath(pid)+"/issues", map[string]any{
 		"actor": "tester", "title": "x",
 		"labels": []string{"BadCase"},
-	})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	}, nil)
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
@@ -280,15 +200,10 @@ func TestCreateIssue_InvalidLabelIs400(t *testing.T) {
 func TestCreateIssue_InitialSelfLinkIs400(t *testing.T) {
 	env := testenv.New(t)
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
-	body, _ := json.Marshal(map[string]any{
+	resp, _ := envDoRaw(t, env, http.MethodPost, projectPath(pid)+"/issues", map[string]any{
 		"actor": "tester", "title": "self",
 		"links": []map[string]any{{"type": "parent", "to_number": 1}},
-	})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	}, nil)
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
@@ -298,7 +213,7 @@ func TestCreateIssue_InitialSelfLinkIs400(t *testing.T) {
 func TestCreate_IdempotencyReuse_SameFingerprint(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	path := issuesURL(pid)
 	body := map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"}
 
 	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, body)
@@ -350,7 +265,7 @@ func TestCreate_IdempotencyReuse_SameFingerprint(t *testing.T) {
 func TestCreate_IdempotencyMismatch(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	path := issuesURL(pid)
 
 	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"},
 		map[string]any{"actor": "agent-1", "title": "first title", "body": "first body"})
@@ -381,7 +296,7 @@ func TestCreate_IdempotencyMismatch(t *testing.T) {
 func TestCreate_IdempotencyDeletedIs409(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	path := issuesURL(pid)
 
 	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K-DEL"},
 		map[string]any{"actor": "agent-1", "title": "soft delete me", "body": "details"})
@@ -411,7 +326,7 @@ func TestCreate_IdempotencyDeletedIs409(t *testing.T) {
 func TestCreate_LookalikeSoftBlock(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	path := issuesURL(pid)
 	body := map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"}
 
 	first := postWithHeader(t, ts, path, nil, body)
@@ -428,7 +343,7 @@ func TestCreate_LookalikeSoftBlock(t *testing.T) {
 func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	path := issuesURL(pid)
 
 	first := postWithHeader(t, ts, path, nil,
 		map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"})
@@ -449,7 +364,7 @@ func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
 func TestCreate_IdempotencyWinsOverForceNew(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	path := "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues"
+	path := issuesURL(pid)
 	body := map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"}
 
 	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "K1"}, body)
@@ -486,18 +401,13 @@ func TestListIssues_HydratesLabels(t *testing.T) {
 	postLabel(t, env, pid, first, "bug")
 	postLabel(t, env, pid, second, "enhancement")
 
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Issues []struct {
 			Number int64    `json:"number"`
 			Labels []string `json:"labels"`
 		} `json:"issues"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, projectPath(pid)+"/issues", &out)
 	require.Len(t, out.Issues, 2)
 	byNumber := map[int64][]string{}
 	for _, iss := range out.Issues {
@@ -514,11 +424,6 @@ func TestListIssues_IncludesHierarchyMetadata(t *testing.T) {
 	child := createIssueViaHTTP(t, env, pid, "child")
 	postLink(t, env, pid, child, "parent", parent)
 
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Issues []struct {
 			Number       int64  `json:"number"`
@@ -529,7 +434,7 @@ func TestListIssues_IncludesHierarchyMetadata(t *testing.T) {
 			} `json:"child_counts"`
 		} `json:"issues"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, projectPath(pid)+"/issues", &out)
 	require.Len(t, out.Issues, 2)
 	byNumber := map[int64]struct {
 		ParentNumber *int64
@@ -561,18 +466,13 @@ func TestListIssues_IncludesBlockerMetadata(t *testing.T) {
 	blocked := createIssueViaHTTP(t, env, pid, "blocked")
 	postLink(t, env, pid, blocker, "blocks", blocked)
 
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/issues")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Issues []struct {
 			Number int64   `json:"number"`
 			Blocks []int64 `json:"blocks,omitempty"`
 		} `json:"issues"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, projectPath(pid)+"/issues", &out)
 	byNumber := map[int64][]int64{}
 	for _, iss := range out.Issues {
 		byNumber[iss.Number] = iss.Blocks
@@ -592,18 +492,13 @@ func TestListAllIssues_AcrossProjects(t *testing.T) {
 	createIssueViaHTTP(t, env, pidB, "beta-1")
 	createIssueViaHTTP(t, env, pidA, "alpha-2")
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/issues")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-
 	var out struct {
 		Issues []struct {
 			ProjectID int64  `json:"project_id"`
 			Title     string `json:"title"`
 		} `json:"issues"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, "/api/v1/issues", &out)
 	require.Len(t, out.Issues, 3)
 	projectIDs := map[int64]int{}
 	for _, iss := range out.Issues {
@@ -622,18 +517,13 @@ func TestListAllIssues_ProjectFilter(t *testing.T) {
 	createIssueViaHTTP(t, env, pidA, "alpha-1")
 	createIssueViaHTTP(t, env, pidB, "beta-1")
 
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/issues?project_id=" + strconv.FormatInt(pidB, 10))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Issues []struct {
 			ProjectID int64  `json:"project_id"`
 			Title     string `json:"title"`
 		} `json:"issues"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, "/api/v1/issues?project_id="+strconv.FormatInt(pidB, 10), &out)
 	require.Len(t, out.Issues, 1)
 	assert.Equal(t, pidB, out.Issues[0].ProjectID)
 	assert.Equal(t, "beta-1", out.Issues[0].Title)
@@ -644,19 +534,8 @@ func TestListAllIssues_ProjectFilter(t *testing.T) {
 // endpoint's contract for invalid IDs.
 func TestListAllIssues_ProjectNotFound(t *testing.T) {
 	env := testenv.New(t)
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/issues?project_id=9999")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-	bs, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	var body struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(bs, &body), string(bs))
-	assert.Equal(t, "project_not_found", body.Error.Code)
+	resp, bs := envGetRaw(t, env, "/api/v1/issues?project_id=9999")
+	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
 }
 
 // TestListAllIssues_HydratesLabelsAcrossProjects pins that labels attach
@@ -671,10 +550,6 @@ func TestListAllIssues_HydratesLabelsAcrossProjects(t *testing.T) {
 	postLabel(t, env, pidA, a1, "bug")
 	postLabel(t, env, pidB, b1, "enhancement")
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/issues")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Issues []struct {
 			ProjectID int64    `json:"project_id"`
@@ -682,7 +557,7 @@ func TestListAllIssues_HydratesLabelsAcrossProjects(t *testing.T) {
 			Labels    []string `json:"labels"`
 		} `json:"issues"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, "/api/v1/issues", &out)
 	labelsByKey := map[string][]string{}
 	for _, iss := range out.Issues {
 		key := strconv.FormatInt(iss.ProjectID, 10) + "/" + strconv.FormatInt(iss.Number, 10)
@@ -700,12 +575,6 @@ func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	postLabel(t, env, pid, child, "bug")
 	postLink(t, env, pid, child, "parent", parent)
 
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) +
-		"/issues/" + strconv.FormatInt(child, 10))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Links []struct {
 			Type       string `json:"type"`
@@ -716,7 +585,7 @@ func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 			Label string `json:"label"`
 		} `json:"labels"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, issuePath(pid, child, ""), &out)
 	require.Len(t, out.Links, 1)
 	assert.Equal(t, "parent", out.Links[0].Type)
 	assert.Equal(t, child, out.Links[0].FromNumber)
@@ -737,12 +606,6 @@ func TestShowIssue_IncludesParentAndChildren(t *testing.T) {
 	postLink(t, env, pid, greatGrandchild, "parent", grandchild)
 	postLabel(t, env, pid, grandchild, "bug")
 
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) +
-		"/issues/" + strconv.FormatInt(child, 10))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
 	var out struct {
 		Parent *struct {
 			Number int64  `json:"number"`
@@ -758,7 +621,7 @@ func TestShowIssue_IncludesParentAndChildren(t *testing.T) {
 			} `json:"child_counts"`
 		} `json:"children"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	envGetJSON(t, env, issuePath(pid, child, ""), &out)
 	require.NotNil(t, out.Parent)
 	assert.Equal(t, parent, out.Parent.Number)
 	assert.Equal(t, "parent", out.Parent.Title)

@@ -34,6 +34,40 @@ func sseUpdateFixtureAt(t time.Time) Model {
 	return m
 }
 
+// sseDetailFixture builds a Model in detail view focused on a specific
+// open issue, with a stub *Client wired so refetch helpers can capture
+// it without hitting the network. detail.gen is seeded non-zero so
+// generation-tagged fetches don't look like the zero-valued initial
+// state.
+func sseDetailFixture(projectID, issueNumber int64) Model {
+	m := sseUpdateFixture()
+	m.scope = scope{projectID: projectID}
+	m.api = NewClient("http://kata.invalid", nil)
+	m.view = viewDetail
+	m.detail.issue = &Issue{ProjectID: projectID, Number: issueNumber, Status: "open"}
+	m.detail.scopePID = projectID
+	m.detail.gen = 5
+	return m
+}
+
+// assertDetailRefetchBatch fails t unless cmd produces a tea.BatchMsg
+// containing exactly four fetches (issue + comments + events + links) —
+// the shape every detail-tab refetch must dispatch.
+func assertDetailRefetchBatch(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd, got nil")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", msg)
+	}
+	if got := len(batch); got != 4 {
+		t.Fatalf("expected 4 fetches in batch (issue + 3 tabs), got %d", got)
+	}
+}
+
 // TestEventAffectsView_AllProjects: in all-projects scope, any event
 // with a non-zero projectID affects the view; projectID == 0 does not.
 func TestEventAffectsView_AllProjects(t *testing.T) {
@@ -149,13 +183,7 @@ func TestHandleEventReceived_NoEffect_NoStale(t *testing.T) {
 // directly so we don't have to invoke a 150ms tick to assert on cmd
 // shape.
 func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
-	m.detail.gen = 5
+	m := sseDetailFixture(7, 42)
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
 	if cmd == nil {
 		t.Fatal("maybeRefetchOpenDetail must return a fetch cmd for matching issueNumber")
@@ -191,13 +219,7 @@ func TestHandleEventReceived_ParentLinkInvalidatesQueue(t *testing.T) {
 }
 
 func TestHandleEventReceived_ParentLinkRefetchesOpenParentDetail(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
-	m.detail.gen = 5
+	m := sseDetailFixture(7, 42)
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:   "issue.linked",
@@ -211,13 +233,7 @@ func TestHandleEventReceived_ParentLinkRefetchesOpenParentDetail(t *testing.T) {
 }
 
 func TestHandleEventReceived_ParentLinkRefetchesOpenChildDetail(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 43, Status: "open"}
-	m.detail.scopePID = 7
-	m.detail.gen = 5
+	m := sseDetailFixture(7, 43)
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:   "issue.linked",
@@ -238,13 +254,7 @@ func TestHandleEventReceived_ParentLinkRefetchesOpenChildDetail(t *testing.T) {
 // payload carries a parent link and refetch the open parent's detail
 // — otherwise the parent's children section stays stale until reload.
 func TestHandleEventReceived_IssueCreatedWithParentRefetchesOpenParent(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
-	m.detail.gen = 5
+	m := sseDetailFixture(7, 42)
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:   "issue.created",
@@ -289,13 +299,7 @@ func TestDecodeEventReceived_IssueCreatedExtractsParentLink(t *testing.T) {
 }
 
 func TestHandleEventReceived_NonParentLinkDoesNotRefetchForHierarchy(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
-	m.detail.gen = 5
+	m := sseDetailFixture(7, 42)
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:   "issue.linked",
@@ -318,26 +322,10 @@ func TestHandleEventReceived_NonParentLinkDoesNotRefetchForHierarchy(t *testing.
 // children: maybeRefetchOpenDetail uses m.api (a real *Client), so
 // driving the children would actually hit the network.
 func TestHandleEventReceived_DetailViewRefetchesAllTabs(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
-	m.detail.gen = 5
+	m := sseDetailFixture(7, 42)
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd for matching event")
-	}
-	msg := cmd()
-	batch, ok := msg.(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("expected tea.BatchMsg from refetch cmd, got %T", msg)
-	}
-	if got := len(batch); got != 4 {
-		t.Fatalf("expected 4 fetches in batch (issue + 3 tabs), got %d", got)
-	}
+	assertDetailRefetchBatch(t, cmd)
 }
 
 // TestHandleEventReceived_DetailViewMismatch_NoRefetch: an event with a
@@ -345,12 +333,7 @@ func TestHandleEventReceived_DetailViewRefetchesAllTabs(t *testing.T) {
 // detail refetch — maybeRefetchOpenDetail returns nil. Tested directly
 // to avoid invoking the 150ms debounce tick.
 func TestHandleEventReceived_DetailViewMismatch_NoRefetch(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
+	m := sseDetailFixture(7, 42)
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 99})
 	if cmd != nil {
 		t.Fatalf("maybeRefetchOpenDetail must return nil for non-matching issueNumber, got %T",
@@ -365,13 +348,9 @@ func TestHandleEventReceived_DetailViewMismatch_NoRefetch(t *testing.T) {
 // matched on issueNumber only, so a sibling project's event with the
 // same number would churn the wrong detail.
 func TestHandleEventReceived_CrossProjectMismatch_NoRefetch(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{allProjects: true}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
 	// Open detail is project A (#42); event is project B (#42).
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
+	m := sseDetailFixture(7, 42)
+	m.scope = scope{allProjects: true}
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 8, issueNumber: 42})
 	if cmd != nil {
 		t.Fatalf("cross-project event with same issueNumber must not refetch, got %T",
@@ -382,11 +361,8 @@ func TestHandleEventReceived_CrossProjectMismatch_NoRefetch(t *testing.T) {
 // TestMaybeRefetchOpenDetail_ListView_NoRefetch: even with a matching
 // issueNumber, list-view (not detail) must not dispatch a refetch.
 func TestMaybeRefetchOpenDetail_ListView_NoRefetch(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
+	m := sseDetailFixture(7, 42)
 	m.view = viewList
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
 	if cmd != nil {
 		t.Fatalf("list-view must not refetch detail, got %T", cmd)
@@ -399,25 +375,9 @@ func TestMaybeRefetchOpenDetail_ListView_NoRefetch(t *testing.T) {
 // (each calls into m.api with the real *Client and would hit the
 // network).
 func TestRefetchOpenDetail_BatchShape(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
-	m.detail.gen = 5
+	m := sseDetailFixture(7, 42)
 
-	cmd := m.refetchOpenDetail()
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd from refetchOpenDetail in detail view")
-	}
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
-	}
-	if len(batch) != 4 {
-		t.Fatalf("expected 4 fetches in batch, got %d", len(batch))
-	}
+	assertDetailRefetchBatch(t, m.refetchOpenDetail())
 }
 
 // TestRefetchOpenDetail_NoOpInList: when the active view is the list,
@@ -425,12 +385,8 @@ func TestRefetchOpenDetail_BatchShape(t *testing.T) {
 // stale detail fetches over the wire. A leftover m.detail.issue from
 // a prior open must NOT trigger a refetch.
 func TestRefetchOpenDetail_NoOpInList(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
+	m := sseDetailFixture(7, 42)
 	m.view = viewList
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Status: "open"}
-	m.detail.scopePID = 7
 
 	if cmd := m.refetchOpenDetail(); cmd != nil {
 		t.Fatalf("expected nil cmd in viewList, got %T", cmd)
@@ -441,11 +397,9 @@ func TestRefetchOpenDetail_NoOpInList(t *testing.T) {
 // issue seeded) returns nil so the gen-tagged fetches don't fire
 // against a zero-valued projectID/number.
 func TestRefetchOpenDetail_NoOpWithoutIssue(t *testing.T) {
-	m := sseUpdateFixture()
-	m.scope = scope{projectID: 7}
-	m.api = NewClient("http://kata.invalid", nil)
-	m.view = viewDetail
-	// m.detail.issue is nil — view is viewDetail but pre-fetch.
+	m := sseDetailFixture(7, 42)
+	// view is viewDetail but pre-fetch — clear the seeded issue.
+	m.detail.issue = nil
 	if cmd := m.refetchOpenDetail(); cmd != nil {
 		t.Fatalf("expected nil cmd when issue not seeded, got %T", cmd)
 	}

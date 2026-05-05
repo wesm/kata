@@ -46,6 +46,43 @@ func scenarioModel(t *testing.T, w, h int) Model {
 	return out.(Model)
 }
 
+// setupDetailScenario is the most common opening: build a list-view
+// model at (w, h) and immediately transition to detail for the first
+// fixture issue with the given body.
+func setupDetailScenario(t *testing.T, w, h int, body string) Model {
+	t.Helper()
+	return scenarioOpenDetail(t, scenarioModel(t, w, h), body)
+}
+
+// assertViewState pins the layout/view/focus triple in one assertion
+// so failures print all three values in one message instead of
+// stopping at the first mismatch.
+func assertViewState(t *testing.T, m Model, l layoutMode, v viewID, f focusPane) {
+	t.Helper()
+	if m.layout != l || m.view != v || m.focus != f {
+		t.Fatalf("state mismatch: got layout=%v view=%v focus=%v, want %v/%v/%v",
+			m.layout, m.view, m.focus, l, v, f)
+	}
+}
+
+// assertViewContains fails if the rendered (ANSI-stripped) view does
+// not contain substr. Includes the full view in the failure message
+// so the test output shows what was actually rendered.
+func assertViewContains(t *testing.T, m Model, substr string) {
+	t.Helper()
+	if !strings.Contains(view(m), substr) {
+		t.Fatalf("expected view to contain %q; view:\n%s", substr, view(m))
+	}
+}
+
+// assertViewMissing is the negative counterpart of assertViewContains.
+func assertViewMissing(t *testing.T, m Model, substr string) {
+	t.Helper()
+	if strings.Contains(view(m), substr) {
+		t.Fatalf("expected view to NOT contain %q; view:\n%s", substr, view(m))
+	}
+}
+
 // scenarioOpenDetail puts the model into detail view for the first
 // list issue and seeds the four per-tab fetch responses so the detail
 // is fully populated. body is the issue body — pass a long body when
@@ -119,16 +156,11 @@ func view(m Model) string { return stripANSI(m.View()) }
 // tests didn't catch it because the bug was about an interaction,
 // not a static frame.
 func TestScenario_ReadAnIssue_BodyScrollsOnPageDown(t *testing.T) {
-	m := scenarioModel(t, 120, 30)
 	body := strings.Repeat("scrollable line\n", 60) + "TAIL_MARKER"
-	m = scenarioOpenDetail(t, m, body)
-	if strings.Contains(view(m), "TAIL_MARKER") {
-		t.Fatalf("setup invariant: TAIL_MARKER visible without scrolling:\n%s", view(m))
-	}
+	m := setupDetailScenario(t, 120, 30, body)
+	assertViewMissing(t, m, "TAIL_MARKER")
 	m = pressN(t, m, tea.KeyMsg{Type: tea.KeyPgDown}, 16)
-	if !strings.Contains(view(m), "TAIL_MARKER") {
-		t.Fatalf("PageDown did not scroll body to TAIL_MARKER; final view:\n%s", view(m))
-	}
+	assertViewContains(t, m, "TAIL_MARKER")
 }
 
 // TestScenario_ReadAnIssue_PageUpClampsAtTop ensures the body-scroll
@@ -136,13 +168,10 @@ func TestScenario_ReadAnIssue_BodyScrollsOnPageDown(t *testing.T) {
 // past zero only if the clamp is broken, in which case the renderer
 // would slice an empty window and lose the body's first line.
 func TestScenario_ReadAnIssue_PageUpClampsAtTop(t *testing.T) {
-	m := scenarioModel(t, 120, 30)
 	body := "FIRST_LINE_MARKER\n" + strings.Repeat("filler line\n", 30)
-	m = scenarioOpenDetail(t, m, body)
+	m := setupDetailScenario(t, 120, 30, body)
 	m = pressN(t, m, tea.KeyMsg{Type: tea.KeyPgUp}, 5)
-	if !strings.Contains(view(m), "FIRST_LINE_MARKER") {
-		t.Fatalf("PgUp from the top lost the first line; final view:\n%s", view(m))
-	}
+	assertViewContains(t, m, "FIRST_LINE_MARKER")
 	if m.detail.scroll != 0 {
 		t.Fatalf("dm.scroll = %d after PgUp at top, want 0", m.detail.scroll)
 	}
@@ -154,19 +183,12 @@ func TestScenario_ReadAnIssue_PageUpClampsAtTop(t *testing.T) {
 // double-bound, or clobbered by a global handler), which a snapshot
 // of one focus state can't see.
 func TestScenario_NavigateTabs_TabAdvancesActiveSection(t *testing.T) {
-	m := scenarioModel(t, 120, 30)
-	m = scenarioOpenDetail(t, m, "short body")
-	if !strings.Contains(view(m), "[ Comments (1) ]") {
-		t.Fatalf("setup invariant: Comments tab not active:\n%s", view(m))
-	}
+	m := setupDetailScenario(t, 120, 30, "short body")
+	assertViewContains(t, m, "[ Comments (1) ]")
 	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if !strings.Contains(view(m), "[ Events (1) ]") {
-		t.Fatalf("Tab did not advance to Events:\n%s", view(m))
-	}
+	assertViewContains(t, m, "[ Events (1) ]")
 	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if !strings.Contains(view(m), "[ Links (0) ]") {
-		t.Fatalf("Tab did not advance to Links:\n%s", view(m))
-	}
+	assertViewContains(t, m, "[ Links (0) ]")
 }
 
 // TestScenario_EscReturnsFromStackedDetailToList drives the same path
@@ -174,18 +196,11 @@ func TestScenario_NavigateTabs_TabAdvancesActiveSection(t *testing.T) {
 // returns a popDetailMsg command, and the command is then fed back into
 // Model.Update. A submodel-only test can miss this parent handoff.
 func TestScenario_EscReturnsFromStackedDetailToList(t *testing.T) {
-	m := scenarioModel(t, 120, 30)
-	m = scenarioOpenDetail(t, m, "short body")
+	m := setupDetailScenario(t, 120, 30, "short body")
 	if m.view != viewDetail {
 		t.Fatalf("setup: view=%v, want viewDetail", m.view)
 	}
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = out.(Model)
-	if cmd == nil {
-		t.Fatal("Esc from stacked detail returned nil cmd; want popDetailMsg")
-	}
-	out, _ = m.Update(cmd())
-	m = out.(Model)
+	m = sendKeyAndDrain(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.view != viewList {
 		t.Fatalf("Esc did not return to list: view=%v, want viewList", m.view)
 	}
@@ -197,12 +212,8 @@ func TestScenario_EscReturnsFromStackedDetailToList(t *testing.T) {
 // overlays, layout flips, and model-level gates agree with what the
 // user just did.
 func TestScenario_EscReturnsFromSplitDetailToList(t *testing.T) {
-	m := scenarioModel(t, 200, 40)
-	m = scenarioOpenDetail(t, m, "short body")
-	if m.layout != layoutSplit || m.view != viewDetail || m.focus != focusDetail {
-		t.Fatalf("setup: layout=%v view=%v focus=%v, want split/detail/detail",
-			m.layout, m.view, m.focus)
-	}
+	m := setupDetailScenario(t, 200, 40, "short body")
+	assertViewState(t, m, layoutSplit, viewDetail, focusDetail)
 	m = pressKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.focus != focusList {
 		t.Fatalf("Esc did not return focus to list: focus=%v", m.focus)
@@ -217,8 +228,7 @@ func TestScenario_EscReturnsFromSplitDetailToList(t *testing.T) {
 // nav stack, matching Backspace and stacked detail behavior; only a
 // second back action should leave the detail pane.
 func TestScenario_EscPopsSplitDetailNavStackBeforeLeavingPane(t *testing.T) {
-	m := scenarioModel(t, 200, 40)
-	m = scenarioOpenDetail(t, m, "parent body")
+	m := setupDetailScenario(t, 200, 40, "parent body")
 	parent := m.detail
 	child := Issue{ProjectID: 7, Number: 2, Title: "child task", Status: "open"}
 	m.detail = detailModel{
@@ -246,19 +256,9 @@ func TestScenario_EscPopsSplitDetailNavStackBeforeLeavingPane(t *testing.T) {
 // detail model first, then emits popDetailMsg; the parent handler must
 // clear split focus as well as view state.
 func TestScenario_BackspaceReturnsFromSplitDetailToList(t *testing.T) {
-	m := scenarioModel(t, 200, 40)
-	m = scenarioOpenDetail(t, m, "short body")
-	if m.layout != layoutSplit || m.view != viewDetail || m.focus != focusDetail {
-		t.Fatalf("setup: layout=%v view=%v focus=%v, want split/detail/detail",
-			m.layout, m.view, m.focus)
-	}
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	m = out.(Model)
-	if cmd == nil {
-		t.Fatal("Backspace from split detail returned nil cmd; want popDetailMsg")
-	}
-	out, _ = m.Update(cmd())
-	m = out.(Model)
+	m := setupDetailScenario(t, 200, 40, "short body")
+	assertViewState(t, m, layoutSplit, viewDetail, focusDetail)
+	m = sendKeyAndDrain(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
 	if m.view != viewList {
 		t.Fatalf("Backspace did not return view to list: view=%v", m.view)
 	}
@@ -362,8 +362,7 @@ func TestScenario_LayoutToggle_NarrowThenWidePreservesSplitIntent(t *testing.T) 
 // that flips one but not both must still fail (roborev #17192
 // finding 1).
 func TestScenario_LDoesNotOpenLinkPromptInDetail(t *testing.T) {
-	m := scenarioModel(t, 200, 40)
-	m = scenarioOpenDetail(t, m, "short body")
+	m := setupDetailScenario(t, 200, 40, "short body")
 	prevLayout := m.layout
 	m = pressRune(t, m, 'L')
 	if m.input.kind != inputNone {
@@ -381,8 +380,7 @@ func TestScenario_LDoesNotOpenLinkPromptInDetail(t *testing.T) {
 // positive path — lowercase l should still open the link prompt. If
 // this test fails, AddLink got accidentally rebound or removed.
 func TestScenario_LowercaseLOpensLinkPromptInDetail(t *testing.T) {
-	m := scenarioModel(t, 120, 30)
-	m = scenarioOpenDetail(t, m, "short body")
+	m := setupDetailScenario(t, 120, 30, "short body")
 	m = sendKeyAndDrain(t, m, runeKey('l'))
 	if m.input.kind != inputLinkPrompt {
 		t.Fatalf("lowercase l did not open link prompt; m.input.kind = %v", m.input.kind)
@@ -443,9 +441,8 @@ func TestScenario_ChildCreatedRefetchesParentDetail(t *testing.T) {
 // on the children list, PageDown should still advance the body
 // scroll — the body-scroll keys are intentionally focus-agnostic.
 func TestScenario_BodyScrollWorksWhileChildrenFocused(t *testing.T) {
-	m := scenarioModel(t, 120, 30)
 	body := strings.Repeat("scrollable line\n", 60) + "BODY_TAIL"
-	m = scenarioOpenDetail(t, m, body)
+	m := setupDetailScenario(t, 120, 30, body)
 	// Seed a child so children focus is reachable.
 	m.detail.children = []Issue{{Number: 99, Title: "child", Status: "open"}}
 	// Cycle into children focus via Tab. The detail focus order is
@@ -458,7 +455,5 @@ func TestScenario_BodyScrollWorksWhileChildrenFocused(t *testing.T) {
 		t.Fatalf("setup: focus = %v, want focusChildren", m.detail.detailFocus)
 	}
 	m = pressN(t, m, tea.KeyMsg{Type: tea.KeyPgDown}, 16)
-	if !strings.Contains(view(m), "BODY_TAIL") {
-		t.Fatalf("PgDn on children focus did not scroll body to tail; view:\n%s", view(m))
-	}
+	assertViewContains(t, m, "BODY_TAIL")
 }

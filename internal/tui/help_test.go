@@ -4,8 +4,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestHelpSections_AllBindingsCovered guards against drift between
@@ -47,11 +45,7 @@ func TestHelpSections_AllBindingsCovered(t *testing.T) {
 // regression that drops Detail (or any other section) is caught.
 func TestRenderHelp_NarrowWidth(t *testing.T) {
 	out := renderHelp(newKeymap(), 40, ListFilter{})
-	for _, want := range []string{"Global", "Graph", "Detail", "Children", "Forms", "Filters"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("narrow help missing section %q\n%s", want, out)
-		}
-	}
+	assertContainsAll(t, out, "Global", "Graph", "Detail", "Children", "Forms", "Filters")
 	if helpColumnCount(40) != 1 {
 		t.Fatalf("helpColumnCount(40)=%d, want 1", helpColumnCount(40))
 	}
@@ -65,13 +59,9 @@ func TestRenderHelp_WideWidth(t *testing.T) {
 		t.Fatalf("helpColumnCount(130)=%d, want 3", helpColumnCount(130))
 	}
 	out := renderHelp(newKeymap(), 130, ListFilter{})
-	for _, want := range []string{
+	assertContainsAll(t, out,
 		"Global", "Graph", "Detail", "Children", "Forms", "Filters", "kata — keybindings",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("wide help missing %q\n%s", want, out)
-		}
-	}
+	)
 }
 
 // TestRenderHelp_FilterChips: an active filter renders as a chip strip
@@ -91,13 +81,11 @@ func TestRenderHelp_FilterChips(t *testing.T) {
 func TestHelpToggle_FromList_AndBack(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewList
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	mh := out.(Model)
+	mh := sendRune(m, '?')
 	if mh.view != viewHelp {
 		t.Fatalf("after ? from list, view = %v, want viewHelp", mh.view)
 	}
-	out, _ = mh.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	ml := out.(Model)
+	ml := sendRune(mh, '?')
 	if ml.view != viewList {
 		t.Fatalf("after ? from help, view = %v, want viewList", ml.view)
 	}
@@ -109,13 +97,11 @@ func TestHelpToggle_FromList_AndBack(t *testing.T) {
 func TestHelpToggle_FromDetail(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewDetail
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	mh := out.(Model)
+	mh := sendRune(m, '?')
 	if mh.view != viewHelp {
 		t.Fatalf("after ? from detail, view = %v, want viewHelp", mh.view)
 	}
-	out, _ = mh.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	md := out.(Model)
+	md := sendRune(mh, '?')
 	if md.view != viewDetail {
 		t.Fatalf("after ? from help, view = %v, want viewDetail", md.view)
 	}
@@ -129,9 +115,9 @@ func TestHelpToggle_FromDetail(t *testing.T) {
 func TestHelpToggle_QuitFromHelp(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewHelp
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	if out.(Model).modal != modalQuitConfirm {
-		t.Fatalf("q from help did not open quit-confirm modal: %v", out.(Model).modal)
+	nm := sendRune(m, 'q')
+	if nm.modal != modalQuitConfirm {
+		t.Fatalf("q from help did not open quit-confirm modal: %v", nm.modal)
 	}
 }
 
@@ -141,8 +127,7 @@ func TestHelpToggle_QuitFromHelp(t *testing.T) {
 func TestHelp_GatedByInputting(t *testing.T) {
 	m := initialModel(Options{})
 	m.input = newSearchBar(ListFilter{})
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	nm := out.(Model)
+	nm := sendRune(m, '?')
 	if nm.view == viewHelp {
 		t.Fatal("? opened help while bar was active; should be gated")
 	}
@@ -164,11 +149,10 @@ func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
 	m.list.issues = []Issue{{Number: 1, Title: "old"}}
 	m.prevView = viewList
 	m.view = viewHelp
-	out, _ := m.Update(refetchedMsg{
+	nm, _ := updateModel(m, refetchedMsg{
 		dispatchKey: cacheKey{projectID: 1, limit: queueFetchLimit},
 		issues:      []Issue{{Number: 2, Title: "new"}},
 	})
-	nm := out.(Model)
 	if got := len(nm.list.issues); got != 1 {
 		t.Fatalf("list.issues len = %d, want 1", got)
 	}
@@ -176,11 +160,11 @@ func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
 		t.Fatalf("list.issues = %+v, want [{Number:2 Title:new}]", nm.list.issues)
 	}
 	// Toggling back to the list must surface the refreshed rows.
-	out2, _ := nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	if out2.(Model).view != viewList {
-		t.Fatalf("after ? from help, view = %v, want viewList", out2.(Model).view)
+	back := sendRune(nm, '?')
+	if back.view != viewList {
+		t.Fatalf("after ? from help, view = %v, want viewList", back.view)
 	}
-	if out2.(Model).list.issues[0].Number != 2 {
+	if back.list.issues[0].Number != 2 {
 		t.Fatal("returning to list must show refetched issues, not stale snapshot")
 	}
 }
@@ -198,20 +182,19 @@ func TestHelp_InitialFetchAfterScopeToggle_KeepsListInSync(t *testing.T) {
 	m.prevView = viewList
 	m.view = viewHelp
 	// Simulate an initialFetchMsg from a scope-toggle's fetchInitial.
-	out, _ := m.Update(initialFetchMsg{
+	nm, _ := updateModel(m, initialFetchMsg{
 		dispatchKey: cacheKey{projectID: 1, limit: queueFetchLimit},
 		issues:      []Issue{{Number: 99, Title: "all-projects row"}},
 	})
-	nm := out.(Model)
 	if got := len(nm.list.issues); got != 1 || nm.list.issues[0].Number != 99 {
 		t.Fatalf("list.issues = %+v, want [{Number:99 ...}]", nm.list.issues)
 	}
 	// Closing the overlay must surface the refreshed rows.
-	out2, _ := nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	if out2.(Model).view != viewList {
-		t.Fatalf("after ? from help, view = %v, want viewList", out2.(Model).view)
+	back := sendRune(nm, '?')
+	if back.view != viewList {
+		t.Fatalf("after ? from help, view = %v, want viewList", back.view)
 	}
-	if out2.(Model).list.issues[0].Number != 99 {
+	if back.list.issues[0].Number != 99 {
 		t.Fatal("returning to list must show post-toggle rows, not stale snapshot")
 	}
 }

@@ -5,6 +5,7 @@ package testenv
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -37,6 +38,50 @@ func New(t *testing.T) *Env {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
+	url, client, bcast := serveDaemon(t, d)
+	return &Env{URL: url, HTTP: client, DB: d, Home: home, Broadcaster: bcast}
+}
+
+// NewFromDB launches a daemon backed by an existing SQLite database file. Use
+// this when verifying the contents of a DB produced by import/restore/migration
+// flows. KATA_HOME is not modified — the caller's environment is preserved.
+func NewFromDB(t *testing.T, dbPath string) *Env {
+	t.Helper()
+	d, err := db.Open(context.Background(), dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	url, client, bcast := serveDaemon(t, d)
+	return &Env{URL: url, HTTP: client, DB: d, Home: filepath.Dir(dbPath), Broadcaster: bcast}
+}
+
+// Get issues GET env.URL+path, reads and closes the response body, and returns
+// the status code paired with the body bytes. Errors fail the test.
+func (e *Env) Get(t *testing.T, path string) (int, []byte) {
+	t.Helper()
+	resp, err := e.HTTP.Get(e.URL + path) //nolint:gosec,noctx // test helper against loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, body
+}
+
+// RequireOK GETs path, asserts the response is 200, and returns the body.
+func (e *Env) RequireOK(t *testing.T, path string) []byte {
+	t.Helper()
+	status, body := e.Get(t, path)
+	require.Equalf(t, http.StatusOK, status, "GET %s expected 200, got %d: %s", path, status, body)
+	return body
+}
+
+// serveDaemon binds a loopback listener, runs the daemon against d in a
+// background goroutine, and waits for /ping to return 200. Cleanup (server
+// shutdown wait) is wired via t.Cleanup. Callers are responsible for closing d
+// in a separately registered cleanup so LIFO ordering closes the DB after
+// Serve returns.
+func serveDaemon(t *testing.T, d *db.DB) (string, *http.Client, *daemon.EventBroadcaster) {
+	t.Helper()
 	// Bind the listener once and hand it directly to Server.Serve so no other
 	// process can grab the port between bind and serve (the close-then-reopen
 	// pattern has a TOCTOU race).
@@ -57,9 +102,6 @@ func New(t *testing.T) *Env {
 		defer close(done)
 		_ = srv.Serve(ctx, l)
 	}()
-	// Cleanup must wait for Serve to return (Shutdown drained) before the DB is
-	// closed, otherwise in-flight handlers can race against d.Close. t.Cleanup
-	// is LIFO, so this fires before the d.Close cleanup registered above.
 	t.Cleanup(func() {
 		cancel()
 		<-done
@@ -67,7 +109,7 @@ func New(t *testing.T) *Env {
 
 	// Wait for /ping to answer with 200; if the daemon never becomes ready, or
 	// if some other service won the port and answered with a non-200, fail
-	// loudly at New rather than letting the test report a confusing failure on
+	// loudly here rather than letting the test report a confusing failure on
 	// its first real request.
 	url := "http://" + addr
 	deadline := time.Now().Add(2 * time.Second)
@@ -90,6 +132,5 @@ func New(t *testing.T) *Env {
 		time.Sleep(20 * time.Millisecond)
 	}
 	require.Truef(t, ready, "daemon did not become ready within 2s: %v", lastErr)
-
-	return &Env{URL: url, HTTP: client, DB: d, Home: home, Broadcaster: bcast}
+	return url, client, bcast
 }

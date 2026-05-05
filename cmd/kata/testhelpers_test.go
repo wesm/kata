@@ -8,16 +8,62 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/daemonclient"
+	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/testenv"
 	"github.com/wesm/kata/internal/version"
 )
+
+// setupKataEnv points KATA_HOME and KATA_DB at a fresh temp dir so the test
+// runs in isolation from any developer-local state. Returns the temp dir.
+func setupKataEnv(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("KATA_HOME", tmp)
+	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	return tmp
+}
+
+// executeRoot runs the given cobra command with args and returns stdout. It
+// fails the test if Execute returns an error. Use for non-workspace tests
+// (daemon, etc.); workspace-bound tests should use runCLI instead.
+func executeRoot(t *testing.T, cmd *cobra.Command, args ...string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs(args)
+	require.NoError(t, cmd.Execute())
+	return buf.Bytes()
+}
+
+// executeRootCapture runs a fresh root cobra command with the given context
+// and args, returning captured stdout, stderr, and any Execute error. Unlike
+// executeRoot it does not fail on error — callers decide how to react (assert
+// success, expect a specific error, or ignore for tail/timeout cases).
+//
+//nolint:revive // test helper: t *testing.T conventionally precedes ctx.
+func executeRootCapture(t *testing.T, ctx context.Context, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	cmd := newRootCmd()
+	var so, se bytes.Buffer
+	cmd.SetOut(&so)
+	cmd.SetErr(&se)
+	cmd.SetArgs(args)
+	cmd.SetContext(ctx)
+	err = cmd.Execute()
+	return so.String(), se.String(), err
+}
 
 // pipeServer starts a TCP listener on a random loopback port, registers
 // GET /api/v1/ping, and returns the host:port address and a cleanup function.
@@ -68,25 +114,64 @@ func contextWithBaseURL(ctx context.Context, url string) context.Context {
 	return context.WithValue(ctx, daemonclient.BaseURLKey{}, url)
 }
 
+// runGit executes `git <args>` in dir and fails the test on error. Use for
+// test setup that needs to initialize a workspace, configure remotes, etc.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...) //nolint:gosec // git binary is trusted; args are test-controlled
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+}
+
+// postJSON marshals reqBody, POSTs to url, asserts a 200 response, and decodes
+// the JSON body into Resp. Use for daemon API helpers that read the response.
+func postJSON[Resp any](t *testing.T, url string, reqBody any) Resp {
+	t.Helper()
+	body, err := json.Marshal(reqBody)
+	require.NoError(t, err)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body)) //nolint:noctx,gosec // test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equalf(t, 200, resp.StatusCode, "POST %s", url)
+	var out Resp
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	return out
+}
+
+// postJSONOK is postJSON without a response body: marshal, POST, assert 200,
+// discard. Use for daemon API helpers that don't care about the response.
+func postJSONOK(t *testing.T, url string, reqBody any) {
+	t.Helper()
+	body, err := json.Marshal(reqBody)
+	require.NoError(t, err)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body)) //nolint:noctx,gosec // test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equalf(t, 200, resp.StatusCode, "POST %s", url)
+}
+
+// getJSON GETs url, asserts a 200 response, and decodes the body into Resp.
+func getJSON[Resp any](t *testing.T, url string) Resp {
+	t.Helper()
+	resp, err := http.Get(url) //nolint:noctx,gosec // test-only loopback
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equalf(t, 200, resp.StatusCode, "GET %s", url)
+	var out Resp
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	return out
+}
+
 // initBoundWorkspace creates a temporary git workspace, adds a git remote, and
 // registers it with the test daemon via POST /api/v1/projects. Returns the
 // workspace directory path.
 func initBoundWorkspace(t *testing.T, baseURL, origin string) string {
 	t.Helper()
 	dir := t.TempDir()
-	cmd := exec.Command("git", "init", "--quiet")
-	cmd.Dir = dir
-	require.NoError(t, cmd.Run())
-	cmd = exec.Command("git", "remote", "add", "origin", origin) //nolint:gosec // G204: git with test-controlled origin
-	cmd.Dir = dir
-	require.NoError(t, cmd.Run())
-
-	body, err := json.Marshal(map[string]string{"start_path": dir})
-	require.NoError(t, err)
-	resp, err := http.Post(baseURL+"/api/v1/projects", "application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", origin)
+	postJSONOK(t, baseURL+"/api/v1/projects", map[string]string{"start_path": dir})
 	return dir
 }
 
@@ -94,16 +179,10 @@ func initBoundWorkspace(t *testing.T, baseURL, origin string) string {
 // returns the resolved project ID.
 func resolvePIDViaHTTP(t *testing.T, baseURL, startPath string) int64 {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"start_path": startPath})
-	require.NoError(t, err)
-	resp, err := http.Post(baseURL+"/api/v1/projects/resolve", "application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-	var b struct {
+	type response struct {
 		Project struct{ ID int64 } `json:"project"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	b := postJSON[response](t, baseURL+"/api/v1/projects/resolve", map[string]string{"start_path": startPath})
 	return b.Project.ID
 }
 
@@ -115,19 +194,13 @@ func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 func createIssueViaHTTP(t *testing.T, env *testenv.Env, dir, title string) int64 {
 	t.Helper()
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	body, err := json.Marshal(map[string]any{"actor": "tester", "title": title})
-	require.NoError(t, err)
-	resp, err := http.Post(env.URL+"/api/v1/projects/"+itoa(pid)+"/issues",
-		"application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only loopback
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-	var b struct {
+	type response struct {
 		Issue struct {
 			Number int64 `json:"number"`
 		} `json:"issue"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	b := postJSON[response](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues",
+		map[string]any{"actor": "tester", "title": title})
 	return b.Issue.Number
 }
 
@@ -149,4 +222,294 @@ func stubIsTTY(t *testing.T, want bool) {
 	saved := isTTY
 	isTTY = func(*os.File) bool { return want }
 	t.Cleanup(func() { isTTY = saved })
+}
+
+// runCmdOutput executes a fresh root command with args and returns captured
+// stdout plus any Execute error. resetFlags is applied. If env is non-nil the
+// daemon base URL is injected into the context. Use for non-workspace tests
+// that need the daemon URL but not the --workspace flag.
+func runCmdOutput(t *testing.T, env *testenv.Env, args ...string) (string, error) {
+	t.Helper()
+	resetFlags(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs(args)
+	ctx := context.Background()
+	if env != nil {
+		ctx = contextWithBaseURL(ctx, env.URL)
+	}
+	cmd.SetContext(ctx)
+	err := cmd.Execute()
+	return buf.String(), err
+}
+
+// requireCmdOutput is runCmdOutput with require.NoError on the result.
+func requireCmdOutput(t *testing.T, env *testenv.Env, args ...string) string {
+	t.Helper()
+	out, err := runCmdOutput(t, env, args...)
+	require.NoError(t, err)
+	return out
+}
+
+// setupMergeProjects creates the canonical "kenn" and "steward" projects, each
+// with a matching git alias, used by ProjectsMerge tests.
+func setupMergeProjects(t *testing.T, env *testenv.Env) (kenn, steward db.Project) {
+	t.Helper()
+	ctx := context.Background()
+	var err error
+	kenn, err = env.DB.CreateProject(ctx, "github.com/wesm/kenn", "steward")
+	require.NoError(t, err)
+	steward, err = env.DB.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	require.NoError(t, err)
+	_, err = env.DB.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", "/tmp/kenn")
+	require.NoError(t, err)
+	_, err = env.DB.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", "/tmp/steward")
+	require.NoError(t, err)
+	return kenn, steward
+}
+
+// runCLI executes a root command and returns the output.
+func runCLI(t *testing.T, env *testenv.Env, dir string, args ...string) string {
+	t.Helper()
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	fullArgs := append([]string{"--workspace", dir}, args...)
+	cmd.SetArgs(fullArgs)
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	require.NoError(t, cmd.Execute())
+	return strings.TrimSpace(buf.String())
+}
+
+// runCLICapture is the error-tolerant sibling of runCLI: it runs a fresh root
+// command bound to dir under env's daemon URL and returns combined
+// stdout+stderr plus the Execute error. Use when a test needs to assert on a
+// specific failure (cliError code, exit status) instead of just succeeding.
+func runCLICapture(t *testing.T, env *testenv.Env, dir string, args ...string) (string, error) {
+	t.Helper()
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs(append([]string{"--workspace", dir}, args...))
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	err := cmd.Execute()
+	return buf.String(), err
+}
+
+// setupWorkspaceWithIssue initializes a test environment and workspace with a single issue.
+func setupWorkspaceWithIssue(t *testing.T, issueTitle string) (*testenv.Env, string, int64) {
+	env, dir, pid := setupCLIWorkspace(t)
+	createIssue(t, env, pid, issueTitle)
+	return env, dir, pid
+}
+
+// setupCLIWorkspace bundles resetFlags, testenv.New, initBoundWorkspace, and
+// project ID resolution into one call. Use for CLI tests that seed their own
+// issues; setupWorkspaceWithIssue is the one-issue convenience wrapper.
+func setupCLIWorkspace(t *testing.T) (*testenv.Env, string, int64) {
+	t.Helper()
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	return env, dir, pid
+}
+
+// createIssue creates an issue via HTTP and discards the response. Use when
+// you need an issue but not its number — numbers go 1, 2, 3 in order so they
+// can be hard-coded.
+func createIssue(t *testing.T, env *testenv.Env, projectID int64, title string) {
+	t.Helper()
+	postJSONOK(t, env.URL+"/api/v1/projects/"+itoa(projectID)+"/issues",
+		map[string]any{"actor": "tester", "title": title})
+}
+
+// createLinkViaHTTP creates a link between two issues via HTTP. Used by tests
+// that need a pre-existing link to exercise unlink/show/etc.
+func createLinkViaHTTP(t *testing.T, env *testenv.Env, projectID, fromNumber int64, linkType string, toNumber int64) {
+	t.Helper()
+	postJSONOK(t,
+		env.URL+"/api/v1/projects/"+itoa(projectID)+"/issues/"+itoa(fromNumber)+"/links",
+		map[string]any{"actor": "tester", "type": linkType, "to_number": toNumber})
+}
+
+// setupCLIEnv combines the standard workspace initialization and server startup.
+func setupCLIEnv(t *testing.T) (*testenv.Env, string) {
+	t.Helper()
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	return env, dir
+}
+
+// cliFixture bundles a workspace-bound test environment with a fresh root
+// command whose stdout/stderr write into a single shared buffer and whose
+// context already carries the test daemon's base URL. Use newCLIFixture for
+// CLI tests that need to inspect output or expect specific errors; runCLI is
+// preferable for plain success-path checks.
+type cliFixture struct {
+	env *testenv.Env
+	dir string
+	cmd *cobra.Command
+	buf *bytes.Buffer
+}
+
+// newCLIFixture sets up resetFlags, a fresh testenv, a bound workspace, and a
+// new root command wired to a shared buffer and the daemon base URL context.
+func newCLIFixture(t *testing.T) *cliFixture {
+	t.Helper()
+	env, dir := setupCLIEnv(t)
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	return &cliFixture{env: env, dir: dir, cmd: cmd, buf: &buf}
+}
+
+// execute runs the fixture's command with --workspace prepended to args.
+func (f *cliFixture) execute(args ...string) error {
+	f.cmd.SetArgs(append([]string{"--workspace", f.dir}, args...))
+	return f.cmd.Execute()
+}
+
+// rootSubcommands returns the freshly constructed root command's subcommands
+// keyed by name. Use to assert subcommand registration without iterating
+// cmd.Commands() in every advertise test.
+func rootSubcommands() map[string]*cobra.Command {
+	cmd := newRootCmd()
+	out := make(map[string]*cobra.Command, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		out[sub.Name()] = sub
+	}
+	return out
+}
+
+// errorEnvelopeForTest mirrors the JSON envelope emitted by emitError under
+// --json. Tests assert on Kind/Code/Message/ExitCode; fields the test does not
+// care about decode to their zero value.
+type errorEnvelopeForTest struct {
+	Error struct {
+		Kind     string `json:"kind"`
+		Code     string `json:"code"`
+		Message  string `json:"message"`
+		ExitCode int    `json:"exit_code"`
+	} `json:"error"`
+}
+
+// parseErrorEnvelope unmarshals a --json error payload, failing the test with
+// the raw bytes if the payload isn't parseable JSON.
+func parseErrorEnvelope(t *testing.T, data []byte) errorEnvelopeForTest {
+	t.Helper()
+	var got errorEnvelopeForTest
+	require.NoError(t, json.Unmarshal(data, &got),
+		"--json error must be parseable JSON; got %q", string(data))
+	return got
+}
+
+// requireCLIError asserts that err is a *cliError with the given exit code and
+// returns it for further code/message inspection by the caller.
+func requireCLIError(t *testing.T, err error, expectedCode int) *cliError {
+	t.Helper()
+	require.Error(t, err)
+	var ce *cliError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, expectedCode, ce.ExitCode)
+	return ce
+}
+
+type IssueResponse struct {
+	Issue struct {
+		Number int64   `json:"number"`
+		Owner  *string `json:"owner"`
+	} `json:"issue"`
+	Labels []struct {
+		Label string `json:"label"`
+	} `json:"labels"`
+	Links []struct {
+		Type       string `json:"type"`
+		FromNumber int64  `json:"from_number"`
+		ToNumber   int64  `json:"to_number"`
+	} `json:"links"`
+}
+
+// safeBuffer is a mutex-protected bytes.Buffer used by streaming/tail tests so
+// `go test -race` does not flag the goroutine running cmd.Execute writing to
+// the buffer racing with the test goroutine reading it via Snapshot.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuffer) Snapshot() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// asyncCLI wraps a long-running cobra command executing in a background
+// goroutine. Use awaitOutput to poll the captured stdout/stderr for expected
+// substrings and stop to cancel the derived context and wait for completion.
+type asyncCLI struct {
+	buf    *safeBuffer
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+// startAsyncCLI builds a fresh root command with args, attaches a safeBuffer to
+// stdout/stderr, and runs Execute in a background goroutine under a context
+// derived from ctx. resetFlags is applied. Callers stop it via stop().
+//
+//nolint:revive // test helper: t *testing.T conventionally precedes ctx.
+func startAsyncCLI(t *testing.T, ctx context.Context, args ...string) *asyncCLI {
+	t.Helper()
+	resetFlags(t)
+	derived, cancel := context.WithCancel(ctx)
+	cmd := newRootCmd()
+	buf := &safeBuffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs(args)
+	cmd.SetContext(derived)
+	a := &asyncCLI{buf: buf, cancel: cancel}
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		_ = cmd.Execute()
+	}()
+	return a
+}
+
+// awaitOutput polls the snapshot until predicate returns true or timeout
+// expires. Returns the final snapshot in either case so callers can assert on
+// the captured output.
+func (a *asyncCLI) awaitOutput(predicate func(string) bool, timeout time.Duration) string {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if predicate(a.buf.Snapshot()) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return a.buf.Snapshot()
+}
+
+// stop cancels the derived context and waits for Execute to return.
+func (a *asyncCLI) stop() {
+	a.cancel()
+	a.wg.Wait()
+}
+
+func fetchIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, issueNum int64) IssueResponse {
+	t.Helper()
+	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+itoa(issueNum))
 }

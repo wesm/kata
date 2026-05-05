@@ -10,15 +10,25 @@ import (
 	"github.com/wesm/kata/internal/config"
 )
 
-func writeKataTOML(t *testing.T, dir, body string) {
+func setupKataProjectDir(t *testing.T, body string) string {
 	t.Helper()
+	dir := t.TempDir()
 	path := filepath.Join(dir, ".kata.toml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644)) //nolint:gosec // test fixture matches production .kata.toml mode
+	return dir
+}
+
+func writeAndReadConfig(t *testing.T, identity, name string) *config.ProjectConfig {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, identity, name))
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	return cfg
 }
 
 func TestReadProjectConfig_Roundtrip(t *testing.T) {
-	dir := t.TempDir()
-	writeKataTOML(t, dir, `version = 1
+	dir := setupKataProjectDir(t, `version = 1
 
 [project]
 identity = "github.com/wesm/kata"
@@ -39,8 +49,7 @@ func TestReadProjectConfig_Missing(t *testing.T) {
 }
 
 func TestReadProjectConfig_RejectsBadVersion(t *testing.T) {
-	dir := t.TempDir()
-	writeKataTOML(t, dir, `version = 2
+	dir := setupKataProjectDir(t, `version = 2
 
 [project]
 identity = "x"
@@ -53,8 +62,7 @@ name = "y"
 }
 
 func TestReadProjectConfig_RejectsBlankIdentity(t *testing.T) {
-	dir := t.TempDir()
-	writeKataTOML(t, dir, `version = 1
+	dir := setupKataProjectDir(t, `version = 1
 
 [project]
 identity = "   "
@@ -67,26 +75,17 @@ name = "x"
 }
 
 func TestWriteProjectConfig_DerivesNameFromLastSegment(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, config.WriteProjectConfig(dir, "github.com/wesm/kata", ""))
-
-	cfg, err := config.ReadProjectConfig(dir)
-	require.NoError(t, err)
+	cfg := writeAndReadConfig(t, "github.com/wesm/kata", "")
 	assert.Equal(t, "kata", cfg.Project.Name)
 }
 
 func TestWriteProjectConfig_PreservesExplicitName(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, config.WriteProjectConfig(dir, "github.com/wesm/kata", "Kata Tracker"))
-
-	cfg, err := config.ReadProjectConfig(dir)
-	require.NoError(t, err)
+	cfg := writeAndReadConfig(t, "github.com/wesm/kata", "Kata Tracker")
 	assert.Equal(t, "Kata Tracker", cfg.Project.Name)
 }
 
 func TestReadProjectConfig_AcceptsOptionalServerBlock(t *testing.T) {
-	dir := t.TempDir()
-	writeKataTOML(t, dir, `version = 1
+	dir := setupKataProjectDir(t, `version = 1
 
 [project]
 identity = "github.com/wesm/kata"
@@ -101,8 +100,7 @@ url = "http://127.0.0.1:7777"
 }
 
 func TestReadProjectConfig_NoServerBlockYieldsZeroValue(t *testing.T) {
-	dir := t.TempDir()
-	writeKataTOML(t, dir, `version = 1
+	dir := setupKataProjectDir(t, `version = 1
 
 [project]
 identity = "github.com/wesm/kata"
@@ -114,8 +112,7 @@ name     = "kata"
 }
 
 func TestFindProjectConfig_FromSubdirectory(t *testing.T) {
-	root := t.TempDir()
-	writeKataTOML(t, root, `version = 1
+	root := setupKataProjectDir(t, `version = 1
 
 [project]
 identity = "github.com/wesm/kata"
@@ -131,8 +128,7 @@ name     = "kata"
 }
 
 func TestFindProjectConfig_FromExactDir(t *testing.T) {
-	root := t.TempDir()
-	writeKataTOML(t, root, `version = 1
+	root := setupKataProjectDir(t, `version = 1
 
 [project]
 identity = "github.com/wesm/kata"
@@ -152,8 +148,7 @@ func TestFindProjectConfig_MissingReturnsSentinel(t *testing.T) {
 }
 
 func TestFindProjectConfig_PropagatesParseError(t *testing.T) {
-	root := t.TempDir()
-	writeKataTOML(t, root, "this is not toml = = =")
+	root := setupKataProjectDir(t, "this is not toml = = =")
 	cfg, foundDir, err := config.FindProjectConfig(root)
 	assert.Nil(t, cfg)
 	assert.Empty(t, foundDir)

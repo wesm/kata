@@ -13,19 +13,19 @@ import (
 	"github.com/wesm/kata/internal/jsonl"
 )
 
-func TestImportCreatesTargetDB(t *testing.T) {
-	resetFlags(t)
-	home := t.TempDir()
-	t.Setenv("KATA_HOME", home)
-	t.Setenv("KATA_DB", filepath.Join(home, "kata.db"))
-	input := writeExportFixture(t, home)
-	target := filepath.Join(home, "target.db")
+func setupImportTest(t *testing.T) (home, input, target string) {
+	t.Helper()
+	home = setupKataEnv(t)
+	input = writeExportFixture(t, home)
+	target = filepath.Join(home, "target.db")
+	return home, input, target
+}
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"import", "--input", input, "--target", target})
-	require.NoError(t, cmd.Execute())
+func TestImportCreatesTargetDB(t *testing.T) {
+	_, input, target := setupImportTest(t)
+
+	out, err := runCmdOutput(t, nil, "import", "--input", input, "--target", target)
+	require.NoError(t, err)
 
 	d, err := db.Open(context.Background(), target)
 	require.NoError(t, err)
@@ -33,40 +33,25 @@ func TestImportCreatesTargetDB(t *testing.T) {
 	got, err := d.ProjectByIdentity(context.Background(), "github.com/wesm/kata")
 	require.NoError(t, err)
 	assert.Equal(t, "kata", got.Name)
-	assert.Contains(t, buf.String(), target)
+	assert.Contains(t, out, target)
 }
 
 func TestImportRejectsExistingTargetWithoutForce(t *testing.T) {
-	resetFlags(t)
-	home := t.TempDir()
-	t.Setenv("KATA_HOME", home)
-	t.Setenv("KATA_DB", filepath.Join(home, "kata.db"))
-	input := writeExportFixture(t, home)
-	target := filepath.Join(home, "target.db")
+	_, input, target := setupImportTest(t)
 	d, err := db.Open(context.Background(), target)
 	require.NoError(t, err)
 	_, err = d.CreateProject(context.Background(), "github.com/wesm/existing", "existing")
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
 
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"import", "--input", input, "--target", target})
-	err = cmd.Execute()
-
-	require.Error(t, err)
-	var ce *cliError
-	require.ErrorAs(t, err, &ce)
+	_, err = runCmdOutput(t, nil, "import", "--input", input, "--target", target)
+	ce := requireCLIError(t, err, ExitValidation)
 	assert.Contains(t, ce.Message, "target already exists")
 }
 
 func TestImportRefusesDaemon(t *testing.T) {
-	resetFlags(t)
-	home := t.TempDir()
+	home, input, target := setupImportTest(t)
 	dbPath := filepath.Join(home, "kata.db")
-	t.Setenv("KATA_HOME", home)
-	t.Setenv("KATA_DB", dbPath)
-	input := writeExportFixture(t, home)
-	target := filepath.Join(home, "target.db")
 	d, err := db.Open(context.Background(), dbPath)
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -74,13 +59,8 @@ func TestImportRefusesDaemon(t *testing.T) {
 	t.Cleanup(cleanup)
 	require.NoError(t, writeRuntimeFor(home, addr))
 
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"import", "--input", input, "--target", target})
-	err = cmd.Execute()
-
-	require.Error(t, err)
-	var ce *cliError
-	require.ErrorAs(t, err, &ce)
+	_, err = runCmdOutput(t, nil, "import", "--input", input, "--target", target)
+	ce := requireCLIError(t, err, ExitValidation)
 	assert.Contains(t, ce.Message, "daemon is running")
 	assert.NotContains(t, ce.Message, "--allow-running-daemon")
 }

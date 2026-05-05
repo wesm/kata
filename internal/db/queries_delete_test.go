@@ -12,14 +12,7 @@ import (
 )
 
 func TestSoftDeleteIssue_SetsDeletedAtAndEmitsEvent(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
+	d, ctx, _, issue := setupTestIssue(t)
 
 	updated, evt, changed, err := d.SoftDeleteIssue(ctx, issue.ID, "agent")
 	require.NoError(t, err)
@@ -38,16 +31,7 @@ func TestSoftDeleteIssue_SetsDeletedAtAndEmitsEvent(t *testing.T) {
 }
 
 func TestSoftDeleteIssue_AlreadyDeletedIsNoOp(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, _, err = d.SoftDeleteIssue(ctx, issue.ID, "agent")
-	require.NoError(t, err)
+	d, ctx, _, issue := setupSoftDeletedIssue(t)
 
 	updated, evt, changed, err := d.SoftDeleteIssue(ctx, issue.ID, "agent")
 	require.NoError(t, err)
@@ -64,16 +48,7 @@ func TestSoftDeleteIssue_UnknownIssueIsErrNotFound(t *testing.T) {
 }
 
 func TestRestoreIssue_ClearsDeletedAtAndEmitsEvent(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, _, err = d.SoftDeleteIssue(ctx, issue.ID, "agent")
-	require.NoError(t, err)
+	d, ctx, _, issue := setupSoftDeletedIssue(t)
 
 	updated, evt, changed, err := d.RestoreIssue(ctx, issue.ID, "agent")
 	require.NoError(t, err)
@@ -84,14 +59,7 @@ func TestRestoreIssue_ClearsDeletedAtAndEmitsEvent(t *testing.T) {
 }
 
 func TestRestoreIssue_NotDeletedIsNoOp(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
+	d, ctx, _, issue := setupTestIssue(t)
 
 	_, evt, changed, err := d.RestoreIssue(ctx, issue.ID, "agent")
 	require.NoError(t, err)
@@ -107,14 +75,8 @@ func TestRestoreIssue_UnknownIssueIsErrNotFound(t *testing.T) {
 }
 
 func TestSoftDeleteRestore_RoundTripVisibility(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "round trip", Author: "tester",
-	})
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
+	issue, _ := createTesterIssue(ctx, t, d, p.ID, "round trip")
 
 	// Initial: visible in default list.
 	listed, err := d.ListIssues(ctx, db.ListIssuesParams{ProjectID: p.ID})
@@ -139,16 +101,7 @@ func TestSoftDeleteRestore_RoundTripVisibility(t *testing.T) {
 }
 
 func TestRestoreIssue_EmitsEventWithPayloadAndRefs(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, _, err = d.SoftDeleteIssue(ctx, issue.ID, "agent")
-	require.NoError(t, err)
+	d, ctx, _, issue := setupSoftDeletedIssue(t)
 
 	updated, evt, changed, err := d.RestoreIssue(ctx, issue.ID, "agent")
 	require.NoError(t, err)
@@ -192,16 +145,12 @@ func TestSoftDeleteIssue_ScopesByIssueID(t *testing.T) {
 func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
+	p := createKataProject(ctx, t, d)
 	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "delete me", Body: "body", Author: "tester",
 	})
 	require.NoError(t, err)
-	keeper, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "keep me", Body: "", Author: "tester",
-	})
-	require.NoError(t, err)
+	keeper, _ := createTesterIssue(ctx, t, d, p.ID, "keep me")
 
 	// Add a comment, a label (with event), and a link from keeper → target so
 	// cascade removes a non-trivial set of dependents.
@@ -244,36 +193,27 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 	require.NotNil(t, pl.PurgeResetAfterEventID, "events were deleted, reset cursor must be set")
 
 	// Verify rows actually gone.
-	var n int
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT count(*) FROM issues WHERE id = ?`, target.ID).Scan(&n))
-	assert.Equal(t, 0, n, "issue row removed")
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT count(*) FROM comments WHERE issue_id = ?`, target.ID).Scan(&n))
-	assert.Equal(t, 0, n, "comments removed")
-	require.NoError(t, d.QueryRowContext(ctx,
+	assertRowCount(ctx, t, d, 0, "issue row removed",
+		`SELECT count(*) FROM issues WHERE id = ?`, target.ID)
+	assertRowCount(ctx, t, d, 0, "comments removed",
+		`SELECT count(*) FROM comments WHERE issue_id = ?`, target.ID)
+	assertRowCount(ctx, t, d, 0, "links removed",
 		`SELECT count(*) FROM links WHERE from_issue_id = ? OR to_issue_id = ?`,
-		target.ID, target.ID).Scan(&n))
-	assert.Equal(t, 0, n, "links removed")
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT count(*) FROM issue_labels WHERE issue_id = ?`, target.ID).Scan(&n))
-	assert.Equal(t, 0, n, "labels removed")
-	require.NoError(t, d.QueryRowContext(ctx,
+		target.ID, target.ID)
+	assertRowCount(ctx, t, d, 0, "labels removed",
+		`SELECT count(*) FROM issue_labels WHERE issue_id = ?`, target.ID)
+	assertRowCount(ctx, t, d, 0, "events removed",
 		`SELECT count(*) FROM events WHERE issue_id = ? OR related_issue_id = ?`,
-		target.ID, target.ID).Scan(&n))
-	assert.Equal(t, 0, n, "events removed")
-
-	// FTS row gone.
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT count(*) FROM issues_fts WHERE rowid = ?`, target.ID).Scan(&n))
-	assert.Equal(t, 0, n, "FTS row removed")
+		target.ID, target.ID)
+	assertRowCount(ctx, t, d, 0, "FTS row removed",
+		`SELECT count(*) FROM issues_fts WHERE rowid = ?`, target.ID)
 
 	// keeper's events.created is the only event attributed to keeper that
 	// survives — keeper's issue.linked was deleted because related_issue_id
 	// pointed to target.
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT count(*) FROM events WHERE issue_id = ?`, keeper.ID).Scan(&n))
-	assert.Equal(t, 1, n, "keeper's issue.created survives; its issue.linked was cascade-deleted via related_issue_id")
+	assertRowCount(ctx, t, d, 1,
+		"keeper's issue.created survives; its issue.linked was cascade-deleted via related_issue_id",
+		`SELECT count(*) FROM events WHERE issue_id = ?`, keeper.ID)
 }
 
 func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
@@ -281,10 +221,7 @@ func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
 	// bypass CreateIssue's automatic issue.created event. Verify that
 	// PurgeIssue sees zero attached events and leaves PurgeResetAfterEventID
 	// as nil (no SSE cursor reservation needed).
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	issueUID, err := uid.New()
 	require.NoError(t, err)
 	res, err := d.ExecContext(ctx,
@@ -303,14 +240,7 @@ func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
 }
 
 func TestPurgeIssue_ReservesSqliteSequenceAboveMaxEventID(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
+	d, ctx, p, target := setupTestIssue(t)
 	// Capture max events.id BEFORE purge.
 	var maxBefore int64
 	require.NoError(t, d.QueryRowContext(ctx,
@@ -341,14 +271,7 @@ func TestPurgeIssue_UnknownIssueIsErrNotFound(t *testing.T) {
 func TestPurgeIssue_PersistsReason(t *testing.T) {
 	// Reason threads through to purge_log.reason and round-trips on the
 	// returned PurgeLog. Catches argument-order regressions in the INSERT.
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
+	d, ctx, _, target := setupTestIssue(t)
 
 	reason := "ops cleanup"
 	pl, err := d.PurgeIssue(ctx, target.ID, "agent", &reason)
@@ -362,24 +285,13 @@ func TestPurgeIssue_OnSoftDeletedIssue(t *testing.T) {
 	// ladder is delete → purge, not delete-XOR-purge. lookupIssueIncludingDeleted
 	// is the right primitive; this test pins the contract so a future swap
 	// to a deleted-filtering lookup would fail loudly.
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	target, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "delete-then-purge", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, _, err = d.SoftDeleteIssue(ctx, target.ID, "agent")
-	require.NoError(t, err)
+	d, ctx, _, target := setupSoftDeletedIssue(t)
 
 	pl, err := d.PurgeIssue(ctx, target.ID, "agent", nil)
 	require.NoError(t, err)
 	assert.Equal(t, target.ID, pl.PurgedIssueID)
 
 	// Row is gone from issues.
-	var n int
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT count(*) FROM issues WHERE id = ?`, target.ID).Scan(&n))
-	assert.Equal(t, 0, n, "issue row removed even though it was soft-deleted first")
+	assertRowCount(ctx, t, d, 0, "issue row removed even though it was soft-deleted first",
+		`SELECT count(*) FROM issues WHERE id = ?`, target.ID)
 }

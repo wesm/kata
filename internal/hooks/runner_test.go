@@ -46,42 +46,65 @@ func newRunnerSetup(t *testing.T) *runnerSetup {
 	return &runnerSetup{t: t, deps: deps, dir: root, dbHash: dbHash, logBuf: logBuf}
 }
 
-func TestRunner_OK_HookprobeStdin(t *testing.T) {
-	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
+// runProbe executes hookprobe with default ResolvedHook fields
+// (Command=hookprobe, Timeout=2s, WorkingDir=rs.dir), applying customize
+// to override fields, and returns the captured runRecord. Callers that
+// only need to vary args can pass a one-liner customize.
+func (rs *runnerSetup) runProbe(customize func(*ResolvedHook)) runRecord {
+	rs.t.Helper()
+	return rs.runProbeWithDone(make(chan struct{}), customize)
+}
+
+// runProbeWithDone is the full-control variant taking a caller-supplied
+// shutdown channel; used by daemon-shutdown tests.
+func (rs *runnerSetup) runProbeWithDone(done chan struct{}, customize func(*ResolvedHook)) runRecord {
+	rs.t.Helper()
 	var got runRecord
 	rs.deps.AppendRun = func(r runRecord) { got = r }
+	hook := ResolvedHook{
+		Command:    hookprobePath(rs.t),
+		Timeout:    2 * time.Second,
+		WorkingDir: rs.dir,
+	}
+	if customize != nil {
+		customize(&hook)
+	}
 	job := HookJob{
 		Event:      sampleEvent("issue.created"),
-		Hook:       ResolvedHook{Index: 0, Command: bin, Args: []string{"stdin"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
+		Hook:       hook,
 		EnqueuedAt: rs.deps.Now(),
 	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	runJob(context.Background(), done, job, rs.deps)
+	return got
+}
+
+func readRecordOut(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path) //nolint:gosec // G304: test-controlled path under t.TempDir()
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
+func TestRunner_OK_HookprobeStdin(t *testing.T) {
+	rs := newRunnerSetup(t)
+	got := rs.runProbe(func(h *ResolvedHook) { h.Args = []string{"stdin"} })
 	if got.Result != "ok" {
 		t.Fatalf("result = %q, want ok (log=%s)", got.Result, rs.logBuf.String())
 	}
 	if got.ExitCode != 0 {
 		t.Fatalf("exit_code = %d, want 0", got.ExitCode)
 	}
-	stdoutBytes, err := os.ReadFile(got.StdoutPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(stdoutBytes), `"event_id":81237`) {
-		t.Fatalf("stdout missing event_id: %q", stdoutBytes)
+	stdout := readRecordOut(t, got.StdoutPath)
+	if !strings.Contains(stdout, `"event_id":81237`) {
+		t.Fatalf("stdout missing event_id: %q", stdout)
 	}
 }
 
 func TestRunner_NonzeroExit(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 1, Command: bin, Args: []string{"exit", "7"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) { h.Args = []string{"exit", "7"} })
 	if got.Result != "ok" || got.ExitCode != 7 {
 		t.Fatalf("got %+v, want result=ok exit_code=7", got)
 	}
@@ -89,13 +112,7 @@ func TestRunner_NonzeroExit(t *testing.T) {
 
 func TestRunner_SpawnFailed_NonexistentCommand(t *testing.T) {
 	rs := newRunnerSetup(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 2, Command: "/nonexistent/no-such-binary", Timeout: 2 * time.Second, WorkingDir: rs.dir},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) { h.Command = "/nonexistent/no-such-binary" })
 	if got.Result != "spawn_failed" {
 		t.Fatalf("result = %q, want spawn_failed", got.Result)
 	}
@@ -109,14 +126,10 @@ func TestRunner_SpawnFailed_NonexistentCommand(t *testing.T) {
 
 func TestRunner_WorkingDirMissing(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 3, Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: filepath.Join(rs.dir, "nope")},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) {
+		h.Args = []string{"exit", "0"}
+		h.WorkingDir = filepath.Join(rs.dir, "nope")
+	})
 	if got.Result != "working_dir_missing" {
 		t.Fatalf("result = %q, want working_dir_missing", got.Result)
 	}
@@ -129,18 +142,12 @@ func TestRunner_WorkingDirMissing(t *testing.T) {
 // DB load.
 func TestRunner_AliasResolverInvokedOnce(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
 	var calls int32
 	rs.deps.Alias = func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) {
 		atomic.AddInt32(&calls, 1)
 		return AliasSnapshot{Identity: "github.com/wesm/kata", Kind: "git", RootPath: rs.dir}, true, nil
 	}
-	rs.deps.AppendRun = func(_ runRecord) {}
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 0, Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	rs.runProbe(func(h *ResolvedHook) { h.Args = []string{"exit", "0"} })
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("alias resolver invocations = %d, want 1", got)
 	}
@@ -152,26 +159,16 @@ func TestRunner_AliasResolverInvokedOnce(t *testing.T) {
 // block on err, so env must agree to keep the two views consistent.
 func TestRunner_AliasResolverErr_NoEnvLeak(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
 	rs.deps.Alias = func(_ context.Context, _ db.Event) (AliasSnapshot, bool, error) {
 		return AliasSnapshot{Identity: "github.com/wesm/kata", Kind: "git", RootPath: rs.dir},
 			true, errors.New("resolver boom")
 	}
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 0, Command: bin, Args: []string{"env", "KATA_ALIAS_IDENTITY"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) { h.Args = []string{"env", "KATA_ALIAS_IDENTITY"} })
 	if got.Result != "ok" {
 		t.Fatalf("expected ok, got %q", got.Result)
 	}
-	out, err := os.ReadFile(got.StdoutPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(out)) != "" {
+	out := readRecordOut(t, got.StdoutPath)
+	if strings.TrimSpace(out) != "" {
 		t.Fatalf("KATA_ALIAS_IDENTITY must be empty when resolver returned err: %q", out)
 	}
 }
@@ -182,20 +179,18 @@ func TestRunner_AliasResolverErr_NoEnvLeak(t *testing.T) {
 // once per occurrence).
 func TestRunner_WorkingDirMissing_LogsViaCallback(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
 	var loggedHook ResolvedHook
 	var logged int32
 	rs.deps.LogWorkingDirMissing = func(h ResolvedHook) {
 		atomic.AddInt32(&logged, 1)
 		loggedHook = h
 	}
-	rs.deps.AppendRun = func(_ runRecord) {}
 	missing := filepath.Join(rs.dir, "absent")
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 7, Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: missing},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	rs.runProbe(func(h *ResolvedHook) {
+		h.Index = 7
+		h.Args = []string{"exit", "0"}
+		h.WorkingDir = missing
+	})
 	if atomic.LoadInt32(&logged) != 1 {
 		t.Fatalf("LogWorkingDirMissing should be called exactly once, got %d", logged)
 	}
@@ -206,18 +201,14 @@ func TestRunner_WorkingDirMissing_LogsViaCallback(t *testing.T) {
 
 func TestRunner_WorkingDirIsFile(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
 	wd := filepath.Join(rs.dir, "wd-as-file")
 	if err := os.WriteFile(wd, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 4, Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: wd},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) {
+		h.Args = []string{"exit", "0"}
+		h.WorkingDir = wd
+	})
 	if got.Result != "spawn_failed" {
 		t.Fatalf("working_dir = file: result = %q, want spawn_failed", got.Result)
 	}
@@ -225,15 +216,11 @@ func TestRunner_WorkingDirIsFile(t *testing.T) {
 
 func TestRunner_TimedOut_TermDelay(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 5, Command: bin, Args: []string{"term-delay", "10ms"}, Timeout: 50 * time.Millisecond, WorkingDir: rs.dir},
-	}
 	rs.deps.GraceWindow = 200 * time.Millisecond
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) {
+		h.Args = []string{"term-delay", "10ms"}
+		h.Timeout = 50 * time.Millisecond
+	})
 	if got.Result != "timed_out" {
 		t.Fatalf("result = %q, want timed_out", got.Result)
 	}
@@ -241,15 +228,11 @@ func TestRunner_TimedOut_TermDelay(t *testing.T) {
 
 func TestRunner_TimedOut_TermIgnore_Killed(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 6, Command: bin, Args: []string{"term-ignore", "10s"}, Timeout: 50 * time.Millisecond, WorkingDir: rs.dir},
-	}
 	rs.deps.GraceWindow = 50 * time.Millisecond
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
+	got := rs.runProbe(func(h *ResolvedHook) {
+		h.Args = []string{"term-ignore", "10s"}
+		h.Timeout = 50 * time.Millisecond
+	})
 	if got.Result != "timed_out" {
 		t.Fatalf("result = %q, want timed_out (SIGKILL fallback)", got.Result)
 	}
@@ -257,19 +240,15 @@ func TestRunner_TimedOut_TermIgnore_Killed(t *testing.T) {
 
 func TestRunner_DaemonShutdown_BeforeWait(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 7, Command: bin, Args: []string{"sleep", "1s"}, Timeout: 5 * time.Second, WorkingDir: rs.dir},
-	}
 	done := make(chan struct{})
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		close(done)
 	}()
-	runJob(context.Background(), done, job, rs.deps)
+	got := rs.runProbeWithDone(done, func(h *ResolvedHook) {
+		h.Args = []string{"sleep", "1s"}
+		h.Timeout = 5 * time.Second
+	})
 	if got.Result != "daemon_shutdown" {
 		t.Fatalf("result = %q, want daemon_shutdown", got.Result)
 	}
@@ -277,20 +256,13 @@ func TestRunner_DaemonShutdown_BeforeWait(t *testing.T) {
 
 func TestRunner_OutputCapture_BothStreams(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 8, Command: bin, Args: []string{"both", "OUT", "ERR"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
-	out, _ := os.ReadFile(got.StdoutPath)
-	er, _ := os.ReadFile(got.StderrPath)
-	if !strings.Contains(string(out), "OUT") {
+	got := rs.runProbe(func(h *ResolvedHook) { h.Args = []string{"both", "OUT", "ERR"} })
+	out := readRecordOut(t, got.StdoutPath)
+	er := readRecordOut(t, got.StderrPath)
+	if !strings.Contains(out, "OUT") {
 		t.Fatalf(".out missing OUT: %q", out)
 	}
-	if !strings.Contains(string(er), "ERR") {
+	if !strings.Contains(er, "ERR") {
 		t.Fatalf(".err missing ERR: %q", er)
 	}
 	if got.StdoutBytes != int64(len(out)) || got.StderrBytes != int64(len(er)) {
@@ -300,36 +272,21 @@ func TestRunner_OutputCapture_BothStreams(t *testing.T) {
 
 func TestRunner_EnvKataVars(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook:  ResolvedHook{Index: 9, Command: bin, Args: []string{"env", "KATA_EVENT_ID"}, Timeout: 2 * time.Second, WorkingDir: rs.dir},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
-	out, _ := os.ReadFile(got.StdoutPath)
-	if strings.TrimSpace(string(out)) != "81237" {
+	got := rs.runProbe(func(h *ResolvedHook) { h.Args = []string{"env", "KATA_EVENT_ID"} })
+	out := readRecordOut(t, got.StdoutPath)
+	if strings.TrimSpace(out) != "81237" {
 		t.Fatalf("KATA_EVENT_ID = %q, want 81237", out)
 	}
 }
 
 func TestRunner_EnvUserOverridable_NotForKata(t *testing.T) {
 	rs := newRunnerSetup(t)
-	bin := hookprobePath(t)
-	var got runRecord
-	rs.deps.AppendRun = func(r runRecord) { got = r }
-	job := HookJob{
-		Event: sampleEvent("issue.created"),
-		Hook: ResolvedHook{
-			Index: 10, Command: bin, Args: []string{"env", "EXTRA"},
-			Timeout: 2 * time.Second, WorkingDir: rs.dir,
-			UserEnv: []string{"EXTRA=visible"},
-		},
-	}
-	runJob(context.Background(), make(chan struct{}), job, rs.deps)
-	out, _ := os.ReadFile(got.StdoutPath)
-	if strings.TrimSpace(string(out)) != "visible" {
+	got := rs.runProbe(func(h *ResolvedHook) {
+		h.Args = []string{"env", "EXTRA"}
+		h.UserEnv = []string{"EXTRA=visible"}
+	})
+	out := readRecordOut(t, got.StdoutPath)
+	if strings.TrimSpace(out) != "visible" {
 		t.Fatalf("user env not visible: %q", out)
 	}
 }

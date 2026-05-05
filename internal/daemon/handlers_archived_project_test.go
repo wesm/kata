@@ -1,8 +1,6 @@
 package daemon_test
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,8 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/wesm/kata/internal/db"
 )
 
 // TestArchivedProject_SurfaceHandlersReturn404 covers every project-scoped
@@ -33,10 +29,7 @@ func TestArchivedProject_SurfaceHandlersReturn404(t *testing.T) {
 	// Archive the project directly via the DB layer. The HTTP DELETE path is
 	// covered by handlers_projects_test; here we only need the projects row
 	// in archived state so we can probe each surface endpoint.
-	_, _, err := h.DB().RemoveProject(context.Background(), db.RemoveProjectParams{
-		ProjectID: projectID, Actor: "tester",
-	})
-	require.NoError(t, err)
+	archiveProject(t, h, projectID, false)
 
 	pid := strconv.FormatInt(projectID, 10)
 
@@ -67,24 +60,8 @@ func TestArchivedProject_SurfaceHandlersReturn404(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var bodyReader io.Reader
-			if tc.body != nil {
-				js, err := json.Marshal(tc.body)
-				require.NoError(t, err)
-				bodyReader = bytes.NewReader(js)
-			}
-			r, err := http.NewRequest(tc.method, ts.URL+tc.path, bodyReader)
-			require.NoError(t, err)
-			if tc.body != nil {
-				r.Header.Set("Content-Type", "application/json")
-			}
-			resp, err := http.DefaultClient.Do(r) //nolint:gosec // test loopback
-			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
-			bs, _ := io.ReadAll(resp.Body)
-
-			assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
-			assert.Contains(t, string(bs), "project_not_found", string(bs))
+			resp, bs := doReq(t, ts, tc.method, tc.path, tc.body, nil)
+			assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
 		})
 	}
 }
@@ -102,7 +79,6 @@ func TestArchivedProject_SurfaceHandlersReturn404(t *testing.T) {
 func TestArchivedProject_IssueScopedHandlersReturn404(t *testing.T) {
 	h, projectID := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	ctx := context.Background()
 	pid := strconv.FormatInt(projectID, 10)
 
 	// Seed one issue we can target. The issue's number is guaranteed to be
@@ -114,10 +90,7 @@ func TestArchivedProject_IssueScopedHandlersReturn404(t *testing.T) {
 
 	// Force-archive: open issue exists, so plain RemoveProject would be
 	// refused by the open-issues guard.
-	_, _, err := h.DB().RemoveProject(ctx, db.RemoveProjectParams{
-		ProjectID: projectID, Actor: "tester", Force: true,
-	})
-	require.NoError(t, err)
+	archiveProject(t, h, projectID, true)
 
 	num := strconv.Itoa(issueNumber)
 	cases := []struct {
@@ -174,27 +147,8 @@ func TestArchivedProject_IssueScopedHandlersReturn404(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var bodyReader io.Reader
-			if tc.body != nil {
-				js, err := json.Marshal(tc.body)
-				require.NoError(t, err)
-				bodyReader = bytes.NewReader(js)
-			}
-			r, err := http.NewRequest(tc.method, ts.URL+tc.path, bodyReader)
-			require.NoError(t, err)
-			if tc.body != nil {
-				r.Header.Set("Content-Type", "application/json")
-			}
-			for k, v := range tc.headers {
-				r.Header.Set(k, v)
-			}
-			resp, err := http.DefaultClient.Do(r) //nolint:gosec // test loopback
-			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
-			respBs, _ := io.ReadAll(resp.Body)
-
-			assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(respBs))
-			assert.Contains(t, string(respBs), "project_not_found", string(respBs))
+			resp, bs := doReq(t, ts, tc.method, tc.path, tc.body, tc.headers)
+			assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
 		})
 	}
 }
@@ -205,7 +159,6 @@ func TestArchivedProject_IssueScopedHandlersReturn404(t *testing.T) {
 func TestArchivedProject_ShowIssueByUIDReturns404(t *testing.T) {
 	h, projectID := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
-	ctx := context.Background()
 
 	pid := strconv.FormatInt(projectID, 10)
 	resp, bs := postJSON(t, ts, "/api/v1/projects/"+pid+"/issues",
@@ -219,17 +172,13 @@ func TestArchivedProject_ShowIssueByUIDReturns404(t *testing.T) {
 	require.NoError(t, json.Unmarshal(bs, &created))
 	require.NotEmpty(t, created.Issue.UID)
 
-	_, _, err := h.DB().RemoveProject(ctx, db.RemoveProjectParams{
-		ProjectID: projectID, Actor: "tester", Force: true,
-	})
-	require.NoError(t, err)
+	archiveProject(t, h, projectID, true)
 
 	resp2, err := http.Get(ts.URL + "/api/v1/issues/" + created.Issue.UID) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
 	defer func() { _ = resp2.Body.Close() }()
 	bs2, _ := io.ReadAll(resp2.Body)
-	assert.Equal(t, http.StatusNotFound, resp2.StatusCode, string(bs2))
-	assert.Contains(t, string(bs2), "project_not_found", string(bs2))
+	assertAPIError(t, resp2.StatusCode, bs2, http.StatusNotFound, "project_not_found")
 }
 
 // TestListAllIssues_NegativeProjectIDReturns400 pins that
@@ -245,8 +194,7 @@ func TestListAllIssues_NegativeProjectIDReturns400(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	bs, _ := io.ReadAll(resp.Body)
 
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), "validation", string(bs))
+	assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "validation")
 	assert.Contains(t, string(bs), "project_id", string(bs))
 }
 
@@ -257,20 +205,12 @@ func TestArchivedProject_SSEStreamRejects(t *testing.T) {
 	h, projectID := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
 
-	_, _, err := h.DB().RemoveProject(context.Background(), db.RemoveProjectParams{
-		ProjectID: projectID, Actor: "tester",
-	})
-	require.NoError(t, err)
+	archiveProject(t, h, projectID, false)
 
 	pid := strconv.FormatInt(projectID, 10)
-	r, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/events/stream?project_id="+pid, nil)
-	require.NoError(t, err)
-	r.Header.Set("Accept", "text/event-stream")
-	resp, err := http.DefaultClient.Do(r) //nolint:gosec // test loopback
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	bs, _ := io.ReadAll(resp.Body)
+	resp, bs := doReq(t, ts, http.MethodGet,
+		"/api/v1/events/stream?project_id="+pid, nil,
+		map[string]string{"Accept": "text/event-stream"})
 
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), "project_not_found", string(bs))
+	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
 }

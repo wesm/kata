@@ -2,24 +2,21 @@ package config_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/testfix"
 )
 
 func TestDiscoverPaths_FindsKataTomlAndGit(t *testing.T) {
 	root := t.TempDir()
-	//nolint:gosec // test fixture under TempDir; permissive perms are intentional.
-	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
-	//nolint:gosec // test fixture; mirrors how users commit .kata.toml world-readable.
-	require.NoError(t, os.WriteFile(filepath.Join(root, ".kata.toml"), []byte("version = 1\n\n[project]\nidentity = \"x\"\nname = \"x\"\n"), 0o644))
+	testfix.MkDotGit(t, root)
+	testfix.WriteKataToml(t, root, "x", "x")
 	sub := filepath.Join(root, "a", "b")
-	//nolint:gosec // test fixture under TempDir.
-	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir.
 
 	d, err := config.DiscoverPaths(sub)
 	require.NoError(t, err)
@@ -29,13 +26,10 @@ func TestDiscoverPaths_FindsKataTomlAndGit(t *testing.T) {
 
 func TestDiscoverPaths_KataTomlInSubdirOfGit(t *testing.T) {
 	root := t.TempDir()
-	//nolint:gosec // test fixture under TempDir.
-	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+	testfix.MkDotGit(t, root)
 	sub := filepath.Join(root, "subproject")
-	//nolint:gosec // test fixture under TempDir.
-	require.NoError(t, os.MkdirAll(sub, 0o755))
-	//nolint:gosec // test fixture; mirrors how users commit .kata.toml world-readable.
-	require.NoError(t, os.WriteFile(filepath.Join(sub, ".kata.toml"), []byte("version = 1\n\n[project]\nidentity = \"x\"\nname = \"x\"\n"), 0o644))
+	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir.
+	testfix.WriteKataToml(t, sub, "x", "x")
 
 	d, err := config.DiscoverPaths(sub)
 	require.NoError(t, err)
@@ -59,9 +53,8 @@ func TestDiscoverPaths_StartPathMissingErrors(t *testing.T) {
 
 func TestDiscoverPaths_StartPathIsFileWalksFromParent(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755)) //nolint:gosec // test fixture
-	require.NoError(t, os.WriteFile(filepath.Join(root, ".kata.toml"),  //nolint:gosec // test fixture
-		[]byte("version = 1\n\n[project]\nidentity = \"x\"\nname = \"x\"\n"), 0o644))
+	testfix.MkDotGit(t, root)
+	testfix.WriteKataToml(t, root, "x", "x")
 	filePath := filepath.Join(root, "README.md")
 	require.NoError(t, os.WriteFile(filePath, []byte("hi"), 0o644)) //nolint:gosec // test fixture
 
@@ -89,8 +82,8 @@ func TestNormalizeRemoteURL(t *testing.T) {
 }
 
 func TestComputeAliasIdentity_GitWithRemote(t *testing.T) {
-	dir := initGitRepo(t)
-	requireGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	dir := testfix.InitGitRepo(t)
+	testfix.RunGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
 
 	a, err := config.ComputeAliasIdentity(config.DiscoveredPaths{GitRoot: dir})
 	require.NoError(t, err)
@@ -100,7 +93,7 @@ func TestComputeAliasIdentity_GitWithRemote(t *testing.T) {
 }
 
 func TestComputeAliasIdentity_GitNoRemote(t *testing.T) {
-	dir := initGitRepo(t)
+	dir := testfix.InitGitRepo(t)
 
 	a, err := config.ComputeAliasIdentity(config.DiscoveredPaths{GitRoot: dir})
 	require.NoError(t, err)
@@ -202,8 +195,8 @@ func TestPickInitIdentity_InputIdentityWithExplicitName(t *testing.T) {
 }
 
 func TestPickInitIdentity_FromGitRoot(t *testing.T) {
-	dir := initGitRepo(t)
-	requireGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	dir := testfix.InitGitRepo(t)
+	testfix.RunGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
 
 	got, err := config.PickInitIdentity(
 		config.DiscoveredPaths{GitRoot: dir}, nil, "", "", false)
@@ -305,24 +298,4 @@ func TestValidateAliasInfo(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.hint)
 		})
 	}
-}
-
-// helpers
-
-func initGitRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	requireGit(t, dir, "init", "--quiet")
-	requireGit(t, dir, "config", "user.email", "x@example.com")
-	requireGit(t, dir, "config", "user.name", "x")
-	return dir
-}
-
-func requireGit(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	//nolint:gosec // git binary is fixed; args are test-supplied subcommand flags.
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "git %v: %s", args, out)
 }

@@ -14,10 +14,13 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
+// mustNewDispatcher builds a Dispatcher rooted at a fresh temp KataHome with
+// no-op resolvers and returns the dispatcher, a buffer capturing the daemon
+// log, and the absolute path to the runs.jsonl appender for that DB.
 func mustNewDispatcher(t *testing.T, hooks []ResolvedHook, cfg Config) (*Dispatcher, *strings.Builder, string) {
 	t.Helper()
 	root := t.TempDir()
-	dbHash := "testdbhash01"
+	const dbHash = "testdbhash01"
 	logBuf := &strings.Builder{}
 	deps := DispatcherDeps{
 		DBHash:          dbHash,
@@ -40,7 +43,40 @@ func mustNewDispatcher(t *testing.T, hooks []ResolvedHook, cfg Config) (*Dispatc
 		defer cancel()
 		_ = d.Shutdown(ctx)
 	})
-	return d, logBuf, dbHash
+	return d, logBuf, filepath.Join(root, "hooks", dbHash, "runs.jsonl")
+}
+
+// newTestHook builds a ResolvedHook that runs the hookprobe binary with the
+// given args and a 2s timeout. event "*" matches every event; any other
+// value is matched exactly.
+func newTestHook(t *testing.T, event string, args ...string) ResolvedHook {
+	t.Helper()
+	match := matchExact(event)
+	if event == "*" {
+		match = matchAlways()
+	}
+	return ResolvedHook{
+		Index:      0,
+		Event:      event,
+		Match:      match,
+		Command:    hookprobePath(t),
+		Args:       args,
+		Timeout:    2 * time.Second,
+		WorkingDir: t.TempDir(),
+	}
+}
+
+// enqueueEvents pushes count events of the given type into d, with sequential
+// IDs starting at startID and ProjectID/ProjectIdentity placeholders.
+func enqueueEvents(d *Dispatcher, eventType string, startID, count int) {
+	for i := 0; i < count; i++ {
+		d.Enqueue(db.Event{
+			ID:              int64(startID + i),
+			Type:            eventType,
+			ProjectID:       1,
+			ProjectIdentity: "x",
+		})
+	}
 }
 
 func TestDispatcher_NewNoop_ImplementsSink(t *testing.T) {
@@ -52,38 +88,31 @@ func TestDispatcher_NewNoop_ImplementsSink(t *testing.T) {
 }
 
 func TestDispatcher_Enqueue_RoutesToMatchingHooks(t *testing.T) {
-	bin := hookprobePath(t)
-	dir := t.TempDir()
-	hookA := ResolvedHook{Index: 0, Event: "issue.created", Match: matchExact("issue.created"), Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: dir}
-	hookB := ResolvedHook{Index: 1, Event: "issue.updated", Match: matchExact("issue.updated"), Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: dir}
+	hookA := newTestHook(t, "issue.created", "exit", "0")
+	hookB := newTestHook(t, "issue.updated", "exit", "0")
+	hookB.Index = 1
 	cfg := defaultConfig()
 	cfg.PoolSize = 2
 	cfg.QueueCap = 8
-	d, _, dbHash := mustNewDispatcher(t, []ResolvedHook{hookA, hookB}, cfg)
-	d.Enqueue(db.Event{ID: 100, Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
-	// Wait for runs.jsonl to receive a line.
-	runsPath := filepath.Join(d.deps.KataHome, "hooks", dbHash, "runs.jsonl")
+	d, _, runsPath := mustNewDispatcher(t, []ResolvedHook{hookA, hookB}, cfg)
+	enqueueEvents(d, "issue.created", 100, 1)
 	if !waitForLines(t, runsPath, 1, 2*time.Second) {
 		t.Fatal("expected 1 run for hookA")
 	}
-	d.Enqueue(db.Event{ID: 101, Type: "issue.updated", ProjectID: 1, ProjectIdentity: "x"})
+	enqueueEvents(d, "issue.updated", 101, 1)
 	if !waitForLines(t, runsPath, 2, 2*time.Second) {
 		t.Fatal("expected 2 runs after second event")
 	}
 }
 
 func TestDispatcher_Enqueue_QueueFullDropsAndCounts(t *testing.T) {
-	bin := hookprobePath(t)
-	dir := t.TempDir()
-	slow := ResolvedHook{Index: 0, Event: "*", Match: matchAlways(), Command: bin, Args: []string{"sleep", "200ms"}, Timeout: 2 * time.Second, WorkingDir: dir}
+	slow := newTestHook(t, "*", "sleep", "200ms")
 	cfg := defaultConfig()
 	cfg.PoolSize = 1
 	cfg.QueueCap = 1
 	cfg.QueueFullLogInterval = 10 * time.Millisecond
 	d, _, _ := mustNewDispatcher(t, []ResolvedHook{slow}, cfg)
-	for i := 0; i < 10; i++ {
-		d.Enqueue(db.Event{ID: int64(200 + i), Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
-	}
+	enqueueEvents(d, "issue.created", 200, 10)
 	// At least N-2 should drop (1 in queue + 1 in flight + N-2 dropped).
 	if got := d.dropped.Load(); got < 5 {
 		t.Fatalf("dropped=%d, want >=5", got)
@@ -115,14 +144,13 @@ func TestDispatcher_Shutdown_Idempotent(t *testing.T) {
 }
 
 func TestDispatcher_Shutdown_Timeout_ReportsInflight(t *testing.T) {
-	bin := hookprobePath(t)
-	dir := t.TempDir()
-	stuck := ResolvedHook{Index: 0, Event: "*", Match: matchAlways(), Command: bin, Args: []string{"term-ignore", "10s"}, Timeout: 5 * time.Second, WorkingDir: dir}
+	stuck := newTestHook(t, "*", "term-ignore", "10s")
+	stuck.Timeout = 5 * time.Second
 	cfg := defaultConfig()
 	cfg.PoolSize = 1
 	cfg.QueueCap = 4
 	d, logBuf, _ := mustNewDispatcher(t, []ResolvedHook{stuck}, cfg)
-	d.Enqueue(db.Event{ID: 300, Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
+	enqueueEvents(d, "issue.created", 300, 1)
 	// Give the worker a moment to start.
 	time.Sleep(100 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -136,23 +164,18 @@ func TestDispatcher_Shutdown_Timeout_ReportsInflight(t *testing.T) {
 }
 
 func TestDispatcher_Shutdown_DropsQueued(t *testing.T) {
-	bin := hookprobePath(t)
-	dir := t.TempDir()
-	hold := ResolvedHook{Index: 0, Event: "*", Match: matchAlways(), Command: bin, Args: []string{"sleep", "500ms"}, Timeout: 2 * time.Second, WorkingDir: dir}
+	hold := newTestHook(t, "*", "sleep", "500ms")
 	cfg := defaultConfig()
 	cfg.PoolSize = 1
 	cfg.QueueCap = 4
-	d, _, dbHash := mustNewDispatcher(t, []ResolvedHook{hold}, cfg)
-	for i := 0; i < 5; i++ {
-		d.Enqueue(db.Event{ID: int64(400 + i), Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
-	}
+	d, _, runsPath := mustNewDispatcher(t, []ResolvedHook{hold}, cfg)
+	enqueueEvents(d, "issue.created", 400, 5)
 	time.Sleep(50 * time.Millisecond) // worker has popped one
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := d.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
-	runsPath := filepath.Join(d.deps.KataHome, "hooks", dbHash, "runs.jsonl")
 	lines := countJSONLLines(runsPath)
 	// Only the in-flight job should have produced a line. (4xx all
 	// completing would be > 1.) Allow <=2 to tolerate edge timing.
@@ -162,21 +185,17 @@ func TestDispatcher_Shutdown_DropsQueued(t *testing.T) {
 }
 
 func TestDispatcher_Reload_AtomicWithEnqueue(t *testing.T) {
-	bin := hookprobePath(t)
-	dir := t.TempDir()
-	first := ResolvedHook{Index: 0, Event: "*", Match: matchAlways(), Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: dir}
+	first := newTestHook(t, "*", "exit", "0")
 	cfg := defaultConfig()
 	d, _, _ := mustNewDispatcher(t, []ResolvedHook{first}, cfg)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 200; i++ {
-			d.Enqueue(db.Event{ID: int64(i), Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
-		}
+		enqueueEvents(d, "issue.created", 0, 200)
 	}()
 	for i := 0; i < 50; i++ {
-		newHook := ResolvedHook{Index: 0, Event: "issue.created", Match: matchExact("issue.created"), Command: bin, Args: []string{"exit", "0"}, Timeout: 2 * time.Second, WorkingDir: dir}
+		newHook := newTestHook(t, "issue.created", "exit", "0")
 		d.Reload(LoadedConfig{Snapshot: Snapshot{Hooks: []ResolvedHook{newHook}}, Config: cfg})
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -184,9 +203,8 @@ func TestDispatcher_Reload_AtomicWithEnqueue(t *testing.T) {
 }
 
 func TestDispatcher_AliasResolverContext_CancelsOnShutdown(t *testing.T) {
-	bin := hookprobePath(t)
-	dir := t.TempDir()
-	h := ResolvedHook{Index: 0, Event: "*", Match: matchAlways(), Command: bin, Args: []string{"sleep", "5s"}, Timeout: 30 * time.Second, WorkingDir: dir}
+	h := newTestHook(t, "*", "sleep", "5s")
+	h.Timeout = 30 * time.Second
 	cfg := defaultConfig()
 	cfg.PoolSize = 1
 	cfg.QueueCap = 1
@@ -221,7 +239,7 @@ func TestDispatcher_AliasResolverContext_CancelsOnShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d.Enqueue(db.Event{ID: 500, Type: "issue.created", ProjectID: 1, ProjectIdentity: "x"})
+	enqueueEvents(d, "issue.created", 500, 1)
 	// Wait briefly for the worker to invoke the resolver.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

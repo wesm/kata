@@ -42,11 +42,7 @@ func TestDetailDocumentPage80x50LayoutSignals(t *testing.T) {
 	} {
 		assertStringContains(t, got, want)
 	}
-	for _, deny := range []string{"Owner:", "Parent:"} {
-		if strings.Contains(got, deny) {
-			t.Fatalf("detail document should use lowercase metadata labels, found %q:\n%s", deny, got)
-		}
-	}
+	assertStringsLack(t, got, "Owner:", "Parent:")
 }
 
 func TestDetailCompactSheet_UsesDenseRhythmAndNoDecorativeRules(t *testing.T) {
@@ -67,34 +63,14 @@ func TestDetailCompactSheet_UsesDenseRhythmAndNoDecorativeRules(t *testing.T) {
 	if strings.Contains(got, "issue #42") {
 		t.Fatalf("compact sheet should not render issue number as a separate lead-in:\n%s", got)
 	}
-	for _, deny := range []string{"Body ─", "Activity ─"} {
-		if strings.Contains(got, deny) {
-			t.Fatalf("compact sheet should not use decorative rule %q:\n%s", deny, got)
-		}
-	}
+	assertStringsLack(t, got, "Body ─", "Activity ─")
 	// The redesign separates metadata and Body with one blank breather
 	// row so the page reads as a quiet document. Body should land
 	// within two rows of the last metadata line — close enough to feel
-	// connected, not far enough to leak dead air.
-	metadataEnd := indexOf(lines, "labels:")
-	body := indexOf(lines, "Body")
-	if metadataEnd < 0 || body < 0 {
-		t.Fatalf("missing metadata/body:\n%s", got)
-	}
-	if body-metadataEnd > 2 {
-		t.Fatalf("Body should follow metadata within one blank row; metadata=%d body=%d:\n%s",
-			metadataEnd, body, got)
-	}
-	bodyText := indexOf(lines, "Click the login button twice.")
-	activity := indexOf(lines, "Activity")
-	if bodyText < 0 || activity < 0 {
-		t.Fatalf("missing body text/activity:\n%s", got)
-	}
-	// Same one-blank-row rhythm between body content and Activity.
-	if activity > bodyText+3 {
-		t.Fatalf("Activity should follow short body within one blank row; body=%d activity=%d:\n%s",
-			bodyText, activity, got)
-	}
+	// connected, not far enough to leak dead air. Same rhythm between
+	// body content and Activity.
+	assertMaxGap(t, got, "labels:", "Body", 2)
+	assertMaxGap(t, got, "Click the login button twice.", "Activity", 3)
 }
 
 // TestDetailCompactSheet_AdaptiveSurfaces locks down the redesigned
@@ -174,15 +150,7 @@ func TestDetailDocument_DoesNotPadBodyBeforeChildren(t *testing.T) {
 	dm := snapDetailHierarchyFixture()
 
 	got := stripANSI(dm.View(80, 50, viewChrome{}))
-	lines := strings.Split(got, "\n")
-	bodyEnd := indexOf(lines, "Click the login button twice.")
-	children := indexOf(lines, "Children")
-	if bodyEnd < 0 || children < 0 {
-		t.Fatalf("missing body or children section:\n%s", got)
-	}
-	if gap := children - bodyEnd; gap > 4 {
-		t.Fatalf("body section absorbed vertical slack; gap=%d:\n%s", gap, got)
-	}
+	assertMaxGap(t, got, "Click the login button twice.", "Children", 4)
 }
 
 // TestDetailDocument_NarrowStacksMetadata verifies that on a narrow
@@ -256,11 +224,7 @@ func TestDetailDocument_MarkdownRenderingDropsSourceFences(t *testing.T) {
 	for _, want := range []string{"Steps", "`Login`", `fmt.Println("ok")`} {
 		assertStringContains(t, got, want)
 	}
-	for _, deny := range []string{"## Steps", "```"} {
-		if strings.Contains(got, deny) {
-			t.Fatalf("markdown source marker %q leaked into detail render:\n%s", deny, got)
-		}
-	}
+	assertStringsLack(t, got, "## Steps", "```")
 }
 
 func TestDetailDocument_CommentAuthorsAlignTimestamps(t *testing.T) {

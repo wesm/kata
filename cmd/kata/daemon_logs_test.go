@@ -23,28 +23,71 @@ func writeRuns(t *testing.T, dir string, files map[string][]map[string]any) {
 		t.Fatal(err)
 	}
 	for name, lines := range files {
-		var buf bytes.Buffer
-		for _, l := range lines {
-			b, _ := json.Marshal(l)
-			buf.Write(b)
-			buf.WriteByte('\n')
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), buf.Bytes(), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writeHookLog(t, dir, name, lines...)
 	}
 }
 
+// writeHookLog writes JSONL entries to dir/filename, creating dir if needed.
+// Each entry is JSON-marshaled and terminated with a newline.
+func writeHookLog(t *testing.T, dir, filename string, entries ...map[string]any) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	for _, e := range entries {
+		b, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(b)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// appendHookLogAsync schedules a background goroutine that, after delay,
+// appends JSONL entries to path (creating the file if missing). Used by
+// --tail tests that simulate logs arriving while a command is executing.
+// Errors are silently ignored — the test will fail naturally if the data
+// never lands.
+func appendHookLogAsync(path string, delay time.Duration, entries ...map[string]any) {
+	go func() {
+		time.Sleep(delay)
+		var buf bytes.Buffer
+		for _, e := range entries {
+			b, err := json.Marshal(e)
+			if err != nil {
+				return
+			}
+			buf.Write(b)
+			buf.WriteByte('\n')
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600) //nolint:gosec // G304: test-controlled temp path
+		if err != nil {
+			return
+		}
+		_, _ = f.Write(buf.Bytes())
+		_ = f.Close()
+	}()
+}
+
+// setupHooksDir initializes a temporary KATA_HOME with an empty kata.db,
+// creates the namespaced hooks directory, and returns home, hooksDir, and
+// the db hash used to derive hooksDir.
 func setupHooksDir(t *testing.T) (home, hooksDir, dbHash string) {
 	t.Helper()
-	home = t.TempDir()
-	t.Setenv("KATA_HOME", home)
-	t.Setenv("KATA_DB", filepath.Join(home, "kata.db"))
+	home = setupKataEnv(t)
 	if err := os.WriteFile(filepath.Join(home, "kata.db"), []byte{0}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	dbHash = config.DBHash(filepath.Join(home, "kata.db"))
 	hooksDir = filepath.Join(home, "hooks", dbHash)
+	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return
 }
 
@@ -56,15 +99,8 @@ func TestDaemonLogs_Hooks_PrintsChronological(t *testing.T) {
 		"runs.jsonl":   {{"event_id": 3, "result": "ok"}, {"event_id": 4, "result": "ok"}},
 	})
 	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"daemon", "logs", "--hooks"})
-	cmd.SetContext(context.Background())
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
+	out, _, err := executeRootCapture(t, context.Background(), "daemon", "logs", "--hooks")
+	require.NoError(t, err)
 	idx1 := strings.Index(out, `"event_id":1`)
 	idx2 := strings.Index(out, `"event_id":2`)
 	idx3 := strings.Index(out, `"event_id":3`)
@@ -84,15 +120,8 @@ func TestDaemonLogs_Hooks_FailedOnly(t *testing.T) {
 		},
 	})
 	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--failed-only"})
-	cmd.SetContext(context.Background())
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
+	out, _, err := executeRootCapture(t, context.Background(), "daemon", "logs", "--hooks", "--failed-only")
+	require.NoError(t, err)
 	if strings.Contains(out, `"event_id":1`) {
 		t.Fatal("--failed-only should exclude ok exit_code=0")
 	}
@@ -103,28 +132,18 @@ func TestDaemonLogs_Hooks_FailedOnly(t *testing.T) {
 
 func TestDaemonLogs_Hooks_MalformedLineSkippedWithStderrWarning(t *testing.T) {
 	_, dir, _ := setupHooksDir(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	contents := "{\"event_id\":1,\"result\":\"ok\"}\nnot-json\n{\"event_id\":2,\"result\":\"ok\"}\n"
 	if err := os.WriteFile(filepath.Join(dir, "runs.jsonl"), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	resetFlags(t)
-	cmd := newRootCmd()
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"daemon", "logs", "--hooks"})
-	cmd.SetContext(context.Background())
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stdout.String(), `"event_id":1`) || !strings.Contains(stdout.String(), `"event_id":2`) {
+	stdout, stderr, err := executeRootCapture(t, context.Background(), "daemon", "logs", "--hooks")
+	require.NoError(t, err)
+	if !strings.Contains(stdout, `"event_id":1`) || !strings.Contains(stdout, `"event_id":2`) {
 		t.Fatal("valid lines should still print")
 	}
-	if !strings.Contains(stderr.String(), "skipping malformed line") {
-		t.Fatalf("stderr should warn about malformed line: %q", stderr.String())
+	if !strings.Contains(stderr, "skipping malformed line") {
+		t.Fatalf("stderr should warn about malformed line: %q", stderr)
 	}
 }
 
@@ -135,31 +154,16 @@ func TestDaemonLogs_Hooks_MalformedLineSkippedWithStderrWarning(t *testing.T) {
 // file and never observe future writes to runs.jsonl.
 func TestDaemonLogs_Hooks_Tail_RotatedOnlyWaitsForActive(t *testing.T) {
 	_, dir, _ := setupHooksDir(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	// Only a rotated file exists at startup.
-	if err := os.WriteFile(filepath.Join(dir, "runs.jsonl.1"),
-		[]byte(`{"event_id":99,"result":"ok"}`+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeHookLog(t, dir, "runs.jsonl.1", map[string]any{"event_id": 99, "result": "ok"})
+
 	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--tail"})
-	cmd.SetContext(ctx)
+	appendHookLogAsync(filepath.Join(dir, "runs.jsonl"), 300*time.Millisecond,
+		map[string]any{"event_id": 7, "result": "ok"})
 
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		_ = os.WriteFile(filepath.Join(dir, "runs.jsonl"),
-			[]byte(`{"event_id":7,"result":"ok"}`+"\n"), 0o600)
-	}()
-
-	_ = cmd.Execute()
-	out := buf.String()
+	out, _, _ := executeRootCapture(t, ctx, "daemon", "logs", "--hooks", "--tail")
 	if !strings.Contains(out, `"event_id":7`) {
 		t.Fatalf("tail must follow runs.jsonl after it appears: %q", out)
 	}
@@ -271,9 +275,6 @@ func TestFollowActive_MarkAtSize_DoesNotReEmit(t *testing.T) {
 // it was read, so tail can resume at the exact byte offset.
 func TestRunHookLogOnce_Mark_ReportsActiveFileSize(t *testing.T) {
 	_, dir, _ := setupHooksDir(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	contents := `{"event_id":1,"result":"ok"}` + "\n"
 	path := filepath.Join(dir, "runs.jsonl")
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
@@ -297,14 +298,8 @@ func TestRunHookLogOnce_Mark_ReportsActiveFileSize(t *testing.T) {
 // later starts at offset 0 once the file appears.
 func TestRunHookLogOnce_Mark_UnsetWhenActiveAbsent(t *testing.T) {
 	_, dir, _ := setupHooksDir(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	// Only a rotated file exists.
-	if err := os.WriteFile(filepath.Join(dir, "runs.jsonl.1"),
-		[]byte(`{"event_id":99,"result":"ok"}`+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeHookLog(t, dir, "runs.jsonl.1", map[string]any{"event_id": 99, "result": "ok"})
 	var stdout, stderr bytes.Buffer
 	mark, err := runHookLogOnce(&stdout, &stderr, 100, &hookLogFilter{hookIndex: -1})
 	if err != nil {
@@ -317,31 +312,16 @@ func TestRunHookLogOnce_Mark_UnsetWhenActiveAbsent(t *testing.T) {
 
 func TestDaemonLogs_Hooks_Tail_PicksUpNewLines(t *testing.T) {
 	_, dir, _ := setupHooksDir(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join(dir, "runs.jsonl")
-	if err := os.WriteFile(path, []byte(`{"event_id":1,"result":"ok"}`+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeHookLog(t, dir, "runs.jsonl", map[string]any{"event_id": 1, "result": "ok"})
+
 	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--tail"})
-	cmd.SetContext(ctx)
+	appendHookLogAsync(path, 200*time.Millisecond,
+		map[string]any{"event_id": 2, "result": "ok"})
 
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: test-controlled temp path
-		_, _ = f.WriteString(`{"event_id":2,"result":"ok"}` + "\n")
-		_ = f.Close()
-	}()
-
-	_ = cmd.Execute()
-	out := buf.String()
+	out, _, _ := executeRootCapture(t, ctx, "daemon", "logs", "--hooks", "--tail")
 	if !strings.Contains(out, `"event_id":1`) || !strings.Contains(out, `"event_id":2`) {
 		t.Fatalf("tail should print initial + appended: %q", out)
 	}
@@ -354,14 +334,8 @@ func TestDaemonLogs_Hooks_Tail_PicksUpNewLines(t *testing.T) {
 func TestDaemonLogs_RejectsNonPositiveLimit(t *testing.T) {
 	for _, lim := range []string{"0", "-1"} {
 		resetFlags(t)
-		cmd := newRootCmd()
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-		cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--limit", lim})
-		cmd.SetContext(context.Background())
-
-		err := cmd.Execute()
+		_, _, err := executeRootCapture(t, context.Background(),
+			"daemon", "logs", "--hooks", "--limit", lim)
 		require.Errorf(t, err, "--limit %s should reject", lim)
 		var ce *cliError
 		require.True(t, errors.As(err, &ce))
@@ -375,14 +349,8 @@ func TestDaemonLogs_RejectsNonPositiveLimit(t *testing.T) {
 // -1 is meaningless; reject loudly.
 func TestDaemonLogs_RejectsHookIndexBelowMinusOne(t *testing.T) {
 	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"daemon", "logs", "--hooks", "--hook-index", "-2"})
-	cmd.SetContext(context.Background())
-
-	err := cmd.Execute()
+	_, _, err := executeRootCapture(t, context.Background(),
+		"daemon", "logs", "--hooks", "--hook-index", "-2")
 	require.Error(t, err)
 	var ce *cliError
 	require.True(t, errors.As(err, &ce))

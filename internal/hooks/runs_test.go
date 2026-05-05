@@ -11,44 +11,48 @@ import (
 	"testing"
 )
 
-func TestRunsAppender_OneLinePerRun(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "runs.jsonl")
-	app, err := newRunsAppender(path, 1<<20, 5)
+func newTestRunsAppender(t *testing.T, threshold int64, keep int) (*runsAppender, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	app, err := newRunsAppender(path, threshold, keep)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("newRunsAppender: %v", err)
 	}
-	defer func() { _ = app.Close() }()
-	app.Append(runRecord{Version: 1, EventID: 1, Result: "ok"})
-	app.Append(runRecord{Version: 1, EventID: 2, Result: "ok"})
-	app.Append(runRecord{Version: 1, EventID: 3, Result: "ok"})
+	t.Cleanup(func() { _ = app.Close() })
+	return app, path
+}
+
+func countValidRunRecords(t *testing.T, path string) int {
+	t.Helper()
 	data, err := os.ReadFile(path) //nolint:gosec // G304: test-controlled path under t.TempDir()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	count := 0
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
 		var r runRecord
 		if err := json.Unmarshal(scanner.Bytes(), &r); err != nil {
-			t.Fatalf("line %d not JSON: %v", count, err)
+			t.Fatalf("%s line %d not JSON: %v", path, count, err)
 		}
 		count++
 	}
-	if count != 3 {
+	return count
+}
+
+func TestRunsAppender_OneLinePerRun(t *testing.T) {
+	app, path := newTestRunsAppender(t, 1<<20, 5)
+	app.Append(runRecord{Version: 1, EventID: 1, Result: "ok"})
+	app.Append(runRecord{Version: 1, EventID: 2, Result: "ok"})
+	app.Append(runRecord{Version: 1, EventID: 3, Result: "ok"})
+	if count := countValidRunRecords(t, path); count != 3 {
 		t.Fatalf("got %d lines, want 3", count)
 	}
 }
 
 func TestRunsAppender_RotatesAtThreshold(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "runs.jsonl")
 	// 1KB threshold; each runRecord is well over 100B, so a few writes rotate.
-	app, err := newRunsAppender(path, 1024, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = app.Close() }()
+	app, path := newTestRunsAppender(t, 1024, 3)
 	for i := 0; i < 50; i++ {
 		app.Append(runRecord{Version: 1, EventID: int64(i), Result: "ok",
 			HookCommand: "/usr/local/bin/something/longer"})
@@ -62,13 +66,7 @@ func TestRunsAppender_RotatesAtThreshold(t *testing.T) {
 }
 
 func TestRunsAppender_KeepsAtMostKeepFiles(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "runs.jsonl")
-	app, err := newRunsAppender(path, 256, 2) // keep .1 and .2
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = app.Close() }()
+	app, path := newTestRunsAppender(t, 256, 2) // keep .1 and .2
 	for i := 0; i < 200; i++ {
 		app.Append(runRecord{Version: 1, EventID: int64(i), Result: "ok",
 			HookCommand: "/usr/local/bin/notify"})
@@ -88,18 +86,12 @@ func TestRunsAppender_KeepsAtMostKeepFiles(t *testing.T) {
 }
 
 func TestRunsAppender_ConcurrentAppends_NoInterleave(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "runs.jsonl")
 	// Sized so the workload produces at most `keep` rotations, so every
 	// file the appender created is still on disk for validation. With
 	// each runRecord ~250B serialized, 8 writers * 25 records = ~50KB
 	// of writes against a 16KB threshold yields ~3 rotations < keep=5.
 	const totalRecords = 25
-	app, err := newRunsAppender(path, 16*1024, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = app.Close() }()
+	app, path := newTestRunsAppender(t, 16*1024, 5)
 	var wg sync.WaitGroup
 	for w := 0; w < 8; w++ {
 		wg.Add(1)
@@ -127,20 +119,7 @@ func TestRunsAppender_ConcurrentAppends_NoInterleave(t *testing.T) {
 	// appender wrote was evicted before assertion.
 	totalLines := 0
 	for _, f := range files {
-		data, err := os.ReadFile(f) //nolint:gosec // G304: test-controlled path under t.TempDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			if line == "" {
-				continue
-			}
-			var r runRecord
-			if err := json.Unmarshal([]byte(line), &r); err != nil {
-				t.Fatalf("%s line %d invalid JSON: %v (line=%q)", f, i, err, line)
-			}
-			totalLines++
-		}
+		totalLines += countValidRunRecords(t, f)
 	}
 	if want := 8 * totalRecords; totalLines != want {
 		t.Fatalf("validated %d lines across %d files, want %d (no rotated file should have been evicted)",

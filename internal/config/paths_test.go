@@ -11,13 +11,21 @@ import (
 	"github.com/wesm/kata/internal/config"
 )
 
+// setupTestHome creates an isolated KATA_HOME for the test and returns its
+// path. Using t.TempDir keeps parallel tests from colliding on a shared dir.
+func setupTestHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	return home
+}
+
 func TestKataHome_PrefersEnvOverDefault(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
+	home := setupTestHome(t)
 
 	got, err := config.KataHome()
 	require.NoError(t, err)
-	assert.Equal(t, tmp, got)
+	assert.Equal(t, home, got)
 }
 
 func TestKataHome_DefaultsToUserHomeDotKata(t *testing.T) {
@@ -31,23 +39,21 @@ func TestKataHome_DefaultsToUserHomeDotKata(t *testing.T) {
 }
 
 func TestKataDB_PrefersEnvOverHomeJoin(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "custom.db"))
+	home := setupTestHome(t)
+	t.Setenv("KATA_DB", filepath.Join(home, "custom.db"))
 
 	got, err := config.KataDB()
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(tmp, "custom.db"), got)
+	assert.Equal(t, filepath.Join(home, "custom.db"), got)
 }
 
 func TestKataDB_DefaultsToHomeKataDB(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
+	home := setupTestHome(t)
 	t.Setenv("KATA_DB", "")
 
 	got, err := config.KataDB()
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(tmp, "kata.db"), got)
+	assert.Equal(t, filepath.Join(home, "kata.db"), got)
 }
 
 func TestDBHash_StableTwelveLowerHex(t *testing.T) {
@@ -62,68 +68,55 @@ func TestDBHash_StableTwelveLowerHex(t *testing.T) {
 }
 
 func TestRuntimeDir_NamespaceIsDBHashUnderHome(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_DB", filepath.Join(tmp, "kata.db"))
+	home := setupTestHome(t)
+	t.Setenv("KATA_DB", filepath.Join(home, "kata.db"))
 
 	got, err := config.RuntimeDir()
 	require.NoError(t, err)
-	hash := config.DBHash(filepath.Join(tmp, "kata.db"))
-	assert.Equal(t, filepath.Join(tmp, "runtime", hash), got)
+	hash := config.DBHash(filepath.Join(home, "kata.db"))
+	assert.Equal(t, filepath.Join(home, "runtime", hash), got)
 }
 
+const testDBHash = "abc123def456"
+
 func TestHookConfigPath_HonorsKataHome(t *testing.T) {
-	t.Setenv("KATA_HOME", "/tmp/kata-test")
+	home := setupTestHome(t)
+
 	got, err := config.HookConfigPath()
-	if err != nil {
-		t.Fatalf("HookConfigPath: %v", err)
-	}
-	want := filepath.Join("/tmp/kata-test", "hooks.toml")
-	if got != want {
-		t.Fatalf("HookConfigPath = %q, want %q", got, want)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "hooks.toml"), got)
 }
 
 func TestHookRootDir_NamespacedByDBHash(t *testing.T) {
-	t.Setenv("KATA_HOME", "/tmp/kata-test")
-	got, err := config.HookRootDir("abc123def456")
-	if err != nil {
-		t.Fatalf("HookRootDir: %v", err)
-	}
-	want := filepath.Join("/tmp/kata-test", "hooks", "abc123def456")
-	if got != want {
-		t.Fatalf("HookRootDir = %q, want %q", got, want)
-	}
+	home := setupTestHome(t)
+
+	got, err := config.HookRootDir(testDBHash)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "hooks", testDBHash), got)
 }
 
 func TestHookOutputDir_UnderHookRoot(t *testing.T) {
-	t.Setenv("KATA_HOME", "/tmp/kata-test")
-	got, err := config.HookOutputDir("abc123def456")
-	if err != nil {
-		t.Fatalf("HookOutputDir: %v", err)
-	}
-	if !strings.HasSuffix(got, filepath.Join("hooks", "abc123def456", "output")) {
-		t.Fatalf("HookOutputDir = %q, want suffix hooks/abc123def456/output", got)
-	}
+	setupTestHome(t)
+
+	got, err := config.HookOutputDir(testDBHash)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(got, filepath.Join("hooks", testDBHash, "output")),
+		"HookOutputDir = %q, want suffix hooks/%s/output", got, testDBHash)
 }
 
 func TestHookRunsPath_UnderHookRoot(t *testing.T) {
-	t.Setenv("KATA_HOME", "/tmp/kata-test")
-	got, err := config.HookRunsPath("abc123def456")
-	if err != nil {
-		t.Fatalf("HookRunsPath: %v", err)
-	}
-	want := filepath.Join("/tmp/kata-test", "hooks", "abc123def456", "runs.jsonl")
-	if got != want {
-		t.Fatalf("HookRunsPath = %q, want %q", got, want)
-	}
+	home := setupTestHome(t)
+
+	got, err := config.HookRunsPath(testDBHash)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "hooks", testDBHash, "runs.jsonl"), got)
 }
 
 // TestHookRootDir_RejectsNonHash pins that path helpers refuse to join
 // any string that isn't a 12-char lower-hex DBHash, so a corrupted state
 // file or test typo can't escape <KataHome>/hooks via path traversal.
 func TestHookRootDir_RejectsNonHash(t *testing.T) {
-	t.Setenv("KATA_HOME", "/tmp/kata-test")
+	setupTestHome(t)
 	cases := []string{
 		"",                   // empty
 		"../escape",          // traversal
@@ -135,14 +128,11 @@ func TestHookRootDir_RejectsNonHash(t *testing.T) {
 		string([]byte{0, 1}), // control bytes
 	}
 	for _, c := range cases {
-		if _, err := config.HookRootDir(c); err == nil {
-			t.Errorf("HookRootDir(%q) should error", c)
-		}
-		if _, err := config.HookOutputDir(c); err == nil {
-			t.Errorf("HookOutputDir(%q) should error", c)
-		}
-		if _, err := config.HookRunsPath(c); err == nil {
-			t.Errorf("HookRunsPath(%q) should error", c)
-		}
+		_, err := config.HookRootDir(c)
+		assert.Errorf(t, err, "HookRootDir(%q) should error", c)
+		_, err = config.HookOutputDir(c)
+		assert.Errorf(t, err, "HookOutputDir(%q) should error", c)
+		_, err = config.HookRunsPath(c)
+		assert.Errorf(t, err, "HookRunsPath(%q) should error", c)
 	}
 }

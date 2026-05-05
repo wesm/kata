@@ -10,6 +10,8 @@ import (
 	"github.com/wesm/kata/internal/uid"
 )
 
+var fixedTestTime = time.Date(2026, 5, 4, 1, 2, 3, 456_000_000, time.UTC)
+
 func TestNewReturnsValidULID(t *testing.T) {
 	got, err := uid.New()
 	require.NoError(t, err)
@@ -34,30 +36,28 @@ func TestNewIsUniqueAndMonotonic(t *testing.T) {
 }
 
 func TestFromTimeEncodesTimestampWithRandomEntropy(t *testing.T) {
-	ts := time.Date(2026, 5, 4, 1, 2, 3, 456_000_000, time.UTC)
-	a, err := uid.FromTime(ts)
+	a, err := uid.FromTime(fixedTestTime)
 	require.NoError(t, err)
-	b, err := uid.FromTime(ts)
+	b, err := uid.FromTime(fixedTestTime)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, a, b)
-	assert.Equal(t, ts.UnixMilli(), uid.MustTime(a).UnixMilli())
-	assert.Equal(t, ts.UnixMilli(), uid.MustTime(b).UnixMilli())
+	assert.Equal(t, fixedTestTime.UnixMilli(), uid.MustTime(a).UnixMilli())
+	assert.Equal(t, fixedTestTime.UnixMilli(), uid.MustTime(b).UnixMilli())
 }
 
 func TestFromStableSeedIsDeterministic(t *testing.T) {
-	ts := time.Date(2026, 5, 4, 1, 2, 3, 456_000_000, time.UTC)
-	a, err := uid.FromStableSeed([]byte("issue:7:42"), ts)
+	a, err := uid.FromStableSeed([]byte("issue:7:42"), fixedTestTime)
 	require.NoError(t, err)
-	b, err := uid.FromStableSeed([]byte("issue:7:42"), ts)
+	b, err := uid.FromStableSeed([]byte("issue:7:42"), fixedTestTime)
 	require.NoError(t, err)
-	c, err := uid.FromStableSeed([]byte("issue:7:43"), ts)
+	c, err := uid.FromStableSeed([]byte("issue:7:43"), fixedTestTime)
 	require.NoError(t, err)
 
 	assert.Equal(t, a, b)
 	assert.NotEqual(t, a, c)
 	assert.True(t, uid.Valid(a))
-	assert.Equal(t, ts.UnixMilli(), uid.MustTime(a).UnixMilli())
+	assert.Equal(t, fixedTestTime.UnixMilli(), uid.MustTime(a).UnixMilli())
 }
 
 func TestValidAndValidPrefixRejectBadInput(t *testing.T) {

@@ -116,19 +116,11 @@ func TestDetailRedesign_NoReplacementGlyphs(t *testing.T) {
 // no signal. Owner and parent stay (those absences are informative).
 func TestDetailRedesign_OmitsEmptyLabelsAndChildren(t *testing.T) {
 	defer snapshotInit(t)()
-	iss := Issue{
-		ProjectID: 7, Number: 1, Title: "blank",
-		Status: "open", Author: "anonymous",
-	}
-	dm := detailModel{issue: &iss}
+	dm := simpleDetailModel()
 	got := stripANSI(dm.View(160, 24, viewChrome{
 		scope: scope{projectID: 7, projectName: "kata"},
 	}))
-	for _, deny := range []string{"labels: none", "children: none"} {
-		if strings.Contains(got, deny) {
-			t.Fatalf("expected %q to be omitted:\n%s", deny, got)
-		}
-	}
+	assertStringsLack(t, got, "labels: none", "children: none")
 }
 
 // TestDetailRedesign_DefaultsToFirstNonEmptyActivityTab covers the
@@ -138,17 +130,11 @@ func TestDetailRedesign_OmitsEmptyLabelsAndChildren(t *testing.T) {
 // has data" failure.
 func TestDetailRedesign_DefaultsToFirstNonEmptyActivityTab(t *testing.T) {
 	defer snapshotInit(t)()
-	iss := Issue{ProjectID: 7, Number: 1, Title: "issue", Status: "open"}
-	dm := detailModel{issue: &iss}
+	dm := simpleDetailModel()
 	when := time.Date(2026, 5, 2, 19, 16, 0, 0, time.UTC)
-	dm = dm.applyFetched(commentsFetchedMsg{gen: dm.gen, comments: nil})
-	dm = dm.applyFetched(eventsFetchedMsg{
-		gen: dm.gen,
-		events: []EventLogEntry{
-			{ID: 1, Type: "issue.created", Actor: "anonymous", CreatedAt: when},
-		},
-	})
-	dm = dm.applyFetched(linksFetchedMsg{gen: dm.gen, links: nil})
+	dm = seedActivity(dm, nil, []EventLogEntry{
+		{ID: 1, Type: "issue.created", Actor: "anonymous", CreatedAt: when},
+	}, nil)
 	if dm.activeTab != tabEvents {
 		t.Fatalf("expected activeTab=%v after fetch with empty comments + 1 event, got %v",
 			tabEvents, dm.activeTab)
@@ -165,11 +151,7 @@ func TestDetailRedesign_DefaultsToFirstNonEmptyActivityTab(t *testing.T) {
 // switch that would jump tabs on initial load before fetches complete.
 func TestDetailRedesign_DefaultStaysWhenAllActivityEmpty(t *testing.T) {
 	defer snapshotInit(t)()
-	iss := Issue{ProjectID: 7, Number: 1, Title: "issue", Status: "open"}
-	dm := detailModel{issue: &iss}
-	dm = dm.applyFetched(commentsFetchedMsg{gen: dm.gen, comments: nil})
-	dm = dm.applyFetched(eventsFetchedMsg{gen: dm.gen, events: nil})
-	dm = dm.applyFetched(linksFetchedMsg{gen: dm.gen, links: nil})
+	dm := seedActivity(simpleDetailModel(), nil, nil, nil)
 	if dm.activeTab != tabComments {
 		t.Fatalf("expected activeTab to stay tabComments when all empty, got %v",
 			dm.activeTab)
@@ -182,8 +164,7 @@ func TestDetailRedesign_DefaultStaysWhenAllActivityEmpty(t *testing.T) {
 // user's chosen tab.
 func TestDetailRedesign_ExplicitTabPickStaysSticky(t *testing.T) {
 	defer snapshotInit(t)()
-	iss := Issue{ProjectID: 7, Number: 1, Title: "issue", Status: "open"}
-	dm := detailModel{issue: &iss}
+	dm := simpleDetailModel()
 	// User explicitly cycles to tabLinks before any fetch arrives.
 	dm.activeTab = tabLinks
 	dm.tabExplicit = true
@@ -248,6 +229,24 @@ func TestDetailRedesign_SectionHeadersHaveNoBackgroundSlab(t *testing.T) {
 	if styleHasBackground(detailMetaStyle) {
 		t.Fatal("detailMetaStyle should not paint a background band")
 	}
+}
+
+// simpleDetailModel returns a minimal detailModel for tab/state tests
+// where issue contents are incidental — only the embedded *Issue
+// pointer is required to drive view and tab logic.
+func simpleDetailModel() detailModel {
+	iss := Issue{ProjectID: 7, Number: 1, Title: "issue", Status: "open"}
+	return detailModel{issue: &iss}
+}
+
+// seedActivity applies the three activity-fetch messages in order so
+// tests can drive the post-fetch state in one line. Pass nil for any
+// tab that should remain empty.
+func seedActivity(dm detailModel, comments []CommentEntry, events []EventLogEntry, links []LinkEntry) detailModel {
+	dm = dm.applyFetched(commentsFetchedMsg{gen: dm.gen, comments: comments})
+	dm = dm.applyFetched(eventsFetchedMsg{gen: dm.gen, events: events})
+	dm = dm.applyFetched(linksFetchedMsg{gen: dm.gen, links: links})
+	return dm
 }
 
 func firstNonEmptyLine(s string) string {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -18,10 +17,8 @@ import (
 // initial list fetch should hit the project-scoped endpoint.
 func TestBoot_ResolvesProject(t *testing.T) {
 	var sawList bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/projects/resolve":
+	srv := mockDaemon(t, map[string]http.HandlerFunc{
+		"/api/v1/projects/resolve": func(w http.ResponseWriter, _ *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project": map[string]any{
 					"id":       7,
@@ -30,14 +27,12 @@ func TestBoot_ResolvesProject(t *testing.T) {
 				},
 				"workspace_root": "/tmp/x",
 			})
-		case "/api/v1/projects/7/issues":
+		},
+		"/api/v1/projects/7/issues": func(w http.ResponseWriter, _ *http.Request) {
 			sawList = true
 			_ = json.NewEncoder(w).Encode(map[string]any{"issues": []map[string]any{}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+		},
+	})
 	c := NewClient(srv.URL, srv.Client())
 	bi, err := bootResolveScope(t.Context(), c, "/tmp/x")
 	if err != nil {
@@ -75,20 +70,13 @@ func TestBoot_ResolvesProject(t *testing.T) {
 // TestBoot_UnresolvedWithProjects_LandsViewProjects below, which pins
 // the ≥1 project branch.)
 func TestBoot_EmptyState_NoProjectsRegistered(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/projects/resolve":
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{"code": "project_not_initialized"},
-			})
-		case "/api/v1/projects":
+	srv := mockDaemon(t, map[string]http.HandlerFunc{
+		"/api/v1/projects/resolve": projectNotInitializedHandler,
+		"/api/v1/projects": func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "stats", r.URL.Query().Get("include"))
 			_, _ = w.Write([]byte(`{"projects":[]}`))
-		}
-	}))
-	defer srv.Close()
+		},
+	})
 	c := NewClient(srv.URL, srv.Client())
 	bi, err := bootResolveScope(t.Context(), c, "/tmp/empty")
 	if err != nil {
@@ -106,12 +94,12 @@ func TestBoot_EmptyState_NoProjectsRegistered(t *testing.T) {
 // TestBoot_NonResolveErrorPropagates: a 500 from /resolve should fail Run
 // instead of silently downgrading. Black-screen prevention.
 func TestBoot_NonResolveErrorPropagates(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"status":500,"error":{"code":"internal","message":"db down"}}`))
-	}))
-	defer srv.Close()
+	srv := mockDaemon(t, map[string]http.HandlerFunc{
+		"/api/v1/projects/resolve": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"status":500,"error":{"code":"internal","message":"db down"}}`))
+		},
+	})
 	c := NewClient(srv.URL, srv.Client())
 	if _, err := bootResolveScope(t.Context(), c, "/tmp/x"); err == nil {
 		t.Fatal("expected error to propagate, got nil")
@@ -156,29 +144,16 @@ func TestRun_NonFileStdout_ReturnsNotATTY(t *testing.T) {
 // rule: an unresolved cwd plus ≥1 registered project lands on
 // viewProjects, not viewEmpty. Spec §4.2.
 func TestBoot_UnresolvedWithProjects_LandsViewProjects(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/projects/resolve":
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": 404,
-				"error": map[string]any{
-					"code":    "project_not_initialized",
-					"message": "no kata.toml",
-				},
-			})
-		case "/api/v1/projects":
+	srv := mockDaemon(t, map[string]http.HandlerFunc{
+		"/api/v1/projects/resolve": projectNotInitializedHandler,
+		"/api/v1/projects": func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "stats", r.URL.Query().Get("include"))
 			_, _ = w.Write([]byte(`{"projects":[
 				{"id":7,"identity":"github.com/wesm/kata","name":"kata",
 				 "stats":{"open":3,"closed":1,"last_event_at":"2026-05-04T12:00:00.000Z"}}
 			]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+		},
+	})
 	c := NewClient(srv.URL, srv.Client())
 
 	bi, err := bootResolveScope(t.Context(), c, "/tmp/unbound")

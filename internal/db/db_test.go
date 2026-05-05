@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,10 +15,7 @@ import (
 )
 
 func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "kata.db")
-	d, err := db.Open(context.Background(), path)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
+	d := openTestDB(t)
 
 	var fk int
 	require.NoError(t, d.QueryRow("PRAGMA foreign_keys").Scan(&fk))
@@ -29,21 +25,13 @@ func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
 	require.NoError(t, d.QueryRow("PRAGMA journal_mode").Scan(&mode))
 	assert.Equal(t, "wal", mode)
 
-	var version string
-	require.NoError(t, d.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
-	assert.Equal(t, strconv.Itoa(db.CurrentSchemaVersion()), version)
+	assertSchemaVersion(t, d, db.CurrentSchemaVersion())
 }
 
 func TestOpen_RecordsCurrentSchemaVersion(t *testing.T) {
 	assert.Equal(t, 4, db.CurrentSchemaVersion())
-	path := filepath.Join(t.TempDir(), "kata.db")
-	d, err := db.Open(context.Background(), path)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-
-	var got string
-	require.NoError(t, d.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&got))
-	assert.Equal(t, strconv.Itoa(db.CurrentSchemaVersion()), got)
+	d := openTestDB(t)
+	assertSchemaVersion(t, d, db.CurrentSchemaVersion())
 }
 
 func TestOpen_IsIdempotent(t *testing.T) {
@@ -56,9 +44,7 @@ func TestOpen_IsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d2.Close() })
 
-	var version string
-	require.NoError(t, d2.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version))
-	assert.Equal(t, strconv.Itoa(db.CurrentSchemaVersion()), version)
+	assertSchemaVersion(t, d2, db.CurrentSchemaVersion())
 }
 
 func TestOpen_RejectsOlderSchemaNeedingJSONLCutover(t *testing.T) {
@@ -77,10 +63,7 @@ func TestOpen_RejectsOlderSchemaNeedingJSONLCutover(t *testing.T) {
 }
 
 func TestOpen_TimestampColumnsScanIntoTime(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "kata.db")
-	d, err := db.Open(context.Background(), path)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
+	d := openTestDB(t)
 
 	projectUID, err := uid.New()
 	require.NoError(t, err)

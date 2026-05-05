@@ -7,29 +7,28 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestVersionFromVCSPrefixesShortRevisionWithG(t *testing.T) {
-	origReadBuildInfo := readBuildInfo
-	defer func() { readBuildInfo = origReadBuildInfo }()
+func mockBuildInfo(t *testing.T, revision string, modified bool) {
+	t.Helper()
+	orig := readBuildInfo
+	t.Cleanup(func() { readBuildInfo = orig })
 
-	readBuildInfo = func() (*debug.BuildInfo, bool) {
-		return &debug.BuildInfo{Settings: []debug.BuildSetting{
-			{Key: settingRevision, Value: "1697674abcdef"},
-		}}, true
+	settings := []debug.BuildSetting{
+		{Key: settingRevision, Value: revision},
 	}
+	if modified {
+		settings = append(settings, debug.BuildSetting{Key: settingModified, Value: "true"})
+	}
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: settings}, true
+	}
+}
 
+func TestVersionFromVCSPrefixesShortRevisionWithG(t *testing.T) {
+	mockBuildInfo(t, "1697674abcdef", false)
 	assert.Equal(t, "g1697674", versionFromVCS())
 }
 
 func TestVersionFromVCSPrefixesDirtyRevisionWithG(t *testing.T) {
-	origReadBuildInfo := readBuildInfo
-	defer func() { readBuildInfo = origReadBuildInfo }()
-
-	readBuildInfo = func() (*debug.BuildInfo, bool) {
-		return &debug.BuildInfo{Settings: []debug.BuildSetting{
-			{Key: settingRevision, Value: "1697674abcdef"},
-			{Key: settingModified, Value: "true"},
-		}}, true
-	}
-
+	mockBuildInfo(t, "1697674abcdef", true)
 	assert.Equal(t, "g1697674-dirty", versionFromVCS())
 }

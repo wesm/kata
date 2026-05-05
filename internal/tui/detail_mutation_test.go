@@ -16,6 +16,48 @@ func dmFixture() detailModel {
 	return detailModel{issue: &iss, scopePID: 7, actor: "tester"}
 }
 
+// setupMutationTest builds the (api, dm, km) triplet used by every
+// detail-mutation test: a fakeDetailAPI seeded with a generic
+// successful MutationResp, dmFixture(), and a fresh keymap.
+func setupMutationTest(t *testing.T) (*fakeDetailAPI, detailModel, keymap) {
+	t.Helper()
+	api := &fakeDetailAPI{
+		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
+	}
+	return api, dmFixture(), newKeymap()
+}
+
+// requireInputPrompt evaluates cmd, asserts it returns an
+// openInputMsg of the given kind, and fails the test otherwise.
+func requireInputPrompt(t *testing.T, cmd tea.Cmd, want inputKind) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected openInputCmd, got nil")
+	}
+	msg, ok := cmd().(openInputMsg)
+	if !ok {
+		t.Fatalf("expected openInputMsg, got %T", cmd())
+	}
+	if msg.kind != want {
+		t.Fatalf("openInputMsg.kind = %v, want %v", msg.kind, want)
+	}
+}
+
+// executePromptCommit invokes dispatchPanelPromptCommit, asserts a
+// non-nil cmd, runs it through runDetailCmd, and returns the
+// post-commit model so callers can inspect status/state.
+func executePromptCommit(
+	t *testing.T, dm detailModel, api *fakeDetailAPI, km keymap,
+	kind inputKind, val string,
+) detailModel {
+	t.Helper()
+	_, cmd := dm.dispatchPanelPromptCommit(api, kind, val)
+	if cmd == nil {
+		t.Fatal("expected dispatch cmd")
+	}
+	return runDetailCmd(t, dm, cmd, km, api)
+}
+
 // runDetailCmd executes the tea.Cmd returned by Update once and feeds
 // the resulting message back into Update so the test sees the post-
 // fetch (or post-mutation-result) state. Returns the second-pass model.
@@ -54,11 +96,7 @@ func typeRunes(
 // TestDetail_Close_DispatchesAPI: pressing 'x' calls api.Close exactly
 // once with the fixture's projectID, number, and actor.
 func TestDetail_Close_DispatchesAPI(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42, Status: "closed"}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	out, cmd := dm.Update(runeKey('x'), km, api)
 	if cmd == nil {
@@ -76,11 +114,7 @@ func TestDetail_Close_DispatchesAPI(t *testing.T) {
 
 // TestDetail_Reopen_DispatchesAPI: pressing 'r' calls api.Reopen.
 func TestDetail_Reopen_DispatchesAPI(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42, Status: "open"}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	out, cmd := dm.Update(runeKey('r'), km, api)
 	if cmd == nil {
@@ -101,21 +135,10 @@ func TestDetail_Reopen_DispatchesAPI(t *testing.T) {
 // Model.routeTopLevel intercepts to construct the inputState; dm
 // itself is unchanged after the keypress.
 func TestDetail_AddLabel_OpensPrompt(t *testing.T) {
-	api := &fakeDetailAPI{}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('+'), km, api)
-	if cmd == nil {
-		t.Fatal("expected openInputCmd from +")
-	}
-	msg, ok := cmd().(openInputMsg)
-	if !ok {
-		t.Fatalf("expected openInputMsg, got %T", cmd())
-	}
-	if msg.kind != inputLabelPrompt {
-		t.Fatalf("openInputMsg.kind = %v, want inputLabelPrompt", msg.kind)
-	}
+	requireInputPrompt(t, cmd, inputLabelPrompt)
 	if api.addLabelCalls != 0 {
 		t.Fatalf("addLabelCalls = %d, want 0 (no commit yet)", api.addLabelCalls)
 	}
@@ -127,17 +150,9 @@ func TestDetail_AddLabel_OpensPrompt(t *testing.T) {
 // (Model.commitInput → dm.dispatchPanelPromptCommit), and
 // fakeDetailAPI doesn't fit through Model.api (*Client).
 func TestDetail_AddLabel_CommitCallsAPI(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
-	_, cmd := dm.dispatchPanelPromptCommit(api, inputLabelPrompt, "bug")
-	if cmd == nil {
-		t.Fatal("expected dispatch cmd")
-	}
-	_ = runDetailCmd(t, dm, cmd, km, api)
+	_ = executePromptCommit(t, dm, api, km, inputLabelPrompt, "bug")
 	if api.addLabelCalls != 1 {
 		t.Fatalf("addLabelCalls = %d, want 1", api.addLabelCalls)
 	}
@@ -152,22 +167,11 @@ func TestDetail_AddLabel_CommitCallsAPI(t *testing.T) {
 // TestDetail_RemoveLabel_OpensPromptAndDispatches: '-' opens a
 // remove-label prompt; commit dispatches to api.RemoveLabel.
 func TestDetail_RemoveLabel_OpensPromptAndDispatches(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('-'), km, api)
-	msg, ok := cmd().(openInputMsg)
-	if !ok || msg.kind != inputRemoveLabelPrompt {
-		t.Fatalf("expected openInputMsg{inputRemoveLabelPrompt}, got %v", cmd())
-	}
-	_, dispatchCmd := dm.dispatchPanelPromptCommit(api, inputRemoveLabelPrompt, "bug")
-	if dispatchCmd == nil {
-		t.Fatal("expected dispatch cmd")
-	}
-	_ = runDetailCmd(t, dm, dispatchCmd, km, api)
+	requireInputPrompt(t, cmd, inputRemoveLabelPrompt)
+	_ = executePromptCommit(t, dm, api, km, inputRemoveLabelPrompt, "bug")
 	if api.removeLabelCalls != 1 {
 		t.Fatalf("removeLabelCalls = %d, want 1", api.removeLabelCalls)
 	}
@@ -179,22 +183,11 @@ func TestDetail_RemoveLabel_OpensPromptAndDispatches(t *testing.T) {
 // TestDetail_AssignOwner_OpensPromptAndDispatches: 'a' opens an
 // owner-assign prompt; commit dispatches to api.Assign.
 func TestDetail_AssignOwner_OpensPromptAndDispatches(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('a'), km, api)
-	msg, ok := cmd().(openInputMsg)
-	if !ok || msg.kind != inputOwnerPrompt {
-		t.Fatalf("expected openInputMsg{inputOwnerPrompt}, got %v", cmd())
-	}
-	_, dispatchCmd := dm.dispatchPanelPromptCommit(api, inputOwnerPrompt, "alice")
-	if dispatchCmd == nil {
-		t.Fatal("expected dispatch cmd")
-	}
-	_ = runDetailCmd(t, dm, dispatchCmd, km, api)
+	requireInputPrompt(t, cmd, inputOwnerPrompt)
+	_ = executePromptCommit(t, dm, api, km, inputOwnerPrompt, "alice")
 	if api.assignCalls != 1 {
 		t.Fatalf("assignCalls = %d, want 1", api.assignCalls)
 	}
@@ -206,11 +199,7 @@ func TestDetail_AssignOwner_OpensPromptAndDispatches(t *testing.T) {
 // TestDetail_ClearOwner_DispatchesAPI: 'A' immediately calls
 // api.Assign("", "tester") with no modal.
 func TestDetail_ClearOwner_DispatchesAPI(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	out, cmd := dm.Update(runeKey('A'), km, api)
 	if cmd == nil {
@@ -228,21 +217,11 @@ func TestDetail_ClearOwner_DispatchesAPI(t *testing.T) {
 // TestDetail_AddLink_Parent: 'p' opens an inputParentPrompt; commit
 // of "42" calls api.AddLink({Type:parent, ToNumber:42}).
 func TestDetail_AddLink_Parent(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('p'), km, api)
-	if msg, ok := cmd().(openInputMsg); !ok || msg.kind != inputParentPrompt {
-		t.Fatalf("expected openInputMsg{inputParentPrompt}, got %v", cmd())
-	}
-	_, dispatchCmd := dm.dispatchPanelPromptCommit(api, inputParentPrompt, "42")
-	if dispatchCmd == nil {
-		t.Fatal("expected dispatch cmd")
-	}
-	_ = runDetailCmd(t, dm, dispatchCmd, km, api)
+	requireInputPrompt(t, cmd, inputParentPrompt)
+	_ = executePromptCommit(t, dm, api, km, inputParentPrompt, "42")
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
@@ -254,18 +233,11 @@ func TestDetail_AddLink_Parent(t *testing.T) {
 // TestDetail_AddLink_Blocks: 'b' opens an inputBlockerPrompt;
 // commit of "5" calls api.AddLink({Type:blocks, ToNumber:5}).
 func TestDetail_AddLink_Blocks(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('b'), km, api)
-	if msg, ok := cmd().(openInputMsg); !ok || msg.kind != inputBlockerPrompt {
-		t.Fatalf("expected openInputMsg{inputBlockerPrompt}, got %v", cmd())
-	}
-	_, dispatchCmd := dm.dispatchPanelPromptCommit(api, inputBlockerPrompt, "5")
-	_ = runDetailCmd(t, dm, dispatchCmd, km, api)
+	requireInputPrompt(t, cmd, inputBlockerPrompt)
+	_ = executePromptCommit(t, dm, api, km, inputBlockerPrompt, "5")
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
@@ -282,18 +254,11 @@ func TestDetail_AddLink_Blocks(t *testing.T) {
 // L was rebound to ToggleLayout when the layout-toggle hotkey was
 // added — AddLink moved to lowercase l for ergonomics.)
 func TestDetail_AddLink_Other(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('l'), km, api)
-	if msg, ok := cmd().(openInputMsg); !ok || msg.kind != inputLinkPrompt {
-		t.Fatalf("expected openInputMsg{inputLinkPrompt}, got %v", cmd())
-	}
-	_, dispatchCmd := dm.dispatchPanelPromptCommit(api, inputLinkPrompt, "related 7")
-	_ = runDetailCmd(t, dm, dispatchCmd, km, api)
+	requireInputPrompt(t, cmd, inputLinkPrompt)
+	_ = executePromptCommit(t, dm, api, km, inputLinkPrompt, "related 7")
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
@@ -310,11 +275,7 @@ func TestDetail_AddLink_OtherParseFailure(t *testing.T) {
 	km := newKeymap()
 	dm := dmFixture()
 
-	_, dispatchCmd := dm.dispatchPanelPromptCommit(api, inputLinkPrompt, "noop")
-	if dispatchCmd == nil {
-		t.Fatal("expected synthetic-error cmd")
-	}
-	out := runDetailCmd(t, dm, dispatchCmd, km, api)
+	out := executePromptCommit(t, dm, api, km, inputLinkPrompt, "noop")
 	if api.addLinkCalls != 0 {
 		t.Fatalf("addLinkCalls = %d, want 0 (parse failure path)", api.addLinkCalls)
 	}
@@ -366,12 +327,8 @@ func TestDetail_MutationError_PlainError(t *testing.T) {
 // (issue, comments, events, links). We assert at least the GetIssue
 // call landed by inspecting api.lastGetIssue after running the batch.
 func TestDetail_MutationSuccess_DispatchesRefetch(t *testing.T) {
-	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
-		getIssueResult: &Issue{Number: 42, Status: "closed"},
-	}
-	km := newKeymap()
-	dm := dmFixture()
+	api, dm, km := setupMutationTest(t)
+	api.getIssueResult = &Issue{Number: 42, Status: "closed"}
 
 	out, cmd := dm.Update(runeKey('x'), km, api)
 	if cmd == nil {

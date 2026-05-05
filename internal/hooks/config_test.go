@@ -40,20 +40,55 @@ func TestLoadedConfig_FieldsExist(t *testing.T) {
 	}
 }
 
-func writeTOML(t *testing.T, body string) string {
+// setupKataHome creates a temp directory and points $KATA_HOME at it.
+func setupKataHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	t.Setenv("KATA_HOME", dir)
+	return dir
+}
+
+func writeTOML(t *testing.T, body string) string {
+	t.Helper()
+	dir := setupKataHome(t)
 	path := filepath.Join(dir, "hooks.toml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KATA_HOME", dir)
 	return path
 }
 
+// assertLoadError writes body, calls LoadStartup, and fails the test unless
+// LoadStartup returns a non-nil error. msg describes what should have been
+// rejected.
+func assertLoadError(t *testing.T, body, msg string) {
+	t.Helper()
+	p := writeTOML(t, body)
+	if _, err := LoadStartup(p); err == nil {
+		t.Fatal(msg)
+	}
+}
+
+// assertLoadOK writes body, calls LoadStartup, and fails the test if it
+// returns an error. Returns the parsed LoadedConfig for further assertions.
+func assertLoadOK(t *testing.T, body string) LoadedConfig {
+	t.Helper()
+	p := writeTOML(t, body)
+	lc, err := LoadStartup(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lc
+}
+
+// defaultTestConfig is the baseline Config used as the "current" state in
+// reload tests.
+func defaultTestConfig() Config {
+	return Config{PoolSize: 4, QueueCap: 1000}
+}
+
 func TestLoadStartup_FileMissing_EmptySnapshotDefaults(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("KATA_HOME", dir)
+	dir := setupKataHome(t)
 	lc, err := LoadStartup(filepath.Join(dir, "hooks.toml"))
 	if err != nil {
 		t.Fatalf("missing file should not be an error: %v", err)
@@ -67,10 +102,7 @@ func TestLoadStartup_FileMissing_EmptySnapshotDefaults(t *testing.T) {
 }
 
 func TestLoadStartup_Malformed_ReturnsError(t *testing.T) {
-	p := writeTOML(t, "[[hook]]\nevent = ")
-	if _, err := LoadStartup(p); err == nil {
-		t.Fatal("malformed TOML should error")
-	}
+	assertLoadError(t, "[[hook]]\nevent = ", "malformed TOML should error")
 }
 
 // TestLoadReload_Malformed_ReturnsError pins spec §4.6: SIGHUP / malformed →
@@ -79,17 +111,14 @@ func TestLoadStartup_Malformed_ReturnsError(t *testing.T) {
 // surfaces.
 func TestLoadReload_Malformed_ReturnsError(t *testing.T) {
 	p := writeTOML(t, "[[hook]]\nevent = ")
-	cur := Config{PoolSize: 4, QueueCap: 1000}
-	if _, err := LoadReload(p, cur); err == nil {
+	if _, err := LoadReload(p, defaultTestConfig()); err == nil {
 		t.Fatal("malformed TOML on reload should error")
 	}
 }
 
 func TestLoadReload_Missing_EmptySnapshotNoError(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("KATA_HOME", dir)
-	cur := Config{PoolSize: 4, QueueCap: 1000}
-	lc, err := LoadReload(filepath.Join(dir, "hooks.toml"), cur)
+	dir := setupKataHome(t)
+	lc, err := LoadReload(filepath.Join(dir, "hooks.toml"), defaultTestConfig())
 	if err != nil {
 		t.Fatalf("missing file on reload: %v", err)
 	}
@@ -135,25 +164,19 @@ ploo_size = 8
 }
 
 func TestLoad_EventStarCreated_Error(t *testing.T) {
-	p := writeTOML(t, `
+	assertLoadError(t, `
 [[hook]]
 event   = "*.created"
 command = "/bin/true"
-`)
-	if _, err := LoadStartup(p); err == nil {
-		t.Fatal("event = *.created must be rejected")
-	}
+`, "event = *.created must be rejected")
 }
 
 func TestLoad_EventSyncResetRequired_Error(t *testing.T) {
-	p := writeTOML(t, `
+	assertLoadError(t, `
 [[hook]]
 event   = "sync.reset_required"
 command = "/bin/true"
-`)
-	if _, err := LoadStartup(p); err == nil {
-		t.Fatal("event = sync.reset_required must be rejected")
-	}
+`, "event = sync.reset_required must be rejected")
 }
 
 func TestLoad_CommandPaths(t *testing.T) {
@@ -175,41 +198,33 @@ func TestLoad_CommandPaths(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
-			p := writeTOML(t, "[[hook]]\nevent = \"issue.created\"\ncommand = \""+c.cmd+"\"\n")
-			_, err := LoadStartup(p)
-			if c.ok && err != nil {
-				t.Fatalf("command %q should be ok, got %v", c.cmd, err)
-			}
-			if !c.ok && err == nil {
-				t.Fatalf("command %q should be rejected", c.cmd)
+			body := "[[hook]]\nevent = \"issue.created\"\ncommand = \"" + c.cmd + "\"\n"
+			if c.ok {
+				assertLoadOK(t, body)
+			} else {
+				assertLoadError(t, body, "command "+c.cmd+" should be rejected")
 			}
 		})
 	}
 }
 
 func TestLoad_RelativeWorkingDir_Error(t *testing.T) {
-	p := writeTOML(t, `
+	assertLoadError(t, `
 [[hook]]
 event       = "issue.created"
 command     = "/bin/true"
 working_dir = "relative/path"
-`)
-	if _, err := LoadStartup(p); err == nil {
-		t.Fatal("relative working_dir must be rejected")
-	}
+`, "relative working_dir must be rejected")
 }
 
 func TestLoad_KataPrefixedEnv_Error(t *testing.T) {
-	p := writeTOML(t, `
+	assertLoadError(t, `
 [[hook]]
 event   = "issue.created"
 command = "/bin/true"
 [hook.env]
 KATA_FOO = "x"
-`)
-	if _, err := LoadStartup(p); err == nil {
-		t.Fatal("[hook.env] keys matching ^KATA_ must be rejected")
-	}
+`, "[hook.env] keys matching ^KATA_ must be rejected")
 }
 
 func TestLoad_HookCountCap(t *testing.T) {
@@ -217,14 +232,11 @@ func TestLoad_HookCountCap(t *testing.T) {
 	for i := 0; i < 257; i++ {
 		b.WriteString("[[hook]]\nevent = \"issue.created\"\ncommand = \"/bin/true\"\n")
 	}
-	p := writeTOML(t, b.String())
-	if _, err := LoadStartup(p); err == nil {
-		t.Fatal("257 [[hook]] entries must be rejected (cap 256)")
-	}
+	assertLoadError(t, b.String(), "257 [[hook]] entries must be rejected (cap 256)")
 }
 
 func TestLoad_SizeUnitsBinary(t *testing.T) {
-	p := writeTOML(t, `
+	lc := assertLoadOK(t, `
 [hooks]
 output_disk_cap = "100k"
 runs_log_max    = "1MB"
@@ -232,10 +244,6 @@ runs_log_max    = "1MB"
 event   = "issue.created"
 command = "/bin/true"
 `)
-	lc, err := LoadStartup(p)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if lc.Config.OutputDiskCap != 100*1024 {
 		t.Fatalf("100k = %d, want %d", lc.Config.OutputDiskCap, 100*1024)
 	}
@@ -245,7 +253,7 @@ command = "/bin/true"
 }
 
 func TestLoad_UserEnvSorted(t *testing.T) {
-	p := writeTOML(t, `
+	lc := assertLoadOK(t, `
 [[hook]]
 event   = "issue.created"
 command = "/bin/true"
@@ -254,10 +262,6 @@ ZED   = "z"
 ALPHA = "a"
 MID   = "m"
 `)
-	lc, err := LoadStartup(p)
-	if err != nil {
-		t.Fatal(err)
-	}
 	got := lc.Snapshot.Hooks[0].UserEnv
 	want := []string{"ALPHA=a", "MID=m", "ZED=z"}
 	if !reflect.DeepEqual(got, want) {
@@ -266,8 +270,7 @@ MID   = "m"
 }
 
 func TestLoad_DefaultWorkingDir_IsKataHome(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("KATA_HOME", dir)
+	dir := setupKataHome(t)
 	path := filepath.Join(dir, "hooks.toml")
 	if err := os.WriteFile(path, []byte("[[hook]]\nevent = \"issue.created\"\ncommand = \"/bin/true\"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -295,13 +298,11 @@ func TestLoad_TimeoutBounds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
-			p := writeTOML(t, "[[hook]]\nevent=\"issue.created\"\ncommand=\"/bin/true\"\ntimeout=\""+c.v+"\"\n")
-			_, err := LoadStartup(p)
-			if c.ok && err != nil {
-				t.Fatalf("timeout %q should be ok: %v", c.v, err)
-			}
-			if !c.ok && err == nil {
-				t.Fatalf("timeout %q should be rejected", c.v)
+			body := "[[hook]]\nevent=\"issue.created\"\ncommand=\"/bin/true\"\ntimeout=\"" + c.v + "\"\n"
+			if c.ok {
+				assertLoadOK(t, body)
+			} else {
+				assertLoadError(t, body, "timeout "+c.v+" should be rejected")
 			}
 		})
 	}
@@ -309,10 +310,7 @@ func TestLoad_TimeoutBounds(t *testing.T) {
 
 func TestLoad_PoolSizeBounds(t *testing.T) {
 	for _, body := range []string{"[hooks]\npool_size = 0\n", "[hooks]\npool_size = 17\n"} {
-		p := writeTOML(t, body)
-		if _, err := LoadStartup(p); err == nil {
-			t.Fatalf("body %q should be rejected", body)
-		}
+		assertLoadError(t, body, "body "+body+" should be rejected")
 	}
 }
 
@@ -320,15 +318,11 @@ func TestLoad_PoolSizeBounds(t *testing.T) {
 // output_disk_cap = 100) are valid byte values, alongside unit-suffixed
 // strings like "100MB". Spec §4.2 lists both forms.
 func TestLoad_SizeAcceptsBareInteger(t *testing.T) {
-	p := writeTOML(t, `
+	lc := assertLoadOK(t, `
 [hooks]
 output_disk_cap = 12345
 runs_log_max    = 67890
 `)
-	lc, err := LoadStartup(p)
-	if err != nil {
-		t.Fatalf("bare integer sizes should load: %v", err)
-	}
 	if lc.Config.OutputDiskCap != 12345 {
 		t.Fatalf("output_disk_cap = %d, want 12345", lc.Config.OutputDiskCap)
 	}
@@ -342,27 +336,21 @@ runs_log_max    = 67890
 func TestLoad_SizeOverflow(t *testing.T) {
 	// 9223372036854775807 / 1024 / 1024 ≈ 8796093022207 → adding "mb" puts
 	// us above MaxInt64.
-	p := writeTOML(t, `
+	assertLoadError(t, `
 [hooks]
 output_disk_cap = "9999999999999mb"
-`)
-	if _, err := LoadStartup(p); err == nil {
-		t.Fatal("massively oversize size value should be rejected")
-	}
+`, "massively oversize size value should be rejected")
 }
 
 // TestLoad_AbsolutePathWithSpaces pins that command validation accepts
 // internal whitespace inside an absolute path (Windows "Program Files"
 // or Unix custom dirs), while still rejecting bare names with spaces.
 func TestLoad_AbsolutePathWithSpaces(t *testing.T) {
-	p := writeTOML(t, `
+	assertLoadOK(t, `
 [[hook]]
 event   = "issue.created"
 command = "/Applications/Some App/bin/notify"
 `)
-	if _, err := LoadStartup(p); err != nil {
-		t.Fatalf("absolute path with spaces should be accepted: %v", err)
-	}
 }
 
 // TestMatch_IssueStarOnlyKnown pins that the issue.* matcher rejects

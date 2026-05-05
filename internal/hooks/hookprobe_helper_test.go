@@ -56,58 +56,62 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestHookprobe_StdinEcho(t *testing.T) {
-	bin := hookprobePath(t)
-	cmd := exec.Command(bin, "stdin") //nolint:gosec // bin is the test-built helper
-	cmd.Stdin = strings.NewReader("hello\n")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
+// runHookprobe builds an exec.Cmd for the hookprobe binary, optionally wires
+// stdin and extra env vars, runs it, and returns captured stdout/stderr along
+// with the resolved exit code.
+func runHookprobe(t testing.TB, stdin string, env []string, args ...string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(hookprobePath(t), args...) //nolint:gosec // bin is the test-built helper
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
 	}
-	if out.String() != "hello\n" {
-		t.Fatalf("stdin echo = %q, want %q", out.String(), "hello\n")
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	exit := exitCode(t, cmd.Run())
+	return stdout.String(), stderr.String(), exit
+}
+
+func TestHookprobe_StdinEcho(t *testing.T) {
+	stdout, _, exit := runHookprobe(t, "hello\n", nil, "stdin")
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0", exit)
+	}
+	if stdout != "hello\n" {
+		t.Fatalf("stdin echo = %q, want %q", stdout, "hello\n")
 	}
 }
 
 func TestHookprobe_ExitCode(t *testing.T) {
-	bin := hookprobePath(t)
-	cmd := exec.Command(bin, "exit", "7") //nolint:gosec // bin is the test-built helper
-	err := cmd.Run()
-	exit := exitCode(t, err)
+	_, _, exit := runHookprobe(t, "", nil, "exit", "7")
 	if exit != 7 {
 		t.Fatalf("exit code = %d, want 7", exit)
 	}
 }
 
 func TestHookprobe_EnvKey(t *testing.T) {
-	bin := hookprobePath(t)
-	cmd := exec.Command(bin, "env", "KATA_TEST_X") //nolint:gosec // bin is the test-built helper
-	cmd.Env = append(os.Environ(), "KATA_TEST_X=hello-world")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
+	stdout, _, exit := runHookprobe(t, "", []string{"KATA_TEST_X=hello-world"}, "env", "KATA_TEST_X")
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0", exit)
 	}
-	if strings.TrimSpace(out.String()) != "hello-world" {
-		t.Fatalf("env value = %q, want %q", out.String(), "hello-world")
+	if strings.TrimSpace(stdout) != "hello-world" {
+		t.Fatalf("env value = %q, want %q", stdout, "hello-world")
 	}
 }
 
 func TestHookprobe_Both(t *testing.T) {
-	bin := hookprobePath(t)
-	cmd := exec.Command(bin, "both", "outline", "errline") //nolint:gosec // bin is the test-built helper
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
+	stdout, stderr, exit := runHookprobe(t, "", nil, "both", "outline", "errline")
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0", exit)
 	}
-	if !strings.Contains(stdout.String(), "outline") {
-		t.Fatalf("stdout = %q, want outline", stdout.String())
+	if !strings.Contains(stdout, "outline") {
+		t.Fatalf("stdout = %q, want outline", stdout)
 	}
-	if !strings.Contains(stderr.String(), "errline") {
-		t.Fatalf("stderr = %q, want errline", stderr.String())
+	if !strings.Contains(stderr, "errline") {
+		t.Fatalf("stderr = %q, want errline", stderr)
 	}
 }
 

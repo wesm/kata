@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,14 +10,6 @@ import (
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/uid"
 )
-
-func openTestDB(t *testing.T) *db.DB {
-	t.Helper()
-	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "kata.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-	return d
-}
 
 func TestCreateProject_RoundTrips(t *testing.T) {
 	d := openTestDB(t)
@@ -53,19 +44,16 @@ func TestProjectByIdentity_NotFound(t *testing.T) {
 func TestCreateProject_DuplicateIdentity(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
+	createProject(ctx, t, d, "x", "x")
 	_, err := d.CreateProject(ctx, "x", "x")
-	require.NoError(t, err)
-	_, err = d.CreateProject(ctx, "x", "x")
 	require.Error(t, err)
 }
 
 func TestRenameProject_UpdatesNameOnly(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
-	alias, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/kata", "git", "/tmp/kata")
-	require.NoError(t, err)
+	p := createKataProject(ctx, t, d)
+	alias := attachAlias(ctx, t, d, p.ID, "github.com/wesm/kata", "/tmp/kata")
 
 	renamed, err := d.RenameProject(ctx, p.ID, "Kata Tracker")
 	require.NoError(t, err)
@@ -92,8 +80,7 @@ func TestRenameProject_MissingReturnsErrNotFound(t *testing.T) {
 func TestAttachAlias_AndLookup(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
+	p := createKataProject(ctx, t, d)
 
 	a, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/kata", "git", "/tmp/x")
 	require.NoError(t, err)
@@ -114,10 +101,8 @@ func TestAliasByIdentity_NotFound(t *testing.T) {
 func TestTouchAlias_UpdatesLastSeen(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "x", "x")
-	require.NoError(t, err)
-	a, err := d.AttachAlias(ctx, p.ID, "x", "git", "/tmp/x")
-	require.NoError(t, err)
+	p := createProject(ctx, t, d, "x", "x")
+	a := attachAlias(ctx, t, d, p.ID, "x", "/tmp/x")
 
 	require.NoError(t, d.TouchAlias(ctx, a.ID, "/tmp/y"))
 	got, err := d.AliasByIdentity(ctx, "x")
@@ -142,8 +127,8 @@ func TestListProjects_Empty(t *testing.T) {
 func TestListProjects_OrdersByIDAsc(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	_, _ = d.CreateProject(ctx, "a", "a")
-	_, _ = d.CreateProject(ctx, "b", "b")
+	createProject(ctx, t, d, "a", "a")
+	createProject(ctx, t, d, "b", "b")
 
 	got, err := d.ListProjects(ctx)
 	require.NoError(t, err)
@@ -153,11 +138,9 @@ func TestListProjects_OrdersByIDAsc(t *testing.T) {
 }
 
 func TestProjectAliases_ReturnsAllForProject(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p", "p")
-	_, _ = d.AttachAlias(ctx, p.ID, "alias-a", "git", "/tmp/a")
-	_, _ = d.AttachAlias(ctx, p.ID, "alias-b", "git", "/tmp/b")
+	d, ctx, p := setupTestProject(t)
+	attachAlias(ctx, t, d, p.ID, "alias-a", "/tmp/a")
+	attachAlias(ctx, t, d, p.ID, "alias-b", "/tmp/b")
 
 	got, err := d.ProjectAliases(ctx, p.ID)
 	require.NoError(t, err)
@@ -167,23 +150,13 @@ func TestProjectAliases_ReturnsAllForProject(t *testing.T) {
 func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	kenn, err := d.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
-	require.NoError(t, err)
-	steward, err := d.CreateProject(ctx, "github.com/wesm/steward", "steward")
-	require.NoError(t, err)
-	_, err = d.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", "/tmp/kenn")
-	require.NoError(t, err)
-	_, err = d.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", "/tmp/steward")
-	require.NoError(t, err)
-	parent, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: kenn.ID, Title: "parent", Author: "tester",
-	})
-	require.NoError(t, err)
-	child, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: kenn.ID, Title: "child", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, err = d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
+	kenn := createProject(ctx, t, d, "github.com/wesm/kenn", "kenn")
+	steward := createProject(ctx, t, d, "github.com/wesm/steward", "steward")
+	attachAlias(ctx, t, d, kenn.ID, "github.com/wesm/kenn", "/tmp/kenn")
+	attachAlias(ctx, t, d, steward.ID, "github.com/wesm/steward", "/tmp/steward")
+	parent := makeIssue(t, ctx, d, kenn.ID, "parent", "tester")
+	child := makeIssue(t, ctx, d, kenn.ID, "child", "tester")
+	_, _, err := d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 		ProjectID: kenn.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
 	}, db.LinkEventParams{
 		EventType: "issue.linked", EventIssueID: child.ID, EventIssueNumber: child.Number,
@@ -238,14 +211,11 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 func TestMergeProjects_PreservesSourceIdentityWhenAliasAlreadyTargetsTarget(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	source, err := d.CreateProject(ctx, "github.com/wesm/old", "old")
-	require.NoError(t, err)
-	target, err := d.CreateProject(ctx, "github.com/wesm/new", "new")
-	require.NoError(t, err)
-	_, err = d.AttachAlias(ctx, target.ID, "github.com/wesm/old", "git", "/tmp/old")
-	require.NoError(t, err)
+	source := createProject(ctx, t, d, "github.com/wesm/old", "old")
+	target := createProject(ctx, t, d, "github.com/wesm/new", "new")
+	attachAlias(ctx, t, d, target.ID, "github.com/wesm/old", "/tmp/old")
 
-	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+	_, err := d.MergeProjects(ctx, db.MergeProjectsParams{
 		SourceProjectID: source.ID,
 		TargetProjectID: target.ID,
 	})
@@ -259,16 +229,12 @@ func TestMergeProjects_PreservesSourceIdentityWhenAliasAlreadyTargetsTarget(t *t
 func TestMergeProjects_RejectsSourceIdentityAliasOwnedByDifferentProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	source, err := d.CreateProject(ctx, "github.com/wesm/old", "old")
-	require.NoError(t, err)
-	target, err := d.CreateProject(ctx, "github.com/wesm/new", "new")
-	require.NoError(t, err)
-	other, err := d.CreateProject(ctx, "github.com/wesm/other", "other")
-	require.NoError(t, err)
-	_, err = d.AttachAlias(ctx, other.ID, "github.com/wesm/old", "git", "/tmp/old")
-	require.NoError(t, err)
+	source := createProject(ctx, t, d, "github.com/wesm/old", "old")
+	target := createProject(ctx, t, d, "github.com/wesm/new", "new")
+	other := createProject(ctx, t, d, "github.com/wesm/other", "other")
+	attachAlias(ctx, t, d, other.ID, "github.com/wesm/old", "/tmp/old")
 
-	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+	_, err := d.MergeProjects(ctx, db.MergeProjectsParams{
 		SourceProjectID: source.ID,
 		TargetProjectID: target.ID,
 	})
@@ -286,11 +252,9 @@ func TestMergeProjects_RejectsSourceIdentityAliasOwnedByDifferentProject(t *test
 func TestMergeProjects_RejectsArchivedSource(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	source, err := d.CreateProject(ctx, "github.com/wesm/archived-src", "src")
-	require.NoError(t, err)
-	target, err := d.CreateProject(ctx, "github.com/wesm/live-tgt", "tgt")
-	require.NoError(t, err)
-	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: source.ID, Actor: "tester"})
+	source := createProject(ctx, t, d, "github.com/wesm/archived-src", "src")
+	target := createProject(ctx, t, d, "github.com/wesm/live-tgt", "tgt")
+	_, _, err := d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: source.ID, Actor: "tester"})
 	require.NoError(t, err)
 
 	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
@@ -304,11 +268,9 @@ func TestMergeProjects_RejectsArchivedSource(t *testing.T) {
 func TestMergeProjects_RejectsArchivedTarget(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	source, err := d.CreateProject(ctx, "github.com/wesm/live-src", "src")
-	require.NoError(t, err)
-	target, err := d.CreateProject(ctx, "github.com/wesm/archived-tgt", "tgt")
-	require.NoError(t, err)
-	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: target.ID, Actor: "tester"})
+	source := createProject(ctx, t, d, "github.com/wesm/live-src", "src")
+	target := createProject(ctx, t, d, "github.com/wesm/archived-tgt", "tgt")
+	_, _, err := d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: target.ID, Actor: "tester"})
 	require.NoError(t, err)
 
 	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
@@ -320,20 +282,12 @@ func TestMergeProjects_RejectsArchivedTarget(t *testing.T) {
 func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	source, err := d.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
-	require.NoError(t, err)
-	target, err := d.CreateProject(ctx, "github.com/wesm/steward", "steward")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: source.ID, Title: "source issue", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: target.ID, Title: "target issue", Author: "tester",
-	})
-	require.NoError(t, err)
+	source := createProject(ctx, t, d, "github.com/wesm/kenn", "kenn")
+	target := createProject(ctx, t, d, "github.com/wesm/steward", "steward")
+	makeIssue(t, ctx, d, source.ID, "source issue", "tester")
+	makeIssue(t, ctx, d, target.ID, "target issue", "tester")
 
-	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{
+	_, err := d.MergeProjects(ctx, db.MergeProjectsParams{
 		SourceProjectID: source.ID,
 		TargetProjectID: target.ID,
 	})
@@ -345,10 +299,7 @@ func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
 }
 
 func TestResetIssueCounter_EmptyProjectMovesCounter(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
 	require.NoError(t, d.ResetIssueCounter(ctx, p.ID, 42))
 
@@ -358,13 +309,9 @@ func TestResetIssueCounter_EmptyProjectMovesCounter(t *testing.T) {
 }
 
 func TestResetIssueCounter_ReturnsTypedErrorWithCount(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	for range 3 {
-		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "a"})
-		require.NoError(t, err)
+		makeIssue(t, ctx, d, p.ID, "x", "a")
 	}
 	before, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
@@ -386,10 +333,7 @@ func TestResetIssueCounter_ProjectNotFound(t *testing.T) {
 }
 
 func TestResetIssueCounter_RejectsInvalidTo(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
 	for _, to := range []int64{0, -1, -42} {
 		err := d.ResetIssueCounter(ctx, p.ID, to)
@@ -404,15 +348,11 @@ func TestResetIssueCounter_RejectsInvalidTo(t *testing.T) {
 // Covers the production scenario: project accumulated issues that were all
 // purged, then the user resets the counter to start over at 1.
 func TestResetIssueCounter_SucceedsAfterPurge(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
 	var issueIDs []int64
 	for range 3 {
-		issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "a"})
-		require.NoError(t, err)
+		issue := makeIssue(t, ctx, d, p.ID, "x", "a")
 		issueIDs = append(issueIDs, issue.ID)
 	}
 	for _, id := range issueIDs {
@@ -431,12 +371,8 @@ func TestResetIssueCounter_SucceedsAfterPurge(t *testing.T) {
 // empty-check must be atomic with the write so a concurrent CreateIssue
 // can't slip between them.
 func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "a"})
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
+	makeIssue(t, ctx, d, p.ID, "x", "a")
 
 	before, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
@@ -453,8 +389,7 @@ func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
 func TestBatchProjectStats_EmptyProjectReturnsZeroes(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/empty", "empty")
-	require.NoError(t, err)
+	p := createProject(ctx, t, d, "github.com/wesm/empty", "empty")
 
 	stats, err := d.BatchProjectStats(ctx)
 	require.NoError(t, err)
@@ -473,16 +408,9 @@ func TestBatchProjectStats_EmptyProjectReturnsZeroes(t *testing.T) {
 func TestBatchProjectStats_NoCountInflation(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj", "proj")
-	require.NoError(t, err)
-	for i := 0; i < 3; i++ {
-		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-			ProjectID: p.ID,
-			Title:     "i",
-			Body:      "",
-			Author:    "tester",
-		})
-		require.NoError(t, err)
+	p := createProject(ctx, t, d, "github.com/wesm/proj", "proj")
+	for range 3 {
+		makeIssue(t, ctx, d, p.ID, "i", "tester")
 	}
 	iss, err := d.IssueByNumber(ctx, p.ID, 1)
 	require.NoError(t, err)
@@ -509,17 +437,10 @@ func TestBatchProjectStats_NoCountInflation(t *testing.T) {
 func TestBatchProjectStats_ExcludesSoftDeletedIssues(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj", "proj")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "live", Body: "", Author: "tester",
-	})
-	require.NoError(t, err)
-	soft, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "soft", Body: "", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, _, err = d.SoftDeleteIssue(ctx, soft.ID, "tester")
+	p := createProject(ctx, t, d, "github.com/wesm/proj", "proj")
+	makeIssue(t, ctx, d, p.ID, "live", "tester")
+	soft := makeIssue(t, ctx, d, p.ID, "soft", "tester")
+	_, _, _, err := d.SoftDeleteIssue(ctx, soft.ID, "tester")
 	require.NoError(t, err)
 	// Sanity: the soft-deleted row still exists with deleted_at set, so
 	// the filter is what's actually doing the work.
@@ -537,11 +458,9 @@ func TestBatchProjectStats_ExcludesSoftDeletedIssues(t *testing.T) {
 func TestBatchProjectStats_ExcludesArchivedProjects(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	live, err := d.CreateProject(ctx, "github.com/wesm/live", "live")
-	require.NoError(t, err)
-	arch, err := d.CreateProject(ctx, "github.com/wesm/arch", "arch")
-	require.NoError(t, err)
-	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: arch.ID, Actor: "tester"})
+	live := createProject(ctx, t, d, "github.com/wesm/live", "live")
+	arch := createProject(ctx, t, d, "github.com/wesm/arch", "arch")
+	_, _, err := d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: arch.ID, Actor: "tester"})
 	require.NoError(t, err)
 
 	stats, err := d.BatchProjectStats(ctx)
@@ -556,20 +475,12 @@ func TestBatchProjectStats_ExcludesArchivedProjects(t *testing.T) {
 func TestBatchProjectStats_PartitionsByProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	a, err := d.CreateProject(ctx, "github.com/wesm/a", "a")
-	require.NoError(t, err)
-	b, err := d.CreateProject(ctx, "github.com/wesm/b", "b")
-	require.NoError(t, err)
-	for i := 0; i < 2; i++ {
-		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-			ProjectID: a.ID, Title: "x", Author: "tester",
-		})
-		require.NoError(t, err)
+	a := createProject(ctx, t, d, "github.com/wesm/a", "a")
+	b := createProject(ctx, t, d, "github.com/wesm/b", "b")
+	for range 2 {
+		makeIssue(t, ctx, d, a.ID, "x", "tester")
 	}
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: b.ID, Title: "y", Author: "tester",
-	})
-	require.NoError(t, err)
+	makeIssue(t, ctx, d, b.ID, "y", "tester")
 
 	stats, err := d.BatchProjectStats(ctx)
 	require.NoError(t, err)
@@ -592,23 +503,13 @@ func TestBatchProjectStats_PartitionsByProject(t *testing.T) {
 func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/zoned", "zoned")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "live", Author: "tester",
-	})
-	require.NoError(t, err)
+	p := createProject(ctx, t, d, "github.com/wesm/zoned", "zoned")
+	issue := makeIssue(t, ctx, d, p.ID, "live", "tester")
 	// Stamp an event whose created_at uses the zoned legacy layout. The
 	// MAX(created_at) over events for this project will surface this row,
 	// driving parseSQLiteTimestamp through the new layout slot.
-	eventUID, err := uid.New()
-	require.NoError(t, err)
 	const zonedTS = "2099-05-04 12:34:56.789-07:00"
-	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
-		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester', '{}', ?)`,
-		eventUID, p.ID, p.Identity, issue.ID, issue.Number, zonedTS)
-	require.NoError(t, err)
+	insertLegacyEvent(ctx, t, d, p, issue, "issue.edited", zonedTS)
 
 	stats, err := d.BatchProjectStats(ctx)
 	require.NoError(t, err)
@@ -639,34 +540,18 @@ func TestBatchProjectStats_ParsesZonedLegacyTimestamp(t *testing.T) {
 func TestBatchProjectStats_PicksAbsoluteLatestAcrossMixedFormats(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/mixed-ts", "mixed-ts")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "live", Author: "tester",
-	})
-	require.NoError(t, err)
+	p := createProject(ctx, t, d, "github.com/wesm/mixed-ts", "mixed-ts")
+	issue := makeIssue(t, ctx, d, p.ID, "live", "tester")
 
 	// Earlier-in-absolute-time but lex-LATER (T separator > space).
-	earlierUID, err := uid.New()
-	require.NoError(t, err)
 	const earlierTRFC = "2050-01-01T00:00:00.000Z"
-	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
-		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester', '{}', ?)`,
-		earlierUID, p.ID, p.Identity, issue.ID, issue.Number, earlierTRFC)
-	require.NoError(t, err)
+	insertLegacyEvent(ctx, t, d, p, issue, "issue.edited", earlierTRFC)
 
 	// Later-in-absolute-time but lex-EARLIER (space separator < T).
 	// 2050-01-01 00:00:01-00:00 == 2050-01-01T00:00:01Z which is one
 	// second after earlierTRFC. Lex MAX would pick earlierTRFC.
-	laterUID, err := uid.New()
-	require.NoError(t, err)
 	const laterZoned = "2050-01-01 00:00:01.000-00:00"
-	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
-		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.commented', 'tester', '{}', ?)`,
-		laterUID, p.ID, p.Identity, issue.ID, issue.Number, laterZoned)
-	require.NoError(t, err)
+	insertLegacyEvent(ctx, t, d, p, issue, "issue.commented", laterZoned)
 
 	stats, err := d.BatchProjectStats(ctx)
 	require.NoError(t, err)

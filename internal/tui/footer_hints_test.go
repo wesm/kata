@@ -8,16 +8,10 @@ import (
 )
 
 func TestQueueHelpRows_ConditionalItems(t *testing.T) {
-	parentNum := int64(1)
-	withChildren := Model{list: listModel{issues: []Issue{
-		{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
-		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
-	}}}
-	assertHelpItemPresent(t, flattenHelpRows(withChildren.queueHelpRows()),
-		helpItem{key: "space", desc: "expand"})
-	assertHelpItemPresent(t, flattenHelpRows(withChildren.queueHelpRows()),
-		helpItem{key: "N", desc: "child"})
-	assertHelpItemPresent(t, flattenHelpRows(withChildren.queueHelpRows()),
+	withChildren := Model{list: listModel{issues: hierarchyIssues()}}
+	assertHelpItemsPresent(t, withChildren.queueHelpRows(),
+		helpItem{key: "space", desc: "expand"},
+		helpItem{key: "N", desc: "child"},
 		helpItem{key: "o", desc: "order"})
 
 	leaf := Model{list: listModel{issues: []Issue{
@@ -46,43 +40,33 @@ func TestDetailHelpRows_Contexts(t *testing.T) {
 		detailFocus: focusActivity,
 		activeTab:   tabComments,
 	}}
-	for _, want := range []helpItem{
-		{key: "↑↓", desc: "move"},
-		{key: "↹", desc: "section"},
-		{key: "↵", desc: "open"},
-		{key: "e", desc: "edit"},
-		{key: "c", desc: "comment"},
-		{key: "+", desc: "label"},
-		{key: "a", desc: "owner"},
-		{key: "x", desc: "close"},
-		{key: "r", desc: "reopen"},
-		{key: "p", desc: "parent"},
-		{key: "b", desc: "block"},
-		{key: "l", desc: "link"},
-		{key: "L", desc: "layout"},
-		{key: "esc", desc: "back"},
-		{key: "?", desc: "help"},
-		{key: "q", desc: "quit"},
-	} {
-		assertHelpItemPresent(t, flattenHelpRows(activity.detailHelpRows()), want)
-	}
+	assertHelpItemsPresent(t, activity.detailHelpRows(),
+		helpItem{key: "↑↓", desc: "move"},
+		helpItem{key: "↹", desc: "section"},
+		helpItem{key: "↵", desc: "open"},
+		helpItem{key: "e", desc: "edit"},
+		helpItem{key: "c", desc: "comment"},
+		helpItem{key: "+", desc: "label"},
+		helpItem{key: "a", desc: "owner"},
+		helpItem{key: "x", desc: "close"},
+		helpItem{key: "r", desc: "reopen"},
+		helpItem{key: "p", desc: "parent"},
+		helpItem{key: "b", desc: "block"},
+		helpItem{key: "l", desc: "link"},
+		helpItem{key: "L", desc: "layout"},
+		helpItem{key: "esc", desc: "back"},
+		helpItem{key: "?", desc: "help"},
+		helpItem{key: "q", desc: "quit"})
 
-	children := Model{detail: detailModel{
-		issue:       &Issue{Number: 1, Title: "parent", Status: "open"},
-		children:    []Issue{{Number: 2, Title: "child", Status: "open"}},
-		detailFocus: focusChildren,
-	}}
-	for _, want := range []helpItem{
-		{key: "↑↓", desc: "child"},
-		{key: "↵", desc: "open child"},
-		{key: "N", desc: "child"},
-		{key: "e", desc: "edit"},
-		{key: "x", desc: "close"},
-		{key: "?", desc: "help"},
-		{key: "q", desc: "quit"},
-	} {
-		assertHelpItemPresent(t, flattenHelpRows(children.detailHelpRows()), want)
-	}
+	children := Model{detail: hierarchyDetailModel(focusChildren)}
+	assertHelpItemsPresent(t, children.detailHelpRows(),
+		helpItem{key: "↑↓", desc: "child"},
+		helpItem{key: "↵", desc: "open child"},
+		helpItem{key: "N", desc: "child"},
+		helpItem{key: "e", desc: "edit"},
+		helpItem{key: "x", desc: "close"},
+		helpItem{key: "?", desc: "help"},
+		helpItem{key: "q", desc: "quit"})
 }
 
 func TestHelpRows_InputAndModalContexts(t *testing.T) {
@@ -120,25 +104,15 @@ func TestHelpRows_InputAndModalContexts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := flattenHelpRows(tt.m.helpRows())
-			for _, want := range tt.want {
-				assertHelpItemPresent(t, got, want)
-			}
+			assertHelpItemsPresent(t, tt.m.helpRows(), tt.want...)
 		})
 	}
 }
 
 func TestPersistentHelpRowsPreferArrowNotation(t *testing.T) {
-	parentNum := int64(1)
 	m := Model{
-		list: listModel{issues: []Issue{
-			{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
-			{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
-		}},
-		detail: detailModel{
-			issue:    &Issue{Number: 1, Title: "parent", Status: "open"},
-			children: []Issue{{Number: 2, Title: "child", Status: "open"}},
-		},
+		list:   listModel{issues: hierarchyIssues()},
+		detail: hierarchyDetailModel(focusActivity),
 	}
 	for _, rows := range [][][]helpItem{m.queueHelpRows(), m.detailHelpRows()} {
 		for _, item := range flattenHelpRows(rows) {
@@ -185,11 +159,7 @@ func TestReflowHelpRows_ExtremeNarrowFallsBackToOneItemPerRow(t *testing.T) {
 }
 
 func TestListViewFooterUsesAdaptiveHelpTable(t *testing.T) {
-	parentNum := int64(1)
-	lm := listModel{issues: []Issue{
-		{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
-		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
-	}}
+	lm := listModel{issues: hierarchyIssues()}
 	got := stripANSI(lm.View(80, 14, viewChrome{}))
 	assertLineCount(t, got, 14)
 	assertLinesFitWidth(t, got, 80)
@@ -199,16 +169,31 @@ func TestListViewFooterUsesAdaptiveHelpTable(t *testing.T) {
 }
 
 func TestDetailViewFooterUsesAdaptiveChildrenFocusHints(t *testing.T) {
-	dm := detailModel{
-		issue:       &Issue{Number: 1, Title: "parent", Status: "open"},
-		children:    []Issue{{Number: 2, Title: "child", Status: "open"}},
-		detailFocus: focusChildren,
-	}
+	dm := hierarchyDetailModel(focusChildren)
 	got := stripANSI(dm.View(80, 18, viewChrome{}))
 	assertLineCount(t, got, 18)
 	assertLinesFitWidth(t, got, 80)
 	assertStringContains(t, got, "open child")
 	assertStringContains(t, got, "N child")
+}
+
+// hierarchyIssues returns a parent (Number=1) and one child (Number=2)
+// under ProjectID 7, the standard fixture for tests that need a queue
+// or detail view with a parent/child relationship.
+func hierarchyIssues() []Issue {
+	parentNum := int64(1)
+	return []Issue{
+		{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
+		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
+	}
+}
+
+func hierarchyDetailModel(focus detailFocus) detailModel {
+	return detailModel{
+		issue:       &Issue{Number: 1, Title: "parent", Status: "open"},
+		children:    []Issue{{Number: 2, Title: "child", Status: "open"}},
+		detailFocus: focus,
+	}
 }
 
 func flattenHelpRows(rows [][]helpItem) []helpItem {
@@ -227,6 +212,14 @@ func assertHelpItemPresent(t *testing.T, rows []helpItem, want helpItem) {
 		}
 	}
 	t.Fatalf("help rows missing %+v in %+v", want, rows)
+}
+
+func assertHelpItemsPresent(t *testing.T, rows [][]helpItem, wants ...helpItem) {
+	t.Helper()
+	flat := flattenHelpRows(rows)
+	for _, want := range wants {
+		assertHelpItemPresent(t, flat, want)
+	}
 }
 
 func assertHelpItemAbsent(t *testing.T, rows []helpItem, deny helpItem) {
@@ -258,5 +251,38 @@ func assertLinesFitWidth(t *testing.T, got string, width int) {
 		if w := runewidth.StringWidth(line); w > width {
 			t.Fatalf("line %d width=%d exceeds %d:\n%s", i+1, w, width, got)
 		}
+	}
+}
+
+func assertStringsLack(t *testing.T, got string, denials ...string) {
+	t.Helper()
+	for _, deny := range denials {
+		if strings.Contains(got, deny) {
+			t.Fatalf("output unexpectedly contains %q:\n%s", deny, got)
+		}
+	}
+}
+
+func assertContainsAll(t *testing.T, got string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// assertMaxGap finds the first lines containing topMarker and bottomMarker
+// and fails if the bottom line trails the top by more than maxGap rows.
+func assertMaxGap(t *testing.T, got, topMarker, bottomMarker string, maxGap int) {
+	t.Helper()
+	lines := strings.Split(got, "\n")
+	top := indexOf(lines, topMarker)
+	bottom := indexOf(lines, bottomMarker)
+	if top < 0 || bottom < 0 {
+		t.Fatalf("missing markers (%q=%d, %q=%d):\n%s", topMarker, top, bottomMarker, bottom, got)
+	}
+	if gap := bottom - top; gap > maxGap {
+		t.Fatalf("%q→%q gap=%d exceeds %d:\n%s", topMarker, bottomMarker, gap, maxGap, got)
 	}
 }

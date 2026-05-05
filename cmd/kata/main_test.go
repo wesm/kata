@@ -3,24 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/testenv"
 )
 
 func TestRoot_HelpListsUniversalFlags(t *testing.T) {
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"--help"})
-	require.NoError(t, cmd.Execute())
-	out := buf.String()
+	out := string(executeRoot(t, newRootCmd(), "--help"))
 	assert.Contains(t, out, "--json")
 	assert.Contains(t, out, "--quiet")
 	assert.Contains(t, out, "--as")
@@ -40,13 +33,7 @@ func TestExitCodeFor_PureMapping(t *testing.T) {
 // command before PersistentPreRunE fires.
 func TestRunEEntered_FalseOnUnknownCommand(t *testing.T) {
 	resetRunEEntered(t)
-	cmd := newRootCmd()
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"this-command-does-not-exist"})
-	cmd.SetContext(context.Background())
-
-	err := cmd.Execute()
+	_, _, err := executeRootCapture(t, context.Background(), "this-command-does-not-exist")
 	require.Error(t, err)
 	assert.False(t, runEEntered, "PersistentPreRunE must not fire on unknown command")
 	assert.Equal(t, ExitUsage, exitCodeFor(err, runEEntered))
@@ -56,13 +43,7 @@ func TestRunEEntered_FalseOnUnknownCommand(t *testing.T) {
 // on whoami short-circuits before PersistentPreRunE.
 func TestRunEEntered_FalseOnNoArgsViolation(t *testing.T) {
 	resetRunEEntered(t)
-	cmd := newRootCmd()
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"whoami", "unexpected-positional-arg"})
-	cmd.SetContext(context.Background())
-
-	err := cmd.Execute()
+	_, _, err := executeRootCapture(t, context.Background(), "whoami", "unexpected-positional-arg")
 	require.Error(t, err)
 	assert.False(t, runEEntered, "NoArgs rejection must short-circuit before PersistentPreRunE")
 	assert.Equal(t, ExitUsage, exitCodeFor(err, runEEntered))
@@ -73,13 +54,8 @@ func TestRunEEntered_FalseOnNoArgsViolation(t *testing.T) {
 func TestRunEEntered_TrueOnSuccessfulRunE(t *testing.T) {
 	resetRunEEntered(t)
 	resetFlags(t)
-	cmd := newRootCmd()
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"whoami", "--as", "test-actor"})
-	cmd.SetContext(context.Background())
-
-	require.NoError(t, cmd.Execute())
+	_, _, err := executeRootCapture(t, context.Background(), "whoami", "--as", "test-actor")
+	require.NoError(t, err)
 	assert.True(t, runEEntered, "PersistentPreRunE should fire before whoami's RunE")
 }
 
@@ -88,11 +64,7 @@ func TestRunEEntered_TrueOnSuccessfulRunE(t *testing.T) {
 // link/unlink can't mask each other's missing registration. A help-string
 // substring match for "link" passes if only "unlink" is registered.
 func TestRoot_Plan2VerbsAdvertised(t *testing.T) {
-	cmd := newRootCmd()
-	registered := make(map[string]struct{}, len(cmd.Commands()))
-	for _, sub := range cmd.Commands() {
-		registered[sub.Name()] = struct{}{}
-	}
+	registered := rootSubcommands()
 	for _, verb := range []string{
 		"link", "unlink", "parent", "unparent",
 		"block", "unblock", "relate", "unrelate",
@@ -109,11 +81,7 @@ func TestRoot_Plan2VerbsAdvertised(t *testing.T) {
 // search-and-destroy verbs Plan 3 introduces. A future regression that
 // drops a `subs` line will surface here, before it bites a user at the help.
 func TestRoot_Plan3VerbsAdvertised(t *testing.T) {
-	cmd := newRootCmd()
-	registered := make(map[string]struct{}, len(cmd.Commands()))
-	for _, sub := range cmd.Commands() {
-		registered[sub.Name()] = struct{}{}
-	}
+	registered := rootSubcommands()
 	for _, verb := range []string{"delete", "restore", "purge", "search"} {
 		_, ok := registered[verb]
 		assert.Truef(t, ok, "root must register subcommand %q", verb)
@@ -121,11 +89,7 @@ func TestRoot_Plan3VerbsAdvertised(t *testing.T) {
 }
 
 func TestRoot_QuickstartAdvertised(t *testing.T) {
-	cmd := newRootCmd()
-	registered := make(map[string]*cobra.Command, len(cmd.Commands()))
-	for _, sub := range cmd.Commands() {
-		registered[sub.Name()] = sub
-	}
+	registered := rootSubcommands()
 	quickstart, ok := registered["quickstart"]
 	require.True(t, ok, "root must register quickstart")
 	assert.Contains(t, quickstart.Aliases, "agent-instructions")
@@ -154,16 +118,7 @@ func TestEmitError_JSONMode_ProducesParseableEnvelope(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	emitError(&buf, cli, true, true)
-	var got struct {
-		Error struct {
-			Kind     string `json:"kind"`
-			Code     string `json:"code"`
-			Message  string `json:"message"`
-			ExitCode int    `json:"exit_code"`
-		} `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got),
-		"--json error must be parseable JSON; got %q", buf.String())
+	got := parseErrorEnvelope(t, buf.Bytes())
 	assert.Equal(t, "not_found", got.Error.Kind)
 	assert.Equal(t, "issue_not_found", got.Error.Code)
 	assert.Equal(t, "issue not found", got.Error.Message)
@@ -191,14 +146,7 @@ func TestEmitError_NonCliError_SynthesizesEnvelope(t *testing.T) {
 	plain := errors.New("connection refused")
 	var buf bytes.Buffer
 	emitError(&buf, plain, true, true) // runEReached=true → ExitInternal/internal
-	var got struct {
-		Error struct {
-			Kind     string `json:"kind"`
-			Message  string `json:"message"`
-			ExitCode int    `json:"exit_code"`
-		} `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	got := parseErrorEnvelope(t, buf.Bytes())
 	assert.Equal(t, "internal", got.Error.Kind)
 	assert.Equal(t, "connection refused", got.Error.Message)
 	assert.Equal(t, ExitInternal, got.Error.ExitCode)
@@ -283,24 +231,15 @@ func TestHealth_HonorsKataServer(t *testing.T) {
 // printing Owner; unowned issues render as "(unowned)" so the cell
 // is never empty.
 func TestList_ShowsOwnerInParens(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
-	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	env, dir, pid := setupCLIWorkspace(t)
 	body := []byte(`{"actor":"x","title":"T","owner":"alice"}`)
 	resp, err := http.Post(env.URL+"/api/v1/projects/"+itoa(pid)+"/issues",
-		"application/json", bytes.NewReader(body)) //nolint:gosec,noctx
+		"application/json", bytes.NewReader(body)) //nolint:gosec,noctx // test-only loopback
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.StatusCode)
 	_ = resp.Body.Close()
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"--workspace", dir, "list"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
-	out := buf.String()
+	out := runCLI(t, env, dir, "list")
 	assert.Contains(t, out, "(alice)", "list must show owner in parens")
 	assert.NotContains(t, out, "(x)",
 		"list must not show author in parens (would disagree with ready)")
@@ -317,20 +256,9 @@ func TestNegativePositional_ProducesUsefulError(t *testing.T) {
 		{"delete", "-1"},
 		{"link", "-1", "blocks", "3"},
 	} {
-		resetFlags(t)
-		cmd := newRootCmd()
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-		cmd.SetArgs(args)
-		cmd.SetContext(context.Background())
-
-		err := cmd.Execute()
+		_, err := runCmdOutput(t, nil, args...)
 		require.Errorf(t, err, "args %v should error", args)
-		var ce *cliError
-		require.True(t, errors.As(err, &ce),
-			"expected *cliError for args %v, got %T: %v", args, err, err)
-		assert.Equal(t, ExitUsage, ce.ExitCode)
+		ce := requireCLIError(t, err, ExitUsage)
 		assert.Equal(t, kindUsage, ce.Kind)
 		assert.Contains(t, ce.Message, "--",
 			"useful error must mention the `--` separator workaround")

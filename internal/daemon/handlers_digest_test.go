@@ -1,9 +1,6 @@
 package daemon_test
 
 import (
-	"bytes"
-	"encoding/json"
-	"net/http"
 	"net/url"
 	"strconv"
 	"testing"
@@ -13,6 +10,89 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/testenv"
 )
+
+// digestActor is the per-actor slice in the digest response: totals plus a
+// per-issue action sequence.
+type digestActor struct {
+	Actor  string `json:"actor"`
+	Totals struct {
+		Created   int `json:"created"`
+		Closed    int `json:"closed"`
+		Commented int `json:"commented"`
+		Labeled   int `json:"labeled"`
+		Assigned  int `json:"assigned"`
+		Linked    int `json:"linked"`
+		Unblocked int `json:"unblocked"`
+	} `json:"totals"`
+	Issues []struct {
+		IssueNumber int64    `json:"issue_number"`
+		Actions     []string `json:"actions"`
+	} `json:"issues"`
+}
+
+// digestBody is the decoded shape used by the digest tests. Fields are a
+// superset of what each individual test asserts; missing fields decode as
+// zero values.
+type digestBody struct {
+	EventCount int   `json:"event_count"`
+	ProjectID  int64 `json:"project_id"`
+	Totals     struct {
+		Created   int `json:"created"`
+		Closed    int `json:"closed"`
+		Commented int `json:"commented"`
+		Labeled   int `json:"labeled"`
+		Assigned  int `json:"assigned"`
+		Linked    int `json:"linked"`
+		Unlinked  int `json:"unlinked"`
+		Unblocked int `json:"unblocked"`
+	} `json:"totals"`
+	Actors []digestActor `json:"actors"`
+}
+
+// actionsFor returns the action sequence the digest recorded for actor on
+// issueNumber, or nil when no entry exists for that pair.
+func (d *digestBody) actionsFor(actor string, issueNumber int64) []string {
+	for _, a := range d.Actors {
+		if a.Actor != actor {
+			continue
+		}
+		for _, iss := range a.Issues {
+			if iss.IssueNumber == issueNumber {
+				return iss.Actions
+			}
+		}
+	}
+	return nil
+}
+
+// projectDigestPath builds the per-project digest URL with optional
+// since/until/actor filters. Empty values are omitted.
+func projectDigestPath(projectID int64, since, until, actor string) string {
+	q := url.Values{}
+	if since != "" {
+		q.Set("since", since)
+	}
+	if until != "" {
+		q.Set("until", until)
+	}
+	if actor != "" {
+		q.Set("actor", actor)
+	}
+	path := projectPath(projectID) + "/digest"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return path
+}
+
+// fetchDigest GETs the per-project digest with the supplied since/until window
+// and returns the decoded body.
+func fetchDigest(t *testing.T, env *testenv.Env, projectID int64, since, until string) digestBody {
+	t.Helper()
+	var out digestBody
+	envGetJSON(t, env, projectDigestPath(projectID, since, until, ""), &out)
+	return out
+}
 
 // TestDigest_AggregatesByActor exercises the end-to-end digest path: two
 // actors create, comment, label, close, and explicitly unblock issues; the
@@ -36,44 +116,7 @@ func TestDigest_AggregatesByActor(t *testing.T) {
 	postLinkAs(t, env, pid, a, "bob", "blocks", b) // a blocks b
 	deleteLinkBlocksAs(t, env, pid, a, "bob", b)   // bob unblocks b
 
-	since := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
-	until := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
-	digestURL := env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) +
-		"/digest?since=" + url.QueryEscape(since) + "&until=" + url.QueryEscape(until)
-
-	resp, err := env.HTTP.Get(digestURL)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-
-	var body struct {
-		EventCount int   `json:"event_count"`
-		ProjectID  int64 `json:"project_id"`
-		Totals     struct {
-			Created   int `json:"created"`
-			Closed    int `json:"closed"`
-			Commented int `json:"commented"`
-			Labeled   int `json:"labeled"`
-			Linked    int `json:"linked"`
-			Unlinked  int `json:"unlinked"`
-			Unblocked int `json:"unblocked"`
-		} `json:"totals"`
-		Actors []struct {
-			Actor  string `json:"actor"`
-			Totals struct {
-				Created   int `json:"created"`
-				Closed    int `json:"closed"`
-				Commented int `json:"commented"`
-				Unblocked int `json:"unblocked"`
-			} `json:"totals"`
-			Issues []struct {
-				IssueNumber int64    `json:"issue_number"`
-				Actions     []string `json:"actions"`
-			} `json:"issues"`
-		} `json:"actors"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	body := fetchDigest(t, env, pid, rfc3339Offset(-time.Hour), rfc3339Offset(time.Hour))
 
 	assert.Equal(t, pid, body.ProjectID)
 	assert.GreaterOrEqual(t, body.EventCount, 9)
@@ -96,25 +139,13 @@ func TestDigest_AggregatesByActor(t *testing.T) {
 
 	// Alice's first issue should show created → commented:2 → closed:done in
 	// that canonical order.
-	var aliceFirst []string
-	for _, iss := range body.Actors[0].Issues {
-		if iss.IssueNumber == a {
-			aliceFirst = iss.Actions
-			break
-		}
-	}
+	aliceFirst := body.actionsFor("alice", a)
 	require.NotNil(t, aliceFirst)
 	assert.Equal(t, []string{"created", "commented:2", "closed:done"}, aliceFirst)
 
 	// Bob's actions on issue b should include the labeled token and the
 	// unblocks-credit referencing issue b.
-	var bobOnB []string
-	for _, iss := range body.Actors[1].Issues {
-		if iss.IssueNumber == b {
-			bobOnB = iss.Actions
-			break
-		}
-	}
+	bobOnB := body.actionsFor("bob", b)
 	require.NotNil(t, bobOnB)
 	assert.Contains(t, bobOnB, "labeled:bug")
 }
@@ -126,20 +157,8 @@ func TestDigest_ActorFilter(t *testing.T) {
 	_ = createIssueAs(t, env, pid, "alice", "x")
 	_ = createIssueAs(t, env, pid, "bob", "y")
 
-	since := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) +
-		"/digest?since=" + url.QueryEscape(since) + "&actor=alice")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-
-	var body struct {
-		Actors []struct {
-			Actor string `json:"actor"`
-		} `json:"actors"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	var body digestBody
+	envGetJSON(t, env, projectDigestPath(pid, rfc3339Offset(-time.Hour), "", "alice"), &body)
 	require.Len(t, body.Actors, 1)
 	assert.Equal(t, "alice", body.Actors[0].Actor)
 }
@@ -158,7 +177,12 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 	target := createIssueAs(t, env, pid, "alice", "target")
 
 	// Alice creates a richer issue with a label, an owner, and a blocks link.
-	body, _ := json.Marshal(map[string]any{
+	var created struct {
+		Issue struct {
+			Number int64 `json:"number"`
+		} `json:"issue"`
+	}
+	envPostJSON(t, env, projectPath(pid)+"/issues", map[string]any{
 		"actor":  "alice",
 		"title":  "rich",
 		"labels": []string{"bug"},
@@ -166,52 +190,10 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 		"links": []map[string]any{
 			{"type": "blocks", "to_number": target},
 		},
-	})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-	var created struct {
-		Issue struct {
-			Number int64 `json:"number"`
-		} `json:"issue"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	}, &created)
 	rich := created.Issue.Number
 
-	since := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
-	until := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
-	dresp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) +
-		"/digest?since=" + url.QueryEscape(since) + "&until=" + url.QueryEscape(until))
-	require.NoError(t, err)
-	defer func() { _ = dresp.Body.Close() }()
-	require.Equal(t, 200, dresp.StatusCode)
-
-	var digest struct {
-		Totals struct {
-			Created  int `json:"created"`
-			Labeled  int `json:"labeled"`
-			Assigned int `json:"assigned"`
-			Linked   int `json:"linked"`
-		} `json:"totals"`
-		Actors []struct {
-			Actor  string `json:"actor"`
-			Totals struct {
-				Created  int `json:"created"`
-				Labeled  int `json:"labeled"`
-				Assigned int `json:"assigned"`
-				Linked   int `json:"linked"`
-			} `json:"totals"`
-			Issues []struct {
-				IssueNumber int64    `json:"issue_number"`
-				Actions     []string `json:"actions"`
-			} `json:"issues"`
-		} `json:"actors"`
-	}
-	require.NoError(t, json.NewDecoder(dresp.Body).Decode(&digest))
+	digest := fetchDigest(t, env, pid, rfc3339Offset(-time.Hour), rfc3339Offset(time.Hour))
 
 	// Two issues created total. The richer one bumps labeled / assigned /
 	// linked even though no separate events were emitted for them.
@@ -226,13 +208,7 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 	assert.Equal(t, 1, digest.Actors[0].Totals.Assigned)
 	assert.Equal(t, 1, digest.Actors[0].Totals.Linked)
 
-	var actions []string
-	for _, iss := range digest.Actors[0].Issues {
-		if iss.IssueNumber == rich {
-			actions = iss.Actions
-			break
-		}
-	}
+	actions := digest.actionsFor("alice", rich)
 	require.NotNil(t, actions, "rich issue not present in alice's per-issue digest")
 	assert.Contains(t, actions, "created")
 	assert.Contains(t, actions, "labeled:bug")
@@ -244,10 +220,7 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 func TestDigest_RejectsBadSince(t *testing.T) {
 	env := testenv.New(t)
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
-	resp, err := env.HTTP.Get(env.URL +
-		"/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/digest?since=not-a-time")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	resp := envDoJSON(t, env, "GET", projectPath(pid)+"/digest?since=not-a-time", nil, nil)
 	assert.Equal(t, 400, resp.StatusCode)
 }
 
@@ -257,135 +230,13 @@ func TestDigest_GlobalEndpoint(t *testing.T) {
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
 	_ = createIssueAs(t, env, pid, "alice", "x")
 
-	since := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/digest?since=" + url.QueryEscape(since))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-
 	var body struct {
 		ProjectID int64 `json:"project_id"`
 		Totals    struct {
 			Created int `json:"created"`
 		} `json:"totals"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	envGetJSON(t, env, "/api/v1/digest?since="+url.QueryEscape(rfc3339Offset(-time.Hour)), &body)
 	assert.Equal(t, int64(0), body.ProjectID, "global digest reports project_id=0")
 	assert.GreaterOrEqual(t, body.Totals.Created, 1)
-}
-
-// --- helpers below are local to digest tests; they parallel the ones in
-// handlers_links_test.go but accept an explicit actor so cross-actor scenarios
-// can be set up. ---
-
-func createIssueAs(t *testing.T, env *testenv.Env, pid int64, actor, title string) int64 {
-	t.Helper()
-	body, _ := json.Marshal(map[string]string{"actor": actor, "title": title})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-	var out struct {
-		Issue struct {
-			Number int64 `json:"number"`
-		} `json:"issue"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
-	return out.Issue.Number
-}
-
-func postCommentAs(t *testing.T, env *testenv.Env, pid, num int64, actor, txt string) {
-	t.Helper()
-	body, _ := json.Marshal(map[string]string{"actor": actor, "body": txt})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
-			"/issues/"+strconv.FormatInt(num, 10)+"/comments",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-}
-
-func closeIssueAs(t *testing.T, env *testenv.Env, pid, num int64, actor, reason string) {
-	t.Helper()
-	body, _ := json.Marshal(map[string]string{"actor": actor, "reason": reason})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
-			"/issues/"+strconv.FormatInt(num, 10)+"/actions/close",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-}
-
-func postLabelAs(t *testing.T, env *testenv.Env, pid, num int64, actor, label string) {
-	t.Helper()
-	body, _ := json.Marshal(map[string]string{"actor": actor, "label": label})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
-			"/issues/"+strconv.FormatInt(num, 10)+"/labels",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-}
-
-func postLinkAs(t *testing.T, env *testenv.Env, pid, fromNum int64, actor, linkType string, toNum int64) int64 {
-	t.Helper()
-	body, _ := json.Marshal(map[string]any{
-		"actor": actor, "type": linkType, "to_number": toNum,
-	})
-	resp, err := env.HTTP.Post(
-		env.URL+"/api/v1/projects/"+strconv.FormatInt(pid, 10)+
-			"/issues/"+strconv.FormatInt(fromNum, 10)+"/links",
-		"application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equalf(t, 200, resp.StatusCode, "postLinkAs status")
-	var out struct {
-		Link struct {
-			ID int64 `json:"id"`
-		} `json:"link"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
-	return out.Link.ID
-}
-
-// deleteLinkBlocksAs removes a blocks link by re-creating it just to read its
-// id, then DELETEs it. The DELETE attribution is to `actor`, which is the
-// person who gets credit for the unblock.
-func deleteLinkBlocksAs(t *testing.T, env *testenv.Env, pid, fromNum int64, actor string, toNum int64) {
-	t.Helper()
-	// Look up the existing link id by reading the blocker's links list. The
-	// daemon doesn't expose a /links GET, so we rely on the issue show
-	// payload, which includes Links with their ids.
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/" +
-		strconv.FormatInt(pid, 10) + "/issues/" + strconv.FormatInt(fromNum, 10))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	var view struct {
-		Links []struct {
-			ID       int64  `json:"id"`
-			Type     string `json:"type"`
-			ToNumber int64  `json:"to_number"`
-		} `json:"links"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&view))
-	var linkID int64
-	for _, l := range view.Links {
-		if l.Type == "blocks" && l.ToNumber == toNum {
-			linkID = l.ID
-			break
-		}
-	}
-	require.NotZero(t, linkID, "no blocks link to %d found on issue %d", toNum, fromNum)
-
-	delURL := env.URL + "/api/v1/projects/" + strconv.FormatInt(pid, 10) +
-		"/issues/" + strconv.FormatInt(fromNum, 10) + "/links/" +
-		strconv.FormatInt(linkID, 10) + "?actor=" + url.QueryEscape(actor)
-	req, err := http.NewRequest(http.MethodDelete, delURL, nil)
-	require.NoError(t, err)
-	dresp, err := env.HTTP.Do(req)
-	require.NoError(t, err)
-	require.NoError(t, dresp.Body.Close())
-	require.Equal(t, 200, dresp.StatusCode)
 }

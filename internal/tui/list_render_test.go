@@ -13,7 +13,7 @@ import (
 // rendered alphabetically regardless of caller order. Sort is in-render
 // so callers don't have to pre-sort the daemon's response.
 func TestRenderLabelChips_AlphabeticalSort(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	got := renderLabelChips([]string{"prio-1", "bug", "needs-design"}, 80)
 	bug := strings.Index(got, "[bug]")
 	needs := strings.Index(got, "[needs-design]")
@@ -31,7 +31,7 @@ func TestRenderLabelChips_AlphabeticalSort(t *testing.T) {
 // so not every chip fits; the renderer must drop the tail and append
 // `+N` indicating the count of dropped labels.
 func TestRenderLabelChips_PacksUntilOverflow(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	got := renderLabelChips([]string{"a", "b", "c", "d", "e"}, 12)
 	if !strings.Contains(got, "+") {
 		t.Fatalf("expected +N overflow marker in %q", got)
@@ -46,7 +46,7 @@ func TestRenderLabelChips_PacksUntilOverflow(t *testing.T) {
 // formed correctly (literal +, then a base-10 integer >= 1) when the
 // chip pack drops chips.
 func TestRenderLabelChips_PlusNOverflowFormat(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	got := renderLabelChips([]string{"alpha", "beta", "gamma", "delta"}, 14)
 	idx := strings.Index(got, "+")
 	if idx < 0 {
@@ -63,7 +63,7 @@ func TestRenderLabelChips_PlusNOverflowFormat(t *testing.T) {
 // degraded form when even one chip won't fit. The fallback keeps the
 // header informative on tiny terminals.
 func TestRenderLabelChips_UltraNarrowFallback(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	got := renderLabelChips([]string{"bug", "prio-1"}, 5)
 	if !strings.Contains(got, "[2 labels]") {
 		t.Fatalf("expected ultra-narrow fallback [2 labels] in %q", got)
@@ -73,7 +73,7 @@ func TestRenderLabelChips_UltraNarrowFallback(t *testing.T) {
 // TestRenderLabelChips_EmptyLabels verifies the empty-labels placeholder
 // renders so the header layout doesn't shift when labels are absent.
 func TestRenderLabelChips_EmptyLabels(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	got := renderLabelChips(nil, 80)
 	if !strings.Contains(got, "(no labels)") {
 		t.Fatalf("expected (no labels) placeholder in %q", got)
@@ -95,17 +95,12 @@ func TestRenderLabelChips_EmptyLabels(t *testing.T) {
 // of the sanitized "カタ" (4 cells), or measured byte length instead
 // of cell width, the math would be wrong and the test would fail.
 func TestRenderLabelChips_WidthMeasureUsesRunewidth(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	got := renderLabelChips([]string{"\x1b[31mカタ", "bug"}, 11)
 	if strings.Contains(got, "\x1b") {
 		t.Fatalf("ESC survived width-measure path: %q", got)
 	}
-	if !strings.Contains(got, "[bug]") {
-		t.Fatalf("expected [bug] chip in %q", got)
-	}
-	if !strings.Contains(got, "+1") {
-		t.Fatalf("expected +1 overflow in %q", got)
-	}
+	assertContainsAll(t, got, "[bug]", "+1")
 	if w := runewidth.StringWidth(got); w > 11 {
 		t.Fatalf("rendered width %d exceeds budget 11: %q", w, got)
 	}
@@ -121,7 +116,7 @@ func TestRenderLabelChips_WidthMeasureUsesRunewidth(t *testing.T) {
 // escapes and a U+202E RIGHT-TO-LEFT OVERRIDE must not survive into
 // the rendered output.
 func TestRenderLabelChips_RenderedTextSanitized(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	rlo := rune(0x202E)
 	hostile := "ok" + string(rlo) + "pad"
 	got := renderLabelChips([]string{"bug\x1b[2J", hostile}, 80)
@@ -144,7 +139,7 @@ func TestRenderLabelChips_RenderedTextSanitized(t *testing.T) {
 // `Project: —` rather than the empty `Project: ` form, preserving
 // the "left side never blank" invariant.
 func TestTitleBarLeft_SanitizeEmptyFallsBackToPlaceholder(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	// String of pure control runes — sanitizeForDisplay strips them.
 	got := titleBarLeft(scope{projectName: "\x01\x02\x07"})
 	if got != "Project: —" {
@@ -179,7 +174,7 @@ func TestTitleBarLeft_SanitizeEmptyFallsBackToPlaceholder(t *testing.T) {
 // of this test used budget=30 where both reserves happened to pack
 // the same number of chips, so it would not catch the regression.
 func TestRenderLabelChips_LargeOverflowReservesActualWidth(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	labels := make([]string, 150)
 	for i := range labels {
 		labels[i] = "bug"
@@ -204,7 +199,7 @@ func TestRenderLabelChips_LargeOverflowReservesActualWidth(t *testing.T) {
 // but the TUI is the wrong layer to depend on that; this test guards
 // the renderer-level invariant directly.
 func TestRenderLabelChips_NewlineInLabelDoesNotBreakRow(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	got := renderLabelChips([]string{"bug\nfoo"}, 80)
 	if strings.ContainsRune(got, '\n') {
 		t.Fatalf("literal newline survived in chip strip: %q", got)
@@ -226,7 +221,7 @@ func TestDisclosureGlyph(t *testing.T) {
 		t.Fatalf("expanded glyph = %q, want ▾", got)
 	}
 
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	if got := disclosureGlyph(true, false); got != "+" {
 		t.Fatalf("no-color collapsed glyph = %q, want +", got)
 	}
@@ -236,7 +231,7 @@ func TestDisclosureGlyph(t *testing.T) {
 }
 
 func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	parentNum := int64(1)
 	lm := listModel{issues: []Issue{
 		{
@@ -246,29 +241,17 @@ func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) 
 		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
 	}}
 
-	collapsed := stripANSI(lm.renderBody(100, 6, viewChrome{}))
-	if !strings.Contains(collapsed, "+") {
-		t.Fatalf("collapsed parent missing disclosure glyph:\n%s", collapsed)
-	}
-	if !strings.Contains(collapsed, "1/2") {
-		t.Fatalf("collapsed parent missing child count:\n%s", collapsed)
-	}
-	if strings.Contains(collapsed, "child") {
-		t.Fatalf("collapsed tree rendered child row:\n%s", collapsed)
-	}
+	collapsed := renderBodyNoColor(lm, 100, 6, viewChrome{})
+	assertContainsAll(t, collapsed, "+", "1/2")
+	assertStringsLack(t, collapsed, "child")
 
 	lm.expanded = expansionSet{{projectID: 7, number: parentNum}: true}
-	expanded := stripANSI(lm.renderBody(100, 6, viewChrome{}))
-	if !strings.Contains(expanded, "-") {
-		t.Fatalf("expanded parent missing disclosure glyph:\n%s", expanded)
-	}
-	if !strings.Contains(expanded, "child") {
-		t.Fatalf("expanded tree missing child row:\n%s", expanded)
-	}
+	expanded := renderBodyNoColor(lm, 100, 6, viewChrome{})
+	assertContainsAll(t, expanded, "-", "child")
 }
 
 func TestRenderListBody_ContextRowHasVisibleMarkerInNoColor(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	parentNum := int64(1)
 	lm := listModel{
 		issues: []Issue{
@@ -278,13 +261,8 @@ func TestRenderListBody_ContextRowHasVisibleMarkerInNoColor(t *testing.T) {
 		filter: ListFilter{Search: "login"},
 	}
 
-	got := stripANSI(lm.renderBody(100, 6, viewChrome{}))
-	if !strings.Contains(got, "~") {
-		t.Fatalf("context row missing no-color marker:\n%s", got)
-	}
-	if !strings.Contains(got, "parent") || !strings.Contains(got, "child login") {
-		t.Fatalf("context render missing ancestor or child:\n%s", got)
-	}
+	got := renderBodyNoColor(lm, 100, 6, viewChrome{})
+	assertContainsAll(t, got, "~", "parent", "child login")
 }
 
 // TestRenderListBody_AllProjectsPrefixesTitle pins the navigation contract
@@ -292,7 +270,7 @@ func TestRenderListBody_ContextRowHasVisibleMarkerInNoColor(t *testing.T) {
 // the owning project's display name from chrome.projectsByID, so the user
 // can tell which project a row belongs to without expanding detail.
 func TestRenderListBody_AllProjectsPrefixesTitle(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	lm := listModel{issues: []Issue{
 		{ProjectID: 7, Number: 1, Title: "alpha bug", Status: "open"},
 		{ProjectID: 9, Number: 1, Title: "beta bug", Status: "open"},
@@ -301,13 +279,8 @@ func TestRenderListBody_AllProjectsPrefixesTitle(t *testing.T) {
 		scope:        scope{allProjects: true},
 		projectsByID: map[int64]string{7: "alpha", 9: "beta"},
 	}
-	got := stripANSI(lm.renderBody(120, 6, chrome))
-	if !strings.Contains(got, "[alpha] alpha bug") {
-		t.Fatalf("all-projects render missing alpha prefix:\n%s", got)
-	}
-	if !strings.Contains(got, "[beta] beta bug") {
-		t.Fatalf("all-projects render missing beta prefix:\n%s", got)
-	}
+	got := renderBodyNoColor(lm, 120, 6, chrome)
+	assertContainsAll(t, got, "[alpha] alpha bug", "[beta] beta bug")
 }
 
 // TestRenderListBody_AllProjectsFallsBackToPID pins the degraded path: a
@@ -315,7 +288,7 @@ func TestRenderListBody_AllProjectsPrefixesTitle(t *testing.T) {
 // project before the next /projects refresh) renders as "[#PID]" rather
 // than appearing nameless.
 func TestRenderListBody_AllProjectsFallsBackToPID(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	lm := listModel{issues: []Issue{
 		{ProjectID: 42, Number: 1, Title: "ghost project", Status: "open"},
 	}}
@@ -323,7 +296,7 @@ func TestRenderListBody_AllProjectsFallsBackToPID(t *testing.T) {
 		scope:        scope{allProjects: true},
 		projectsByID: map[int64]string{},
 	}
-	got := stripANSI(lm.renderBody(120, 6, chrome))
+	got := renderBodyNoColor(lm, 120, 6, chrome)
 	if !strings.Contains(got, "[#42] ghost project") {
 		t.Fatalf("missing-project render must fall back to [#PID]:\n%s", got)
 	}
@@ -333,7 +306,7 @@ func TestRenderListBody_AllProjectsFallsBackToPID(t *testing.T) {
 // single-project scope the prefix is omitted (every row belongs to the
 // same project, so repeating the name is noise).
 func TestRenderListBody_SingleProjectOmitsPrefix(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	lm := listModel{issues: []Issue{
 		{ProjectID: 7, Number: 1, Title: "alpha bug", Status: "open"},
 	}}
@@ -341,17 +314,15 @@ func TestRenderListBody_SingleProjectOmitsPrefix(t *testing.T) {
 		scope:        scope{projectID: 7, projectName: "alpha"},
 		projectsByID: map[int64]string{7: "alpha"},
 	}
-	got := stripANSI(lm.renderBody(120, 6, chrome))
-	if strings.Contains(got, "[alpha]") {
-		t.Fatalf("single-project render must not prefix project name:\n%s", got)
-	}
+	got := renderBodyNoColor(lm, 120, 6, chrome)
+	assertStringsLack(t, got, "[alpha]")
 	if !strings.Contains(got, "alpha bug") {
 		t.Fatalf("title missing in single-project render:\n%s", got)
 	}
 }
 
 func TestRenderListInfoLine_TruncationNotice(t *testing.T) {
-	applyColorMode(colorNone, io.Discard)
+	useNoColor(t)
 	lm := listModel{truncated: true, issues: []Issue{{Number: 1, Status: "open"}}}
 	got := stripANSI(renderListInfoLine(100, viewChrome{}, lm, 10))
 	want := "showing first 2000 issues; refine filters"

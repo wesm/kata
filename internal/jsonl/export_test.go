@@ -15,29 +15,12 @@ import (
 )
 
 func TestExportWritesOrderedRecordsWithSequenceLast(t *testing.T) {
-	ctx := context.Background()
-	d := openExportTestDB(t)
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
-	_, err = d.AttachAlias(ctx, p.ID, "github.com/wesm/kata", "git", "/tmp/kata")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID,
-		Title:     "export me",
-		Author:    "tester",
-		Labels:    []string{"bug"},
-	})
-	require.NoError(t, err)
-	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
-		IssueID: issue.ID,
-		Author:  "tester",
-		Body:    "jsonl comment",
-	})
-	require.NoError(t, err)
+	ctx, d, p := newExportEnv(t)
+	attachAlias(ctx, t, d, p.ID, "github.com/wesm/kata", "git", "/tmp/kata")
+	issue := createTesterIssue(ctx, t, d, p.ID, "export me", "", "bug")
+	addTesterComment(ctx, t, d, issue.ID, "jsonl comment")
 
-	var out bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{IncludeDeleted: true}))
-	records := decodeJSONLLines(t, out.Bytes())
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: true})
 
 	require.NotEmpty(t, records)
 	assert.Equal(t, "meta", records[0]["kind"])
@@ -48,11 +31,8 @@ func TestExportWritesOrderedRecordsWithSequenceLast(t *testing.T) {
 }
 
 func TestExportEmitsEventPayloadAsJSONObject(t *testing.T) {
-	ctx := context.Background()
-	d := openExportTestDB(t)
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+	ctx, d, p := newExportEnv(t)
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID:      p.ID,
 		Title:          "payload",
 		Author:         "tester",
@@ -60,9 +40,7 @@ func TestExportEmitsEventPayloadAsJSONObject(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var out bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{IncludeDeleted: true}))
-	records := decodeJSONLLines(t, out.Bytes())
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: true})
 
 	var found bool
 	for _, rec := range records {
@@ -86,9 +64,7 @@ func TestExportLegacyV1OmitsUIDFields(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
-	var out bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{IncludeDeleted: true}))
-	records := decodeJSONLLines(t, out.Bytes())
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: true})
 
 	assert.Equal(t, map[string]any{"key": "export_version", "value": "1"}, records[0]["data"])
 	for _, rec := range records {
@@ -116,59 +92,26 @@ func TestExportProjectIDFiltersProjectScopedRows(t *testing.T) {
 	require.NoError(t, err)
 	p2, err := d.CreateProject(ctx, "github.com/wesm/other", "other")
 	require.NoError(t, err)
-	_, err = d.AttachAlias(ctx, p1.ID, "github.com/wesm/kata", "git", "/tmp/kata")
-	require.NoError(t, err)
-	_, err = d.AttachAlias(ctx, p2.ID, "github.com/wesm/other", "git", "/tmp/other")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p1.ID,
-		Title:     "keep me",
-		Author:    "tester",
-	})
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p2.ID,
-		Title:     "drop me",
-		Author:    "tester",
-	})
-	require.NoError(t, err)
+	attachAlias(ctx, t, d, p1.ID, "github.com/wesm/kata", "git", "/tmp/kata")
+	attachAlias(ctx, t, d, p2.ID, "github.com/wesm/other", "git", "/tmp/other")
+	createTesterIssue(ctx, t, d, p1.ID, "keep me", "")
+	createTesterIssue(ctx, t, d, p2.ID, "drop me", "")
 
-	var out bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{
 		ProjectID:      p1.ID,
 		IncludeDeleted: true,
-	}))
-	records := decodeJSONLLines(t, out.Bytes())
+	})
 
 	assertRecordsDoNotContain(t, records, "drop me")
 	assertProjectIDs(t, records, map[int64]bool{p1.ID: true})
 }
 
 func TestExportNoIncludeDeletedOmitsSoftDeletedIssueDependents(t *testing.T) {
-	ctx := context.Background()
-	d := openExportTestDB(t)
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
-	require.NoError(t, err)
-	kept, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID,
-		Title:     "kept issue",
-		Author:    "tester",
-	})
-	require.NoError(t, err)
-	deleted, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID,
-		Title:     "deleted issue",
-		Author:    "tester",
-		Labels:    []string{"gone"},
-	})
-	require.NoError(t, err)
-	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
-		IssueID: deleted.ID,
-		Author:  "tester",
-		Body:    "deleted comment",
-	})
-	require.NoError(t, err)
-	_, _, err = d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
+	ctx, d, p := newExportEnv(t)
+	kept := createTesterIssue(ctx, t, d, p.ID, "kept issue", "")
+	deleted := createTesterIssue(ctx, t, d, p.ID, "deleted issue", "", "gone")
+	addTesterComment(ctx, t, d, deleted.ID, "deleted comment")
+	_, _, err := d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 		ProjectID:   p.ID,
 		FromIssueID: deleted.ID,
 		ToIssueID:   kept.ID,
@@ -182,9 +125,7 @@ func TestExportNoIncludeDeletedOmitsSoftDeletedIssueDependents(t *testing.T) {
 	_, err = d.ExecContext(ctx, `UPDATE issues SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, deleted.ID)
 	require.NoError(t, err)
 
-	var out bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, d, &out, jsonl.ExportOptions{IncludeDeleted: false}))
-	records := decodeJSONLLines(t, out.Bytes())
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: false})
 
 	assertRecordsDoNotContain(t, records, "deleted issue")
 	assertRecordsDoNotContain(t, records, "deleted comment")
@@ -208,6 +149,26 @@ func openExportTestDB(t *testing.T) *db.DB {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
+}
+
+// newExportEnv opens a fresh test DB and seeds the canonical "kata" project
+// used by most export tests.
+func newExportEnv(t *testing.T) (context.Context, *db.DB, db.Project) {
+	t.Helper()
+	ctx := context.Background()
+	d := openExportTestDB(t)
+	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	require.NoError(t, err)
+	return ctx, d, p
+}
+
+// exportAndDecode runs jsonl.Export into a buffer and decodes the resulting
+// JSONL stream into records.
+func exportAndDecode(ctx context.Context, t *testing.T, d *db.DB, opts jsonl.ExportOptions) []map[string]any {
+	t.Helper()
+	var out bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, d, &out, opts))
+	return decodeJSONLLines(t, out.Bytes())
 }
 
 func assertRecordsDoNotContain(t *testing.T, records []map[string]any, needle string) {

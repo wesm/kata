@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,16 +15,9 @@ import (
 // viewList in all-projects scope, and P from viewList returns to
 // viewProjects.
 func TestSmoke_ProjectsViewLoop(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/projects/resolve":
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": 404,
-				"error":  map[string]any{"code": "project_not_initialized"},
-			})
-		case "/api/v1/projects":
+	srv := mockDaemon(t, map[string]http.HandlerFunc{
+		"/api/v1/projects/resolve": projectNotInitializedHandler,
+		"/api/v1/projects": func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "stats", r.URL.Query().Get("include"))
 			_, _ = w.Write([]byte(`{"projects":[
                 {"id":1,"identity":"github.com/wesm/proj-a","name":"proj-a",
@@ -36,14 +27,12 @@ func TestSmoke_ProjectsViewLoop(t *testing.T) {
                 {"id":3,"identity":"github.com/wesm/proj-c","name":"proj-c",
                  "stats":{"open":10,"closed":3,"last_event_at":"2026-05-04T11:00:00.000Z"}}
             ]}`))
-		case "/api/v1/issues":
-			// Cross-project list — the all-projects drill-in fetches from here.
+		},
+		// Cross-project list — the all-projects drill-in fetches from here.
+		"/api/v1/issues": func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"issues":[]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+		},
+	})
 	c := NewClient(srv.URL, srv.Client())
 
 	// 1. Boot resolves to viewProjects.
@@ -51,22 +40,8 @@ func TestSmoke_ProjectsViewLoop(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, viewProjects, bi.view)
 
-	// 2. Build the model and seed the projects cache from boot's
-	//    pre-fetched rows (matches buildRunModel).
-	m := initialModel(Options{})
-	m.api = c
-	m.scope = bi.scope
-	m.view = bi.view
-	m.projectsByID = map[int64]string{}
-	m.projectIdentByID = map[int64]string{}
-	m.projectStats = map[int64]ProjectStatsSummary{}
-	for _, r := range bi.projects {
-		m.projectsByID[r.ID] = r.Name
-		m.projectIdentByID[r.ID] = r.Identity
-		if r.Stats != nil {
-			m.projectStats[r.ID] = *r.Stats
-		}
-	}
+	// 2. Build the model from boot — same wiring Run uses in production.
+	m := buildRunModel(Options{}, c, bi)
 
 	// 3. Rows ordered by last_event_at desc: proj-b (12:00), proj-c (11:00), proj-a (10:00).
 	rows := projectsRows(m.projectsByID, m.projectIdentByID, m.projectStats)
@@ -84,8 +59,7 @@ func TestSmoke_ProjectsViewLoop(t *testing.T) {
 	require.NotNil(t, cmd, "drill-in must dispatch fetchInitial")
 
 	// 5. P from the resulting viewList returns to viewProjects with scope preserved.
-	out2, cmd2 := nextModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
-	nm2 := out2.(Model)
+	nm2, cmd2 := updateModel(nextModel, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
 	assert.Equal(t, viewProjects, nm2.view)
 	assert.True(t, nm2.scope.allProjects, "scope preserved on P-back")
 	require.NotNil(t, cmd2, "P must dispatch fetchProjectsWithStats")

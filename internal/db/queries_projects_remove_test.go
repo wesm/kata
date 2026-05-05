@@ -33,10 +33,8 @@ func TestRemoveProject_ArchivesAndDropsAliases(t *testing.T) {
 	assert.True(t, uid.Valid(evt.UID))
 	assert.Equal(t, d.InstanceUID(), evt.OriginInstanceUID)
 
-	var aliasCount int
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, p.ID).Scan(&aliasCount))
-	assert.Equal(t, 0, aliasCount, "aliases must be hard-deleted")
+	assertRowCount(ctx, t, d, 0, "aliases must be hard-deleted",
+		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, p.ID)
 }
 
 // TestRemoveProject_RefusesWhenOpenIssues pins the safety gate: open issues
@@ -80,11 +78,8 @@ func TestRemoveProject_ForceOverridesOpenIssues(t *testing.T) {
 	require.NotNil(t, got.DeletedAt)
 	require.NotNil(t, evt)
 
-	var stillOpen int
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM issues WHERE project_id = ? AND status = 'open'`,
-		p.ID).Scan(&stillOpen))
-	assert.Equal(t, 1, stillOpen, "force does not bulk-close issues")
+	assertRowCount(ctx, t, d, 1, "force does not bulk-close issues",
+		`SELECT COUNT(*) FROM issues WHERE project_id = ? AND status = 'open'`, p.ID)
 }
 
 // TestRemoveProject_AlreadyArchived covers the idempotency-rejection: a
@@ -152,10 +147,8 @@ func TestDetachProjectAlias_RemovesOneAndEmitsEvent(t *testing.T) {
 	assert.Equal(t, p.ID, evt.ProjectID)
 	assert.True(t, uid.Valid(evt.UID))
 
-	var remaining int
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, p.ID).Scan(&remaining))
-	assert.Equal(t, 1, remaining)
+	assertRowCount(ctx, t, d, 1, "one alias remains after detach",
+		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, p.ID)
 
 	// The other alias is still resolvable.
 	resolved, err := d.AliasByIdentity(ctx, a1.AliasIdentity)
@@ -198,10 +191,8 @@ func TestDetachProjectAlias_ForceDropsLast(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, evt)
 
-	var remaining int
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, p.ID).Scan(&remaining))
-	assert.Equal(t, 0, remaining)
+	assertRowCount(ctx, t, d, 0, "force drops the last alias",
+		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, p.ID)
 }
 
 // TestDetachProjectAlias_RejectsCrossProject pins the atomic
@@ -232,8 +223,6 @@ func TestDetachProjectAlias_RejectsCrossProject(t *testing.T) {
 		"cross-project detach must refuse with ErrNotFound, got %v", err)
 
 	// Both of B's aliases are intact.
-	var remaining int
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, pB.ID).Scan(&remaining))
-	assert.Equal(t, 2, remaining)
+	assertRowCount(ctx, t, d, 2, "B's aliases unchanged after cross-project refusal",
+		`SELECT COUNT(*) FROM project_aliases WHERE project_id = ?`, pB.ID)
 }

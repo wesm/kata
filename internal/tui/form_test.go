@@ -1,14 +1,45 @@
 package tui
 
 import (
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// captureCreateIssue stands up a test client whose handler records the
+// request path and replies with a minimal successful CreateIssue
+// payload. Returns the client and a pointer the caller dereferences
+// after the dispatch to inspect the request URL.
+func captureCreateIssue(t *testing.T) (*Client, *string) {
+	t.Helper()
+	var gotPath string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		respondJSON(t, w, map[string]any{
+			"issue":   map[string]any{"number": 1, "title": "hi", "status": "open"},
+			"changed": true,
+		})
+	})
+	return c, &gotPath
+}
+
+// unwrapMutationCmd evaluates cmd, asserts the result is a
+// mutationDoneMsg with no err, and returns it. Fails the test with a
+// useful message on any mismatch.
+func unwrapMutationCmd(t *testing.T, cmd tea.Cmd) mutationDoneMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected mutation cmd, got nil")
+	}
+	msg := cmd()
+	mut, ok := msg.(mutationDoneMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want mutationDoneMsg", msg)
+	}
+	return mut
+}
 
 // errStub is a minimal error type for tests that need a non-nil error
 // of a known string. Re-introduced here after the editor-test cleanup
@@ -439,19 +470,9 @@ func TestOpenCommentForm_UsesDetailScopePID(t *testing.T) {
 // detailIsActive() so split + focusDetail also routes through
 // m.detail.scopePID. Regression for roborev job 17575.
 func TestCommitNewIssueForm_SplitLayoutFocusDetail_UsesDetailScopePID(t *testing.T) {
-	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issue":   map[string]any{"number": 1, "title": "hi", "status": "open"},
-			"changed": true,
-		})
-	}))
-	defer srv.Close()
-
+	api, gotPath := captureCreateIssue(t)
 	m := Model{
-		api:    NewClient(srv.URL, srv.Client()),
+		api:    api,
 		view:   viewList,
 		layout: layoutSplit,
 		focus:  focusDetail,
@@ -474,21 +495,14 @@ func TestCommitNewIssueForm_SplitLayoutFocusDetail_UsesDetailScopePID(t *testing
 	m.input.fields[0].input.SetValue("hi")
 
 	_, cmd := m.commitNewIssueForm()
-	if cmd == nil {
-		t.Fatal("commitNewIssueForm returned no cmd; want a CreateIssue dispatch")
-	}
-	msg := cmd()
-	mut, ok := msg.(mutationDoneMsg)
-	if !ok {
-		t.Fatalf("dispatch returned %T, want mutationDoneMsg", msg)
-	}
+	mut := unwrapMutationCmd(t, cmd)
 	if mut.err != nil {
-		t.Fatalf("CreateIssue dispatch failed: %v (path=%q)", mut.err, gotPath)
+		t.Fatalf("CreateIssue dispatch failed: %v (path=%q)", mut.err, *gotPath)
 	}
-	if !strings.Contains(gotPath, "/api/v1/projects/42/issues") {
+	if !strings.Contains(*gotPath, "/api/v1/projects/42/issues") {
 		t.Fatalf("URL path = %q, want /api/v1/projects/42/issues "+
 			"(split+focusDetail must use m.detail.scopePID, not m.scope.projectID=0)",
-			gotPath)
+			*gotPath)
 	}
 }
 
@@ -498,19 +512,9 @@ func TestCommitNewIssueForm_SplitLayoutFocusDetail_UsesDetailScopePID(t *testing
 // project (m.detail.scopePID), not m.scope.projectID==0. The
 // detailIsActive() switch must keep this path working.
 func TestCommitNewIssueForm_StackedViewDetail_UsesDetailScopePID(t *testing.T) {
-	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issue":   map[string]any{"number": 1, "title": "hi", "status": "open"},
-			"changed": true,
-		})
-	}))
-	defer srv.Close()
-
+	api, gotPath := captureCreateIssue(t)
 	m := Model{
-		api:    NewClient(srv.URL, srv.Client()),
+		api:    api,
 		view:   viewDetail,
 		layout: layoutStacked,
 		keymap: newKeymap(),
@@ -526,18 +530,11 @@ func TestCommitNewIssueForm_StackedViewDetail_UsesDetailScopePID(t *testing.T) {
 	m.input.fields[0].input.SetValue("hi")
 
 	_, cmd := m.commitNewIssueForm()
-	if cmd == nil {
-		t.Fatal("commitNewIssueForm returned no cmd")
-	}
-	msg := cmd()
-	mut, ok := msg.(mutationDoneMsg)
-	if !ok {
-		t.Fatalf("dispatch returned %T, want mutationDoneMsg", msg)
-	}
+	mut := unwrapMutationCmd(t, cmd)
 	if mut.err != nil {
-		t.Fatalf("CreateIssue dispatch failed: %v (path=%q)", mut.err, gotPath)
+		t.Fatalf("CreateIssue dispatch failed: %v (path=%q)", mut.err, *gotPath)
 	}
-	if !strings.Contains(gotPath, "/api/v1/projects/42/issues") {
-		t.Fatalf("URL path = %q, want /api/v1/projects/42/issues", gotPath)
+	if !strings.Contains(*gotPath, "/api/v1/projects/42/issues") {
+		t.Fatalf("URL path = %q, want /api/v1/projects/42/issues", *gotPath)
 	}
 }

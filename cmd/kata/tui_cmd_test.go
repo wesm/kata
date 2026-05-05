@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"strings"
 	"testing"
 )
@@ -16,17 +14,10 @@ import (
 // capability the wire cannot deliver. Both gates land at the daemon
 // boundary; re-add when handlers_issues.go grows the routes.
 func TestTUI_CommandRegistered(t *testing.T) {
-	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"tui", "--help"})
-	cmd.SetContext(context.Background())
-	if err := cmd.Execute(); err != nil {
+	out, err := runCmdOutput(t, nil, "tui", "--help")
+	if err != nil {
 		t.Fatal(err)
 	}
-	out := buf.String()
 	if !strings.Contains(out, "--uid-format") {
 		t.Fatalf("--uid-format missing from help: %s", out)
 	}
@@ -39,14 +30,7 @@ func TestTUI_CommandRegistered(t *testing.T) {
 }
 
 func TestTUI_RejectsInvalidUIDFormatBeforeTTYCheck(t *testing.T) {
-	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"tui", "--uid-format", "wide"})
-	cmd.SetContext(context.Background())
-	err := cmd.Execute()
+	_, err := runCmdOutput(t, nil, "tui", "--uid-format", "wide")
 	if err == nil {
 		t.Fatal("expected invalid uid format error")
 	}
@@ -60,14 +44,7 @@ func TestTUI_RejectsInvalidUIDFormatBeforeTTYCheck(t *testing.T) {
 // failure (and the TTY check in tui.Run is never reached, which would
 // be inappropriate for an arg-parse failure).
 func TestTUI_RejectsExtraArgs(t *testing.T) {
-	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"tui", "extra-positional"})
-	cmd.SetContext(context.Background())
-	err := cmd.Execute()
+	_, err := runCmdOutput(t, nil, "tui", "extra-positional")
 	if err == nil {
 		t.Fatal("expected error for extra positional arg")
 	}

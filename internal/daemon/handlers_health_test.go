@@ -1,31 +1,16 @@
 package daemon_test
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
-	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 )
 
 func TestHealth_ReportsSchemaAndUptime(t *testing.T) {
-	d := openTestDB(t)
-	srv := daemon.NewServer(daemon.ServerConfig{DB: d.db, StartedAt: d.now})
-	t.Cleanup(func() { _ = srv.Close() })
-
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
-
-	resp, err := http.Get(ts.URL + "/api/v1/health")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	ts, _ := startDefaultTestServer(t)
 
 	var body struct {
 		OK            bool   `json:"ok"`
@@ -33,9 +18,7 @@ func TestHealth_ReportsSchemaAndUptime(t *testing.T) {
 		Uptime        string `json:"uptime"`
 		DBPath        string `json:"db_path"`
 	}
-	bs, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.NoError(t, json.Unmarshal(bs, &body))
+	getAndUnmarshal(t, ts, "/api/v1/health", http.StatusOK, &body)
 	assert.True(t, body.OK)
 	assert.Equal(t, db.CurrentSchemaVersion(), body.SchemaVersion)
 	assert.NotEmpty(t, body.Uptime)

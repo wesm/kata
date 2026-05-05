@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,73 +8,36 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wesm/kata/internal/testenv"
 )
 
 func TestCreate_PrintsIssueNumberInQuietMode(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
-
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create", "first issue", "--body", "details"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
-	assert.Equal(t, "1", strings.TrimSpace(buf.String()))
+	env, dir := setupCLIEnv(t)
+	out := runCLI(t, env, dir, "--quiet", "create", "first issue", "--body", "details")
+	assert.Equal(t, "1", out)
 }
 
 func TestCreate_WithInitialLabelsAndParent(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
 	createIssue(t, env, pid, "parent-issue") // #1
 	createIssue(t, env, pid, "blocker")      // #2
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{
-		"--workspace", dir, "create", "child",
+	out := runCLI(t, env, dir, "create", "child",
 		"--label", "bug", "--label", "needs-review",
 		"--parent", "1",
 		"--blocks", "2",
 		"--owner", "alice",
-	})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
-	assert.Contains(t, buf.String(), "child")
+	)
+	assert.Contains(t, out, "child")
 
 	// Fetch the created issue (#3) and assert every initial-state flag was
 	// actually persisted, not just echoed back in the create response.
-	resp, err := http.Get(env.URL + "/api/v1/projects/" + itoa(pid) + "/issues/3") //nolint:noctx,gosec // test-only loopback
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-	var b struct {
-		Issue struct {
-			Number int64   `json:"number"`
-			Owner  *string `json:"owner"`
-		} `json:"issue"`
-		Labels []struct {
-			Label string `json:"label"`
-		} `json:"labels"`
-		Links []struct {
-			Type       string `json:"type"`
-			FromNumber int64  `json:"from_number"`
-			ToNumber   int64  `json:"to_number"`
-		} `json:"links"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	b := fetchIssueViaHTTP(t, env, pid, 3)
 	require.NotNil(t, b.Issue.Owner)
 	assert.Equal(t, "alice", *b.Issue.Owner)
 
@@ -103,49 +65,28 @@ func TestCreate_WithInitialLabelsAndParent(t *testing.T) {
 }
 
 func TestCreate_WithIdempotencyKeyReusesOnRepeat(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	env, dir := setupCLIEnv(t)
 
 	// First call.
-	cmd := newRootCmd()
-	var buf1 bytes.Buffer
-	cmd.SetOut(&buf1)
-	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create",
-		"first issue", "--idempotency-key", "K1"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
-	first := strings.TrimSpace(buf1.String())
+	first := runCLI(t, env, dir, "--quiet", "create",
+		"first issue", "--idempotency-key", "K1")
 	assert.Equal(t, "1", first)
 
 	// Repeat with the same key + same fingerprint → reuse, same number.
 	resetFlags(t)
-	cmd = newRootCmd()
-	var buf2 bytes.Buffer
-	cmd.SetOut(&buf2)
-	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create",
-		"first issue", "--idempotency-key", "K1"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
-	second := strings.TrimSpace(buf2.String())
+	second := runCLI(t, env, dir, "--quiet", "create",
+		"first issue", "--idempotency-key", "K1")
 	assert.Equal(t, "1", second, "same key + fingerprint must return existing issue number")
 }
 
 func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	env, dir := setupCLIEnv(t)
 	createIssueViaHTTP(t, env, dir, "fix login crash on Safari")
 
 	// Without --force-new the daemon would 409 on look-alike. With it, a new issue lands.
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"--workspace", dir, "--quiet", "create",
-		"fix login crash Safari", "--force-new"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
-	assert.Equal(t, "2", strings.TrimSpace(buf.String()))
+	out := runCLI(t, env, dir, "--quiet", "create",
+		"fix login crash Safari", "--force-new")
+	assert.Equal(t, "2", out)
 }
 
 // TestResolveProjectID_PropagatesParseError guards against a malformed

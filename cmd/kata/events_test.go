@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,20 +14,13 @@ import (
 )
 
 func TestEvents_OneShotPlainOutput(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
-	createIssueViaHTTP(t, env, dir, "first")
-	createIssueViaHTTP(t, env, dir, "second")
+	f := newCLIFixture(t)
+	createIssueViaHTTP(t, f.env, f.dir, "first")
+	createIssueViaHTTP(t, f.env, f.dir, "second")
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"--workspace", dir, "events"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
+	require.NoError(t, f.execute("events"))
 
-	out := buf.String()
+	out := f.buf.String()
 	assert.Contains(t, out, "issue.created")
 	lines := 0
 	for _, l := range strings.Split(out, "\n") {
@@ -42,17 +32,10 @@ func TestEvents_OneShotPlainOutput(t *testing.T) {
 }
 
 func TestEvents_OneShotJSON(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
-	createIssueViaHTTP(t, env, dir, "only")
+	f := newCLIFixture(t)
+	createIssueViaHTTP(t, f.env, f.dir, "only")
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"--workspace", dir, "events", "--json"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
+	require.NoError(t, f.execute("events", "--json"))
 
 	var b struct {
 		KataAPIVersion int `json:"kata_api_version"`
@@ -64,7 +47,7 @@ func TestEvents_OneShotJSON(t *testing.T) {
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &b))
+	require.NoError(t, json.Unmarshal(f.buf.Bytes(), &b))
 	assert.Equal(t, 1, b.KataAPIVersion)
 	require.Len(t, b.Events, 1)
 	assert.Equal(t, "issue.created", b.Events[0].Type)
@@ -75,84 +58,40 @@ func TestEvents_OneShotJSON(t *testing.T) {
 }
 
 func TestEvents_OneShotAllProjectsHitsCrossProject(t *testing.T) {
-	resetFlags(t)
 	env := testenv.New(t)
 	dirA := initBoundWorkspace(t, env.URL, "https://github.com/wesm/a.git")
 	dirB := initBoundWorkspace(t, env.URL, "https://github.com/wesm/b.git")
 	createIssueViaHTTP(t, env, dirA, "a-issue")
 	createIssueViaHTTP(t, env, dirB, "b-issue")
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"events", "--all-projects", "--json"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
+	out := requireCmdOutput(t, env, "events", "--all-projects", "--json")
 
 	var b struct {
 		Events []struct {
 			ProjectID int64 `json:"project_id"`
 		} `json:"events"`
 	}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &b))
+	require.NoError(t, json.Unmarshal([]byte(out), &b))
 	assert.Len(t, b.Events, 2, "all-projects must include both projects")
 }
 
-// safeBuffer is a mutex-protected bytes.Buffer used by tail tests so that
-// `go test -race` does not flag the goroutine running cmd.Execute writing to
-// the buffer racing with the test goroutine reading it via Snapshot.
-type safeBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (s *safeBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.Write(p)
-}
-
-func (s *safeBuffer) Snapshot() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.String()
-}
-
 func TestEvents_TailEmitsNDJSON(t *testing.T) {
-	resetFlags(t)
 	env := testenv.New(t)
 	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
 
-	cmd := newRootCmd()
-	buf := &safeBuffer{}
-	cmd.SetOut(buf)
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
-	cmd.SetArgs([]string{"--workspace", dir, "events", "--tail"})
-	cmd.SetContext(ctx)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = cmd.Execute()
-	}()
+	a := startAsyncCLI(t, ctx, "--workspace", dir, "events", "--tail")
+	defer a.stop()
 
 	time.Sleep(200 * time.Millisecond)
 	createIssueViaHTTP(t, env, dir, "first")
 	createIssueViaHTTP(t, env, dir, "second")
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Count(buf.Snapshot(), "issue.created") >= 2 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	cancel()
-	wg.Wait()
+	out := a.awaitOutput(func(s string) bool {
+		return strings.Count(s, "issue.created") >= 2
+	}, 2*time.Second)
 
-	out := buf.Snapshot()
 	lines := []string{}
 	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(l) != "" {
@@ -161,41 +100,23 @@ func TestEvents_TailEmitsNDJSON(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, len(lines), 2, "expected at least 2 NDJSON lines, got: %q", out)
 	for _, l := range lines[:2] {
-		var env map[string]any
-		require.NoError(t, json.Unmarshal([]byte(l), &env), "each line must be a JSON object")
-		assert.Equal(t, "issue.created", env["type"])
-		assert.NotEmpty(t, env["project_uid"])
-		assert.NotEmpty(t, env["issue_uid"])
+		var envObj map[string]any
+		require.NoError(t, json.Unmarshal([]byte(l), &envObj), "each line must be a JSON object")
+		assert.Equal(t, "issue.created", envObj["type"])
+		assert.NotEmpty(t, envObj["project_uid"])
+		assert.NotEmpty(t, envObj["issue_uid"])
 	}
 }
 
 func TestEvents_NegativeAfterRejected(t *testing.T) {
-	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"events", "--all-projects", "--after=-1"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	var ce *cliError
-	require.ErrorAs(t, err, &ce)
-	assert.Equal(t, ExitUsage, ce.ExitCode)
+	_, err := runCmdOutput(t, nil, "events", "--all-projects", "--after=-1")
+	ce := requireCLIError(t, err, ExitUsage)
 	assert.Contains(t, ce.Message, "non-negative")
 }
 
 func TestEvents_NegativeLastEventIDRejected(t *testing.T) {
-	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"events", "--all-projects", "--tail", "--last-event-id=-1"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	var ce *cliError
-	require.ErrorAs(t, err, &ce)
-	assert.Equal(t, ExitUsage, ce.ExitCode)
+	_, err := runCmdOutput(t, nil, "events", "--all-projects", "--tail", "--last-event-id=-1")
+	ce := requireCLIError(t, err, ExitUsage)
 	assert.Contains(t, ce.Message, "non-negative")
 }
 
@@ -205,39 +126,22 @@ func TestEvents_NegativeLastEventIDRejected(t *testing.T) {
 func TestEvents_TailFailsFastOn4xx(t *testing.T) {
 	resetFlags(t)
 	env := testenv.New(t)
-	cmd := newRootCmd()
-	buf := &safeBuffer{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
-	cmd.SetArgs([]string{"events", "--project-id", "99999", "--tail"})
-	cmd.SetContext(ctx)
-	err := cmd.Execute()
+	_, _, err := executeRootCapture(t, ctx, "events", "--project-id", "99999", "--tail")
 	require.Error(t, err, "tail must surface 404 instead of looping")
 	assert.Contains(t, err.Error(), "404")
 }
 
 func TestEvents_TailFollowsResetRequired(t *testing.T) {
-	resetFlags(t)
 	env := testenv.New(t)
 	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
 	createIssueViaHTTP(t, env, dir, "doomed")
 
-	cmd := newRootCmd()
-	buf := &safeBuffer{}
-	cmd.SetOut(buf)
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
-	cmd.SetArgs([]string{"--workspace", dir, "events", "--tail"})
-	cmd.SetContext(ctx)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = cmd.Execute()
-	}()
+	a := startAsyncCLI(t, ctx, "--workspace", dir, "events", "--tail")
+	defer a.stop()
 
 	time.Sleep(300 * time.Millisecond)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
@@ -251,17 +155,10 @@ func TestEvents_TailFollowsResetRequired(t *testing.T) {
 	_ = resp.Body.Close()
 	require.Equal(t, 200, resp.StatusCode)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(buf.Snapshot(), `"reset_required":true`) {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	cancel()
-	wg.Wait()
-
-	assert.Contains(t, buf.Snapshot(), `"reset_required":true`,
+	out := a.awaitOutput(func(s string) bool {
+		return strings.Contains(s, `"reset_required":true`)
+	}, 2*time.Second)
+	assert.Contains(t, out, `"reset_required":true`,
 		"--tail must emit a reset envelope when the daemon sends sync.reset_required")
 }
 
@@ -274,19 +171,8 @@ func TestEvents_TailRejectsOneShotFlags(t *testing.T) {
 		{"events", "--tail", "--limit", "1"},
 		{"events", "--tail", "--after", "5"},
 	} {
-		resetFlags(t)
-		cmd := newRootCmd()
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-		cmd.SetArgs(args)
-		cmd.SetContext(context.Background())
-
-		err := cmd.Execute()
-		require.Errorf(t, err, "args %v should reject", args)
-		var ce *cliError
-		require.True(t, errors.As(err, &ce), "expected *cliError, got %T", err)
-		assert.Equalf(t, ExitUsage, ce.ExitCode, "args %v: wrong exit code", args)
+		_, err := runCmdOutput(t, nil, args...)
+		ce := requireCLIError(t, err, ExitUsage)
 		assert.Equalf(t, kindUsage, ce.Kind, "args %v: wrong kind", args)
 	}
 }
@@ -295,19 +181,8 @@ func TestEvents_TailRejectsOneShotFlags(t *testing.T) {
 // --last-event-id is documented as --tail-only, so passing it without
 // --tail should reject loudly instead of being silently ignored.
 func TestEvents_OneShotRejectsTailFlag(t *testing.T) {
-	resetFlags(t)
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"events", "--last-event-id", "5"})
-	cmd.SetContext(context.Background())
-
-	err := cmd.Execute()
-	require.Error(t, err)
-	var ce *cliError
-	require.True(t, errors.As(err, &ce))
-	assert.Equal(t, ExitUsage, ce.ExitCode)
+	_, err := runCmdOutput(t, nil, "events", "--last-event-id", "5")
+	_ = requireCLIError(t, err, ExitUsage)
 }
 
 // TestEvents_OneShotRejectsNonPositiveLimit: parallel to list/ready,
@@ -315,18 +190,7 @@ func TestEvents_OneShotRejectsTailFlag(t *testing.T) {
 // has the same check after hammer-test #5.
 func TestEvents_OneShotRejectsNonPositiveLimit(t *testing.T) {
 	for _, lim := range []string{"0", "-1"} {
-		resetFlags(t)
-		cmd := newRootCmd()
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetErr(&buf)
-		cmd.SetArgs([]string{"events", "--limit", lim})
-		cmd.SetContext(context.Background())
-
-		err := cmd.Execute()
-		require.Errorf(t, err, "--limit %s should reject", lim)
-		var ce *cliError
-		require.True(t, errors.As(err, &ce))
-		assert.Equal(t, ExitValidation, ce.ExitCode)
+		_, err := runCmdOutput(t, nil, "events", "--limit", lim)
+		_ = requireCLIError(t, err, ExitValidation)
 	}
 }

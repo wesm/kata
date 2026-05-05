@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -9,34 +8,23 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/db"
-	"github.com/wesm/kata/internal/testenv"
 )
 
 func TestIssueRefCommandsAcceptUIDs(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
+	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
 
-	nextNumber := int64(0)
 	issue := func(title string) db.Issue {
 		t.Helper()
-		createIssue(t, env, pid, title)
-		nextNumber++
-		iss, err := env.DB.IssueByNumber(context.Background(), pid, nextNumber)
+		num := createIssueViaHTTP(t, env, dir, title)
+		iss, err := env.DB.IssueByNumber(context.Background(), pid, num)
 		require.NoError(t, err)
 		return iss
 	}
 	run := func(args ...string) string {
 		t.Helper()
 		resetFlags(t)
-		cmd := newRootCmd()
-		var buf bytes.Buffer
-		cmd.SetOut(&buf)
-		cmd.SetArgs(append([]string{"--workspace", dir}, args...))
-		cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-		require.NoError(t, cmd.Execute(), strings.Join(args, " "))
-		return buf.String()
+		return runCLI(t, env, dir, args...)
 	}
 
 	assign := issue("assign by uid")

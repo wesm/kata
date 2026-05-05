@@ -27,6 +27,22 @@ func narrowTestSetup(t *testing.T) (Model, func()) {
 	return m, cleanup
 }
 
+// assertHintVisible fails t when the rendered View's hint-marker
+// presence doesn't match want. Folds the verbose Contains+Fatalf
+// pattern that the narrow-terminal tests repeat for both polarities.
+func assertHintVisible(t *testing.T, m Model, want bool) {
+	t.Helper()
+	view := m.View()
+	got := strings.Contains(view, narrowHintMarker)
+	if got == want {
+		return
+	}
+	if want {
+		t.Fatalf("view missing hint marker %q; got:\n%s", narrowHintMarker, view)
+	}
+	t.Fatalf("view unexpectedly contains hint marker %q; got:\n%s", narrowHintMarker, view)
+}
+
 // TestNarrowTerminal_NarrowWidthShowsHint verifies that a sub-80-column
 // width trips the M5 short-circuit and renders the centered hint
 // regardless of how tall the terminal is.
@@ -34,13 +50,8 @@ func TestNarrowTerminal_NarrowWidthShowsHint(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
 
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
-	m = out.(Model)
-	got := m.View()
-	if !strings.Contains(got, narrowHintMarker) {
-		t.Fatalf("narrow width view missing hint marker %q; got:\n%s",
-			narrowHintMarker, got)
-	}
+	m = resizeModel(m, 60, 24)
+	assertHintVisible(t, m, true)
 }
 
 // TestNarrowTerminal_ShortHeightRendersNormally verifies that a short
@@ -53,13 +64,9 @@ func TestNarrowTerminal_ShortHeightRendersNormally(t *testing.T) {
 	m.list.issues = []Issue{{ProjectID: 7, Number: 1, Title: "short pane", Status: "open"}}
 	m.scope = scope{projectID: 7, projectName: "kata"}
 
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 12})
-	m = out.(Model)
-	got := m.View()
-	if strings.Contains(got, narrowHintMarker) {
-		t.Fatalf("short-height view unexpectedly contains hint marker; got:\n%s", got)
-	}
-	if !strings.Contains(got, "short pane") {
+	m = resizeModel(m, 120, 12)
+	assertHintVisible(t, m, false)
+	if got := m.View(); !strings.Contains(got, "short pane") {
 		t.Fatalf("short-height view missing list content; got:\n%s", got)
 	}
 }
@@ -70,13 +77,8 @@ func TestNarrowTerminal_BothNarrowShowsHint(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
 
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 12})
-	m = out.(Model)
-	got := m.View()
-	if !strings.Contains(got, narrowHintMarker) {
-		t.Fatalf("both-narrow view missing hint marker %q; got:\n%s",
-			narrowHintMarker, got)
-	}
+	m = resizeModel(m, 60, 12)
+	assertHintVisible(t, m, true)
 }
 
 // TestNarrowTerminal_NormalSizeRendersNormally verifies the negative
@@ -88,13 +90,8 @@ func TestNarrowTerminal_NormalSizeRendersNormally(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
 
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	m = out.(Model)
-	got := m.View()
-	if strings.Contains(got, narrowHintMarker) {
-		t.Fatalf("normal-size view unexpectedly contains hint marker; got:\n%s",
-			got)
-	}
+	m = resizeModel(m, 120, 30)
+	assertHintVisible(t, m, false)
 }
 
 // TestNarrowTerminal_QStillRoutesToQuitConfirm proves that the View
@@ -106,10 +103,8 @@ func TestNarrowTerminal_QStillRoutesToQuitConfirm(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
 
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 12})
-	m = out.(Model)
-	out, cmd := m.Update(runeKey('q'))
-	nm := out.(Model)
+	m = resizeModel(m, 60, 12)
+	nm, cmd := updateModel(m, runeKey('q'))
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			if _, isQuit := msg.(tea.QuitMsg); isQuit {
@@ -129,9 +124,8 @@ func TestNarrowTerminal_CtrlCStillQuits(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
 
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 12})
-	m = out.(Model)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = resizeModel(m, 60, 12)
+	_, cmd := updateModel(m, tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Fatal("ctrl+c at narrow size produced no cmd; expected tea.Quit")
 	}
@@ -149,11 +143,7 @@ func TestNarrowTerminal_ZeroWidthBeforeFirstResize_DoesNotShowHint(t *testing.T)
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
 	// No WindowSizeMsg; m.width and m.height remain 0.
-	got := m.View()
-	if strings.Contains(got, narrowHintMarker) {
-		t.Fatalf("pre-resize View unexpectedly contains hint marker; got:\n%s",
-			got)
-	}
+	assertHintVisible(t, m, false)
 }
 
 // TestNarrowTerminal_QuitConfirmModalOverlaysHint covers roborev #250:
@@ -173,16 +163,13 @@ func TestNarrowTerminal_QuitConfirmModalOverlaysHint(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
 	// Resize to full width and open quit-confirm.
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	m = out.(Model)
-	out, _ = m.Update(runeKey('q'))
-	m = out.(Model)
+	m = resizeModel(m, 120, 30)
+	m = sendRune(m, 'q')
 	if m.modal != modalQuitConfirm {
 		t.Fatalf("modal = %v after q at full width, want modalQuitConfirm", m.modal)
 	}
 	// Now resize below threshold while the modal is still open.
-	out, _ = m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
-	m = out.(Model)
+	m = resizeModel(m, 60, 24)
 	view := m.View()
 	if !strings.Contains(view, "[Y]") {
 		t.Fatalf("quit-confirm modal hidden by narrow short-circuit; got:\n%s", view)

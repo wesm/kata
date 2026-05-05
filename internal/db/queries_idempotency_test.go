@@ -87,27 +87,13 @@ func TestFingerprint_Vector(t *testing.T) {
 		"filled fingerprint must not drift")
 }
 
-func strPtr(s string) *string { return &s }
-
 func TestLookupIdempotency_ReturnsMatchWithinWindow(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-
 	// Hand-write an issue.created event with idempotency_key + fingerprint
 	// in the payload so we test LookupIdempotency in isolation from the
 	// CreateIssue extension landing in Task 9.
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
+	d, ctx, p, issue := setupTestIssue(t)
 	fp := "abc123"
-	_, err = d.ExecContext(ctx,
-		`UPDATE events
-		 SET payload = json_set(payload, '$.idempotency_key', 'K1', '$.idempotency_fingerprint', ?)
-		 WHERE issue_id = ? AND type = 'issue.created'`, fp, issue.ID)
-	require.NoError(t, err)
+	injectIdempotencyKey(ctx, t, d, issue.ID, "K1", fp)
 
 	since := time.Now().Add(-1 * time.Hour)
 	got, err := d.LookupIdempotency(ctx, p.ID, "K1", since)
@@ -120,19 +106,8 @@ func TestLookupIdempotency_ReturnsMatchWithinWindow(t *testing.T) {
 }
 
 func TestLookupIdempotency_OutsideWindowIsNil(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, err = d.ExecContext(ctx,
-		`UPDATE events
-		 SET payload = json_set(payload, '$.idempotency_key', 'K1', '$.idempotency_fingerprint', 'fp')
-		 WHERE issue_id = ?`, issue.ID)
-	require.NoError(t, err)
+	d, ctx, p, issue := setupTestIssue(t)
+	injectIdempotencyKey(ctx, t, d, issue.ID, "K1", "fp")
 
 	// Window starts in the future — every existing event is "outside".
 	future := time.Now().Add(1 * time.Hour)
@@ -142,10 +117,7 @@ func TestLookupIdempotency_OutsideWindowIsNil(t *testing.T) {
 }
 
 func TestLookupIdempotency_DifferentKeyIsNil(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	got, err := d.LookupIdempotency(ctx, p.ID, "no-such-key", time.Now().Add(-1*time.Hour))
 	require.NoError(t, err)
 	assert.Nil(t, got)
@@ -154,19 +126,10 @@ func TestLookupIdempotency_DifferentKeyIsNil(t *testing.T) {
 func TestLookupIdempotency_DifferentProjectIsNil(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p1, err := d.CreateProject(ctx, "p1", "p1")
-	require.NoError(t, err)
-	p2, err := d.CreateProject(ctx, "p2", "p2")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p1.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
-	_, err = d.ExecContext(ctx,
-		`UPDATE events
-		 SET payload = json_set(payload, '$.idempotency_key', 'K1', '$.idempotency_fingerprint', 'fp')
-		 WHERE issue_id = ?`, issue.ID)
-	require.NoError(t, err)
+	p1 := createProject(ctx, t, d, "p1", "p1")
+	p2 := createProject(ctx, t, d, "p2", "p2")
+	issue, _ := createTesterIssue(ctx, t, d, p1.ID, "x")
+	injectIdempotencyKey(ctx, t, d, issue.ID, "K1", "fp")
 
 	got, err := d.LookupIdempotency(ctx, p2.ID, "K1", time.Now().Add(-1*time.Hour))
 	require.NoError(t, err)
@@ -178,14 +141,7 @@ func TestLookupIdempotency_DifferentProjectIsNil(t *testing.T) {
 // returned. The partial index already enforces this; the SQL WHERE clause
 // reinforces it. This test locks both layers.
 func TestLookupIdempotency_OnlyIssueCreatedEvents(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: p.ID, Title: "x", Author: "tester",
-	})
-	require.NoError(t, err)
+	d, ctx, p, issue := setupTestIssue(t)
 	// Stamp the idempotency_key onto a NON-issue.created row by inserting a
 	// fake issue.edited event. The partial index excludes this row by type;
 	// the WHERE e.type = 'issue.created' clause reinforces.

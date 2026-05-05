@@ -1,8 +1,6 @@
 package db_test
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -12,10 +10,7 @@ import (
 )
 
 func TestCreateIssue_WithInitialLabels(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
 	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "x", Author: "tester",
@@ -33,18 +28,14 @@ func TestCreateIssue_WithInitialLabels(t *testing.T) {
 	assert.ElementsMatch(t, []string{"bug", "priority:high"}, got, "duplicates deduplicated")
 
 	// Payload includes initial labels (sorted, deduplicated).
-	var payload struct {
+	payload := unmarshalPayload[struct {
 		Labels []string `json:"labels"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(evt.Payload), &payload))
+	}](t, evt.Payload)
 	assert.Equal(t, []string{"bug", "priority:high"}, payload.Labels)
 }
 
 func TestCreateIssue_WithInitialOwner(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
 	owner := "alice"
 	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
@@ -55,18 +46,14 @@ func TestCreateIssue_WithInitialOwner(t *testing.T) {
 	require.NotNil(t, issue.Owner)
 	assert.Equal(t, "alice", *issue.Owner)
 
-	var payload struct {
+	payload := unmarshalPayload[struct {
 		Owner string `json:"owner"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(evt.Payload), &payload))
+	}](t, evt.Payload)
 	assert.Equal(t, "alice", payload.Owner)
 }
 
 func TestCreateIssue_WithInitialLinks(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
 	blocker := makeIssue(t, ctx, d, p.ID, "blocker", "tester")
 
@@ -85,23 +72,19 @@ func TestCreateIssue_WithInitialLinks(t *testing.T) {
 	assert.Len(t, links, 2)
 
 	// Payload references to_number, not to_issue_id.
-	var payload struct {
+	payload := unmarshalPayload[struct {
 		Links []struct {
 			Type     string `json:"type"`
 			ToNumber int64  `json:"to_number"`
 		} `json:"links"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(evt.Payload), &payload))
+	}](t, evt.Payload)
 	require.Len(t, payload.Links, 2)
 }
 
 func TestCreateIssue_RejectsInitialLinkToMissingTarget(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "x", Author: "tester",
 		Links: []db.InitialLink{{Type: "parent", ToNumber: 999}},
 	})
@@ -110,13 +93,10 @@ func TestCreateIssue_RejectsInitialLinkToMissingTarget(t *testing.T) {
 }
 
 func TestCreateIssue_RejectsInvalidInitialLinkType(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	target := makeIssue(t, ctx, d, p.ID, "t", "tester")
 
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "x", Author: "tester",
 		Links: []db.InitialLink{{Type: "child", ToNumber: target.Number}},
 	})
@@ -124,12 +104,9 @@ func TestCreateIssue_RejectsInvalidInitialLinkType(t *testing.T) {
 }
 
 func TestCreateIssue_RejectsInvalidLabel(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "x", Author: "tester",
 		Labels: []string{"BadCase"},
 	})
@@ -137,10 +114,7 @@ func TestCreateIssue_RejectsInvalidLabel(t *testing.T) {
 }
 
 func TestCreateIssue_NoInitialStateEmitsEmptyPayload(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
 	_, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "x", Author: "tester",
@@ -150,10 +124,7 @@ func TestCreateIssue_NoInitialStateEmitsEmptyPayload(t *testing.T) {
 }
 
 func TestCreateIssue_DuplicateInitialLinksAreDeduped(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
 
 	child, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
@@ -171,21 +142,17 @@ func TestCreateIssue_DuplicateInitialLinksAreDeduped(t *testing.T) {
 	assert.Len(t, links, 1)
 
 	// Payload reflects the deduped list.
-	var payload struct {
+	payload := unmarshalPayload[struct {
 		Links []struct {
 			Type     string `json:"type"`
 			ToNumber int64  `json:"to_number"`
 		} `json:"links"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(evt.Payload), &payload))
+	}](t, evt.Payload)
 	assert.Len(t, payload.Links, 1)
 }
 
 func TestCreateIssue_EmptyStringOwnerNormalizesToNil(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 
 	empty := ""
 	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
@@ -198,10 +165,7 @@ func TestCreateIssue_EmptyStringOwnerNormalizesToNil(t *testing.T) {
 }
 
 func TestCreateIssue_WithAllInitialState(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	parent := makeIssue(t, ctx, d, p.ID, "parent", "tester")
 
 	owner := "alice"
@@ -226,15 +190,14 @@ func TestCreateIssue_WithAllInitialState(t *testing.T) {
 	assert.Len(t, links, 1)
 
 	// Payload union: labels, links, and owner all present.
-	var payload struct {
+	payload := unmarshalPayload[struct {
 		Labels []string `json:"labels"`
 		Links  []struct {
 			Type     string `json:"type"`
 			ToNumber int64  `json:"to_number"`
 		} `json:"links"`
 		Owner string `json:"owner"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(evt.Payload), &payload))
+	}](t, evt.Payload)
 	assert.Equal(t, []string{"bug", "priority:high"}, payload.Labels)
 	require.Len(t, payload.Links, 1)
 	assert.Equal(t, "parent", payload.Links[0].Type)

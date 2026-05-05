@@ -19,14 +19,8 @@ func TestMaxEventID_EmptyTable(t *testing.T) {
 func TestMaxEventID_AfterInserts(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	for i := 0; i < 3; i++ {
-		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
-			ProjectID: p.ID, Title: "t", Body: "", Author: "tester",
-		})
-		require.NoError(t, err)
-	}
+	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	createTesterIssues(ctx, t, d, p.ID, 3)
 	got, err := d.MaxEventID(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), got, "three issue.created events → highest event id is 3")
@@ -35,14 +29,10 @@ func TestMaxEventID_AfterInserts(t *testing.T) {
 func TestEventsAfter_CrossProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pa, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	pb, err := d.CreateProject(ctx, "github.com/test/b", "b")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: pa.ID, Title: "a1", Author: "tester"})
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: pb.ID, Title: "b1", Author: "tester"})
-	require.NoError(t, err)
+	pa := createProject(ctx, t, d, "github.com/test/a", "a")
+	pb := createProject(ctx, t, d, "github.com/test/b", "b")
+	createTesterIssue(ctx, t, d, pa.ID, "a1")
+	createTesterIssue(ctx, t, d, pb.ID, "b1")
 
 	all, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 0, Limit: 100})
 	require.NoError(t, err)
@@ -54,14 +44,10 @@ func TestEventsAfter_CrossProject(t *testing.T) {
 func TestEventsAfter_PerProjectFilter(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pa, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	pb, err := d.CreateProject(ctx, "github.com/test/b", "b")
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: pa.ID, Title: "a1", Author: "tester"})
-	require.NoError(t, err)
-	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: pb.ID, Title: "b1", Author: "tester"})
-	require.NoError(t, err)
+	pa := createProject(ctx, t, d, "github.com/test/a", "a")
+	pb := createProject(ctx, t, d, "github.com/test/b", "b")
+	createTesterIssue(ctx, t, d, pa.ID, "a1")
+	createTesterIssue(ctx, t, d, pb.ID, "b1")
 
 	onlyA, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 0, ProjectID: pa.ID, Limit: 100})
 	require.NoError(t, err)
@@ -72,12 +58,8 @@ func TestEventsAfter_PerProjectFilter(t *testing.T) {
 func TestEventsAfter_RespectsThroughID(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	for i := 0; i < 5; i++ {
-		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "tester"})
-		require.NoError(t, err)
-	}
+	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	createTesterIssues(ctx, t, d, p.ID, 5)
 	got, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 0, ThroughID: 3, Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, got, 3)
@@ -87,12 +69,8 @@ func TestEventsAfter_RespectsThroughID(t *testing.T) {
 func TestEventsAfter_RespectsLimit(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	for i := 0; i < 5; i++ {
-		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "tester"})
-		require.NoError(t, err)
-	}
+	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	createTesterIssues(ctx, t, d, p.ID, 5)
 	got, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 0, Limit: 2})
 	require.NoError(t, err)
 	assert.Len(t, got, 2)
@@ -101,12 +79,8 @@ func TestEventsAfter_RespectsLimit(t *testing.T) {
 func TestEventsAfter_StrictlyAfterNonZeroID(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	for i := 0; i < 5; i++ {
-		_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "x", Author: "tester"})
-		require.NoError(t, err)
-	}
+	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	createTesterIssues(ctx, t, d, p.ID, 5)
 	// Five issue.created events with ids 1..5. AfterID=3 must return ids 4, 5
 	// (strict >); AfterID=5 must return zero rows.
 	got, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 3, Limit: 100})
@@ -130,11 +104,9 @@ func TestPurgeResetCheck_NoPurges(t *testing.T) {
 func TestPurgeResetCheck_AfterPurgeWithEvents(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	is, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "doomed", Author: "tester"})
-	require.NoError(t, err)
-	_, err = d.PurgeIssue(ctx, is.ID, "tester", nil)
+	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	is, _ := createTesterIssue(ctx, t, d, p.ID, "doomed")
+	_, err := d.PurgeIssue(ctx, is.ID, "tester", nil)
 	require.NoError(t, err)
 
 	// cursor below the reset → returns the reset cursor
@@ -151,13 +123,10 @@ func TestPurgeResetCheck_AfterPurgeWithEvents(t *testing.T) {
 func TestPurgeResetCheck_PerProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pa, err := d.CreateProject(ctx, "github.com/test/a", "a")
-	require.NoError(t, err)
-	pb, err := d.CreateProject(ctx, "github.com/test/b", "b")
-	require.NoError(t, err)
-	is, _, err := d.CreateIssue(ctx, db.CreateIssueParams{ProjectID: pa.ID, Title: "doomed", Author: "tester"})
-	require.NoError(t, err)
-	_, err = d.PurgeIssue(ctx, is.ID, "tester", nil)
+	pa := createProject(ctx, t, d, "github.com/test/a", "a")
+	pb := createProject(ctx, t, d, "github.com/test/b", "b")
+	is, _ := createTesterIssue(ctx, t, d, pa.ID, "doomed")
+	_, err := d.PurgeIssue(ctx, is.ID, "tester", nil)
 	require.NoError(t, err)
 
 	// per-project filter: a purge in A is invisible to a B-scoped subscriber

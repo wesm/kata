@@ -1,14 +1,28 @@
 package daemon_test
 
 import (
-	"encoding/json"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/testenv"
 )
+
+// readyResp is the decoded shape of a /ready response body, narrowed to the
+// fields the tests assert on.
+type readyResp struct {
+	Issues []struct {
+		Number int64 `json:"number"`
+	} `json:"issues"`
+}
+
+// getReady GETs /api/v1/projects/{pid}/ready{query} and decodes the response.
+// query may be empty or a leading-`?` query string (e.g. "?limit=2").
+func getReady(t *testing.T, env *testenv.Env, projectID int64, query string) readyResp {
+	t.Helper()
+	var out readyResp
+	envGetJSON(t, env, projectPath(projectID)+"/ready"+query, &out)
+	return out
+}
 
 func TestReady_FiltersBlocked(t *testing.T) {
 	env := testenv.New(t)
@@ -16,16 +30,7 @@ func TestReady_FiltersBlocked(t *testing.T) {
 	standalone := createIssueViaHTTP(t, env, pid, "standalone")
 	postLink(t, env, pid, blocker, "blocks", blocked)
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/ready")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-	var out struct {
-		Issues []struct {
-			Number int64 `json:"number"`
-		} `json:"issues"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	out := getReady(t, env, pid, "")
 	got := map[int64]bool{}
 	for _, i := range out.Issues {
 		got[i.Number] = true
@@ -42,15 +47,6 @@ func TestReady_RespectsLimit(t *testing.T) {
 		createIssueViaHTTP(t, env, pid, "x")
 	}
 
-	resp, err := env.HTTP.Get(env.URL + "/api/v1/projects/" + strconv.FormatInt(pid, 10) + "/ready?limit=2")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, 200, resp.StatusCode)
-	var out struct {
-		Issues []struct {
-			Number int64 `json:"number"`
-		} `json:"issues"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	out := getReady(t, env, pid, "?limit=2")
 	assert.Len(t, out.Issues, 2)
 }

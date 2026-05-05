@@ -18,21 +18,21 @@ func TestImportPropagatesDecoderFailures(t *testing.T) {
 	}{
 		{
 			name:    "truncated JSON",
-			input:   `{"kind":"meta","data":{"key":"export_version","value":"1"}}` + "\n" + `{"kind":"project","data":`,
+			input:   buildJSONL(validExportVersion, `{"kind":"project","data":`),
 			wantErr: "line 2",
 		},
 		{
 			name:    "missing export version",
-			input:   `{"kind":"project","data":{"id":1}}` + "\n",
+			input:   buildJSONL(`{"kind":"project","data":{"id":1}}`),
 			wantErr: "missing export_version",
 		},
 		{
 			name: "kind order violation",
-			input: strings.Join([]string{
-				`{"kind":"meta","data":{"key":"export_version","value":"1"}}`,
+			input: buildJSONL(
+				validExportVersion,
 				`{"kind":"event","data":{"id":1}}`,
 				`{"kind":"issue","data":{"id":1}}`,
-			}, "\n") + "\n",
+			),
 			wantErr: "kind order violation",
 		},
 	}

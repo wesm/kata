@@ -16,10 +16,8 @@ import (
 // projects loaded yet. Required for boot landing where the fetch is
 // still in flight.
 func TestProjectsView_RendersWithoutPanic(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.width = 80
-	m.height = 24
+	m := setupProjectsView()
+	m.width = 80 // narrower than the 120 default
 
 	out := m.View()
 	if out == "" {
@@ -102,16 +100,10 @@ func TestProjectsRows_StableTiebreakerOnEqualNamesAndTimes(t *testing.T) {
 // terminal so all columns fit.
 func TestProjectsView_RendersTable(t *testing.T) {
 	t1 := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.width = 120
-	m.height = 24
-	m.projectsByID = map[int64]string{1: "kata", 2: "roborev"}
-	m.projectIdentByID = map[int64]string{1: "github.com/wesm/kata", 2: "github.com/wesm/roborev"}
-	m.projectStats = map[int64]ProjectStatsSummary{
-		1: {Open: 12, Closed: 3, LastEventAt: &t1},
-		2: {Open: 7, Closed: 2, LastEventAt: &t1},
-	}
+	m := setupProjectsView(
+		mockProject{ID: 1, Name: "kata", Ident: "github.com/wesm/kata", Stats: ProjectStatsSummary{Open: 12, Closed: 3, LastEventAt: &t1}},
+		mockProject{ID: 2, Name: "roborev", Ident: "github.com/wesm/roborev", Stats: ProjectStatsSummary{Open: 7, Closed: 2, LastEventAt: &t1}},
+	)
 
 	out := m.View()
 	for _, want := range []string{
@@ -127,17 +119,14 @@ func TestProjectsView_RendersTable(t *testing.T) {
 // screen. Without clipping, every row renders and the chrome falls
 // off the bottom — the user can't see [↑/↓ k/j] move etc.
 func TestProjectsView_ViewportClipsRowsToHeight(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.width = 120
+	m := setupProjectsView()
 	m.height = 14 // chrome=8 + ~5 row slots
-	m.projectsByID = map[int64]string{}
-	m.projectIdentByID = map[int64]string{}
-	m.projectStats = map[int64]ProjectStatsSummary{}
 	for i := int64(1); i <= 20; i++ {
-		m.projectsByID[i] = "proj" + strconv.FormatInt(i, 10)
-		m.projectIdentByID[i] = "github.com/wesm/proj" + strconv.FormatInt(i, 10)
-		m.projectStats[i] = ProjectStatsSummary{}
+		injectProjects(&m, mockProject{
+			ID:    i,
+			Name:  "proj" + strconv.FormatInt(i, 10),
+			Ident: "github.com/wesm/proj" + strconv.FormatInt(i, 10),
+		})
 	}
 	m.projectsCursor = 10
 
@@ -151,15 +140,9 @@ func TestProjectsView_ViewportClipsRowsToHeight(t *testing.T) {
 // TestProjectsView_DashWhenNoEvents pins spec §6.1: a row with
 // LastEventAt=nil renders "—" in the Updated column.
 func TestProjectsView_DashWhenNoEvents(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.width = 120
-	m.height = 24
-	m.projectsByID = map[int64]string{1: "fresh"}
-	m.projectIdentByID = map[int64]string{1: "github.com/wesm/fresh"}
-	m.projectStats = map[int64]ProjectStatsSummary{
-		1: {Open: 0, Closed: 0, LastEventAt: nil},
-	}
+	m := setupProjectsView(
+		mockProject{ID: 1, Name: "fresh", Ident: "github.com/wesm/fresh"},
+	)
 	out := m.View()
 	assert.Contains(t, out, "—", "nil LastEventAt must render as em-dash")
 }
@@ -168,13 +151,9 @@ func TestProjectsView_DashWhenNoEvents(t *testing.T) {
 // highlighting a real project renders its identity URL beneath the
 // table; highlighting the sentinel renders the description.
 func TestProjectsView_IdentityFooterOnHighlight(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.width = 120
-	m.height = 24
-	m.projectsByID = map[int64]string{1: "kata"}
-	m.projectIdentByID = map[int64]string{1: "github.com/wesm/kata"}
-	m.projectStats = map[int64]ProjectStatsSummary{1: {}}
+	m := setupProjectsView(
+		mockProject{ID: 1, Name: "kata", Ident: "github.com/wesm/kata"},
+	)
 
 	m.projectsCursor = 0 // sentinel row
 	out := m.View()
@@ -188,22 +167,22 @@ func TestProjectsView_IdentityFooterOnHighlight(t *testing.T) {
 // TestProjectsView_JKMoveCursor pins basic vertical navigation. Cursor
 // is clamped at both ends; j moves down, k moves up.
 func TestProjectsView_JKMoveCursor(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.projectsByID = map[int64]string{1: "a", 2: "b", 3: "c"}
-	m.projectIdentByID = map[int64]string{1: "...", 2: "...", 3: "..."}
-	m.projectStats = map[int64]ProjectStatsSummary{1: {}, 2: {}, 3: {}}
+	m := setupProjectsView(
+		mockProject{ID: 1, Name: "a", Ident: "..."},
+		mockProject{ID: 2, Name: "b", Ident: "..."},
+		mockProject{ID: 3, Name: "c", Ident: "..."},
+	)
 	m.projectsCursor = 0
 
-	out, _ := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	out, _ := m.routeProjectsViewKey(keyRune('j'))
 	assert.Equal(t, 1, out.projectsCursor, "j → cursor 1")
 
-	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	out, _ = out.routeProjectsViewKey(keyRune('j'))
+	out, _ = out.routeProjectsViewKey(keyRune('j'))
+	out, _ = out.routeProjectsViewKey(keyRune('j'))
 	assert.Equal(t, 3, out.projectsCursor, "j past end is clamped")
 
-	out, _ = out.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	out, _ = out.routeProjectsViewKey(keyRune('k'))
 	assert.Equal(t, 2, out.projectsCursor, "k → cursor 2")
 }
 
@@ -211,11 +190,10 @@ func TestProjectsView_JKMoveCursor(t *testing.T) {
 // a real project sets scope to that project and transitions to viewList
 // with a fresh fetch dispatched.
 func TestProjectsView_EnterOnProjectTransitions(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.projectsByID = map[int64]string{7: "kata", 9: "roborev"}
-	m.projectIdentByID = map[int64]string{7: "...", 9: "..."}
-	m.projectStats = map[int64]ProjectStatsSummary{7: {}, 9: {}}
+	m := setupProjectsView(
+		mockProject{ID: 7, Name: "kata", Ident: "..."},
+		mockProject{ID: 9, Name: "roborev", Ident: "..."},
+	)
 	// Prime the cache so isStale() can register invalidation
 	// (isStale requires cache.set==true; see cache.go:51-52).
 	m.cache.put(cacheKey{allProjects: true}, []Issue{{Number: 1}})
@@ -237,11 +215,9 @@ func TestProjectsView_EnterOnProjectTransitions(t *testing.T) {
 // TestProjectsView_EnterOnSentinelTransitions pins that Enter on the
 // All-projects row sets allProjects=true and transitions to viewList.
 func TestProjectsView_EnterOnSentinelTransitions(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.projectsByID = map[int64]string{1: "a"}
-	m.projectIdentByID = map[int64]string{1: "..."}
-	m.projectStats = map[int64]ProjectStatsSummary{1: {}}
+	m := setupProjectsView(
+		mockProject{ID: 1, Name: "a", Ident: "..."},
+	)
 	// Prime the cache so isStale() can register invalidation
 	// (isStale requires cache.set==true; see cache.go:51-52).
 	m.cache.put(cacheKey{projectID: 1}, []Issue{{Number: 1}})
@@ -259,12 +235,10 @@ func TestProjectsView_EnterOnSentinelTransitions(t *testing.T) {
 // re-selection contract: re-selecting the row that matches the active
 // scope just returns to viewList — no cache invalidation, no refetch.
 func TestProjectsView_EnterOnCurrentScopeIsIdempotent(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.projectsByID = map[int64]string{7: "kata"}
-	m.projectIdentByID = map[int64]string{7: "..."}
-	m.projectStats = map[int64]ProjectStatsSummary{7: {}}
-	m.scope = scope{projectID: 7, projectName: "kata", homeProjectID: 7, homeProjectName: "kata"}
+	m := setupProjectsView(
+		mockProject{ID: 7, Name: "kata", Ident: "..."},
+	)
+	m.scope = homedScope(7, "kata")
 	m.projectsCursor = 1 // the kata row
 
 	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -277,9 +251,8 @@ func TestProjectsView_EnterOnCurrentScopeIsIdempotent(t *testing.T) {
 // viewProjects returns to viewList without a refetch when scope is set
 // (the user came from a list via P).
 func TestProjectsView_EscReturnsToPriorList(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
-	m.scope = scope{projectID: 7, projectName: "kata", homeProjectID: 7, homeProjectName: "kata"}
+	m := setupProjectsView()
+	m.scope = homedScope(7, "kata")
 
 	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEsc})
 	assert.Equal(t, viewList, out.view, "Esc → viewList")
@@ -290,8 +263,7 @@ func TestProjectsView_EscReturnsToPriorList(t *testing.T) {
 // TestProjectsView_EscNoOpOnBootEntry pins that Esc with no prior scope
 // (boot landed on viewProjects) leaves the view in place. Spec §1.4.
 func TestProjectsView_EscNoOpOnBootEntry(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
+	m := setupProjectsView()
 	// Default scope is zero (empty=false, projectID=0, allProjects=false)
 	// — this represents the boot landing case.
 
@@ -303,10 +275,9 @@ func TestProjectsView_EscNoOpOnBootEntry(t *testing.T) {
 // TestProjectsView_RRefreshes pins spec §1.4: r dispatches a manual
 // refresh of the projects table. View stays in viewProjects.
 func TestProjectsView_RRefreshes(t *testing.T) {
-	m := initialModel(Options{})
-	m.view = viewProjects
+	m := setupProjectsView()
 
-	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	out, cmd := m.routeProjectsViewKey(keyRune('r'))
 	assert.Equal(t, viewProjects, out.view)
 	require.NotNil(t, cmd, "r must dispatch fetchProjectsWithStats")
 }
@@ -317,13 +288,12 @@ func TestProjectsView_RRefreshes(t *testing.T) {
 func TestProjectsView_PFromListTransitions(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewList
-	m.scope = scope{projectID: 7, projectName: "kata", homeProjectID: 7, homeProjectName: "kata"}
+	m.scope = homedScope(7, "kata")
 	// Need a stub api so the cmd can be dispatched without crashing —
 	// the cmd doesn't run to completion in this test.
 	m.api = &Client{}
 
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
-	nm := out.(Model)
+	nm, cmd := updateModel(m, keyRune('P'))
 	assert.Equal(t, viewProjects, nm.view)
 	assert.Equal(t, int64(7), nm.scope.projectID, "scope preserved on P transition")
 	require.NotNil(t, cmd, "P must dispatch a stats fetch")
@@ -338,8 +308,7 @@ func TestProjectsView_PWhileInputFocusedRoutesToPrompt(t *testing.T) {
 	m.scope = scope{projectID: 7, projectName: "kata"}
 	m.input = newSearchBar(ListFilter{})
 
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
-	nm := out.(Model)
+	nm, _ := updateModel(m, keyRune('P'))
 	assert.Equal(t, viewList, nm.view, "view must not transition while input is focused")
 	if v := nm.input.activeField().value(); v != "P" {
 		t.Fatalf("input buffer = %q, want %q", v, "P")

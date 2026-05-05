@@ -6,57 +6,49 @@ import (
 	"testing"
 )
 
+// defaultTestPrompt builds the inputLabelPrompt panel state shared by
+// every suggest-render test in this file: project 7, issue 1.
+func defaultTestPrompt() inputState {
+	return newPanelPrompt(inputLabelPrompt, formTarget{
+		projectID: 7, issueNumber: 1,
+	})
+}
+
 // TestSuggestMenu_RendersEntries: a populated cache produces a menu
 // with one row per suggestion (top + bottom border + N entry rows).
 func TestSuggestMenu_RendersEntries(t *testing.T) {
 	defer snapshotInit(t)()
-	s := newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 1,
-	})
+	s := defaultTestPrompt()
 	suggestions := []LabelCount{
 		{Label: "bug", Count: 5},
 		{Label: "design", Count: 3},
 	}
 	got := renderSuggestMenu(s, suggestions, labelCacheEntry{})
-	if !strings.Contains(got, "bug") {
-		t.Fatalf("menu missing 'bug': %q", got)
-	}
-	if !strings.Contains(got, "design") {
-		t.Fatalf("menu missing 'design': %q", got)
-	}
+	assertContains(t, got, "bug", "menu missing 'bug'")
+	assertContains(t, got, "design", "menu missing 'design'")
 }
 
 // TestSuggestMenu_LoadingPlaceholder: a fetching=true entry with no
 // labels renders the loading placeholder instead of an empty list.
 func TestSuggestMenu_LoadingPlaceholder(t *testing.T) {
 	defer snapshotInit(t)()
-	s := newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 1,
-	})
+	s := defaultTestPrompt()
 	got := renderSuggestMenu(s, nil, labelCacheEntry{
 		pid: 7, gen: 1, fetching: true,
 	})
-	if !strings.Contains(got, "loading") {
-		t.Fatalf("menu missing 'loading' placeholder: %q", got)
-	}
+	assertContains(t, got, "loading", "menu missing 'loading' placeholder")
 }
 
 // TestSuggestMenu_ErrorPlaceholder: an entry with a non-nil err
 // surfaces the error message in the menu body.
 func TestSuggestMenu_ErrorPlaceholder(t *testing.T) {
 	defer snapshotInit(t)()
-	s := newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 1,
-	})
+	s := defaultTestPrompt()
 	got := renderSuggestMenu(s, nil, labelCacheEntry{
 		pid: 7, gen: 1, err: errors.New("daemon 500"),
 	})
-	if !strings.Contains(got, "daemon 500") {
-		t.Fatalf("menu missing error message: %q", got)
-	}
-	if !strings.Contains(got, "error") {
-		t.Fatalf("menu missing error label: %q", got)
-	}
+	assertContains(t, got, "daemon 500", "menu missing error message")
+	assertContains(t, got, "error", "menu missing error label")
 }
 
 // TestSuggestMenu_EmptyPlaceholder: a fetched entry with zero labels
@@ -64,15 +56,11 @@ func TestSuggestMenu_ErrorPlaceholder(t *testing.T) {
 // no labels yet (rather than a confusingly-empty menu).
 func TestSuggestMenu_EmptyPlaceholder(t *testing.T) {
 	defer snapshotInit(t)()
-	s := newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 1,
-	})
+	s := defaultTestPrompt()
 	got := renderSuggestMenu(s, nil, labelCacheEntry{
 		pid: 7, gen: 1, fetching: false,
 	})
-	if !strings.Contains(got, "no labels") {
-		t.Fatalf("menu missing empty placeholder: %q", got)
-	}
+	assertContains(t, got, "no labels", "menu missing empty placeholder")
 }
 
 // TestSuggestMenu_Scrolls_HighlightStaysVisible: with N > maxRows
@@ -81,9 +69,7 @@ func TestSuggestMenu_EmptyPlaceholder(t *testing.T) {
 // without the windowing).
 func TestSuggestMenu_Scrolls_HighlightStaysVisible(t *testing.T) {
 	defer snapshotInit(t)()
-	s := newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 1,
-	})
+	s := defaultTestPrompt()
 	s.suggestHighlight = 9 // out past the menu's row budget
 	suggestions := make([]LabelCount, 12)
 	for i := range suggestions {
@@ -93,15 +79,12 @@ func TestSuggestMenu_Scrolls_HighlightStaysVisible(t *testing.T) {
 		}
 	}
 	got := renderSuggestMenu(s, suggestions, labelCacheEntry{})
-	if !strings.Contains(got, "lbl-10") {
-		t.Fatalf("scroll window did not include highlighted row "+
-			"(lbl-10): %q", got)
-	}
+	assertContains(t, got, "lbl-10",
+		"scroll window did not include highlighted row (lbl-10)")
 	// And the first entries (which would render without scroll)
 	// should NOT be present once the window has scrolled past them.
-	if strings.Contains(got, "lbl-1\n") || strings.Contains(got, "lbl-1 ") {
-		t.Fatalf("scroll window did not scroll past lbl-1: %q", got)
-	}
+	assertNotContains(t, got, "lbl-1\n", "scroll window did not scroll past lbl-1")
+	assertNotContains(t, got, "lbl-1 ", "scroll window did not scroll past lbl-1")
 }
 
 // TestFilterSuggestions_PrefixCaseInsensitive: prefix filter matches
@@ -240,9 +223,7 @@ func TestSuggestMenu_InfoLineAndFooterStayAtBottom_WhenMenuOpen(t *testing.T) {
 // placeholder rows).
 func TestSuggestMenuHeight_CountsBordersAndBody(t *testing.T) {
 	defer snapshotInit(t)()
-	s := newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 1,
-	})
+	s := defaultTestPrompt()
 	// Empty cache: 1 placeholder row + 2 borders = 3.
 	if got := suggestMenuHeight(s, nil, labelCacheEntry{}); got != 3 {
 		t.Fatalf("empty-cache height = %d, want 3", got)

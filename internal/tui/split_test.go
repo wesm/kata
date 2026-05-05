@@ -11,23 +11,46 @@ import (
 // splitTestSetup boots a Model into split layout (160x40) with the
 // listFixture seeded so the split tests have something to render and
 // drive cursor moves against. Returns the model and a cleanup that
-// reverts the rebuilt color mode.
+// reverts the rebuilt color mode. The api field is wired with a stub
+// Client so handlers that gate on a non-nil api don't no-op.
 func splitTestSetup(t *testing.T) (Model, func()) {
 	t.Helper()
 	t.Setenv("KATA_COLOR_MODE", "none")
 	t.Setenv("NO_COLOR", "")
 	applyDefaultColorMode(io.Discard)
 	m := initialModel(Options{})
+	m.api = &Client{}
 	m.scope = scope{projectID: 7, projectName: "kata"}
 	m.list.loading = false
 	m.list.issues = snapListFixture()
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
-	m = out.(Model)
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
 	cleanup := func() { applyDefaultColorMode(io.Discard) }
 	if m.layout != layoutSplit {
 		t.Fatalf("split setup failed: layout=%v want layoutSplit", m.layout)
 	}
 	return m, cleanup
+}
+
+// focusFirstIssueDetail seeds the detail pane with m.list.issues[0],
+// pins scopePID to the active project, and switches focus to the
+// detail pane — the standard mutation pattern that drives detail-pane
+// tests in split mode.
+func focusFirstIssueDetail(m *Model) {
+	iss := m.list.issues[0]
+	m.detail.issue = &iss
+	m.detail.scopePID = m.scope.projectID
+	m.focus = focusDetail
+}
+
+// assertSingleOverlayBox verifies that view contains exactly one
+// rounded modal box (╭). Pane borders use the normal border (┌), so a
+// count > 1 means a modal accidentally rendered inside a pane instead
+// of over the whole terminal.
+func assertSingleOverlayBox(t *testing.T, view string) {
+	t.Helper()
+	if c := strings.Count(view, "╭"); c != 1 {
+		t.Errorf("expected exactly 1 modal top-left ╭ corner, got %d", c)
+	}
 }
 
 // TestSplit_CursorMoveRetargetsDetail covers the synchronous detail-
@@ -40,8 +63,7 @@ func TestSplit_CursorMoveRetargetsDetail(t *testing.T) {
 	defer cleanup()
 	// Press j twice — the fixture has 3 rows so cursor lands on row 2.
 	for i := 0; i < 2; i++ {
-		out, _ := m.Update(runeKey('j'))
-		m = out.(Model)
+		m, _ = updateModel(m, runeKey('j'))
 	}
 	if m.detail.issue == nil {
 		t.Fatal("dm.issue stayed nil after cursor moves")
@@ -66,8 +88,7 @@ func TestSplit_DebounceCoalescesBursts(t *testing.T) {
 	defer cleanup()
 	startGen := m.nextDetailFollowGen
 	for i := 0; i < 5; i++ {
-		out, _ := m.Update(runeKey('j'))
-		m = out.(Model)
+		m, _ = updateModel(m, runeKey('j'))
 	}
 	// Cursor caps at len-1 = 2 (3 rows), so two of the five j keys
 	// move and three are no-ops. The gen advances only on actual
@@ -92,8 +113,7 @@ func TestSplit_TabMovesFocusToDetail(t *testing.T) {
 	if m.focus != focusList {
 		t.Fatalf("setup focus=%v want focusList", m.focus)
 	}
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = out.(Model)
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyTab})
 	if m.focus != focusDetail {
 		t.Errorf("focus=%v after tab, want focusDetail", m.focus)
 	}
@@ -106,8 +126,7 @@ func TestSplit_TabMovesFocusToDetail(t *testing.T) {
 func TestSplit_EnterMovesFocusToDetail(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = out.(Model)
+	m, cmd := updateModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Enter on list pane produced no cmd; expected openDetailMsg dispatch")
 	}
@@ -115,8 +134,7 @@ func TestSplit_EnterMovesFocusToDetail(t *testing.T) {
 	if _, ok := msg.(openDetailMsg); !ok {
 		t.Fatalf("expected openDetailMsg from Enter, got %T", msg)
 	}
-	out, _ = m.Update(msg)
-	m = out.(Model)
+	m, _ = updateModel(m, msg)
 	if m.focus != focusDetail {
 		t.Errorf("focus=%v after enter+route, want focusDetail", m.focus)
 	}
@@ -128,11 +146,8 @@ func TestSplit_EnterMovesFocusToDetail(t *testing.T) {
 func TestSplit_EscReturnsFocusToList(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	iss := m.list.issues[0]
-	m.detail.issue = &iss
-	m.focus = focusDetail
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = out.(Model)
+	focusFirstIssueDetail(&m)
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.focus != focusList {
 		t.Errorf("focus=%v after esc, want focusList", m.focus)
 	}
@@ -145,17 +160,13 @@ func TestSplit_EscReturnsFocusToList(t *testing.T) {
 func TestSplit_EscDoesNotEscapeWhilePromptActive(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	iss := m.list.issues[0]
-	m.detail.issue = &iss
-	m.detail.scopePID = 7
-	m.focus = focusDetail
+	focusFirstIssueDetail(&m)
 	// Open a label prompt.
 	m, _ = m.openInput(inputLabelPrompt)
 	if m.input.kind != inputLabelPrompt {
 		t.Fatalf("setup failed: input.kind=%v want inputLabelPrompt", m.input.kind)
 	}
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = out.(Model)
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.input.kind != inputNone {
 		t.Errorf("input.kind=%v after first esc, want inputNone (prompt closed)", m.input.kind)
 	}
@@ -163,8 +174,7 @@ func TestSplit_EscDoesNotEscapeWhilePromptActive(t *testing.T) {
 		t.Errorf("focus=%v after first esc, want focusDetail (focus stays)", m.focus)
 	}
 	// Second esc moves focus.
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = out.(Model)
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.focus != focusList {
 		t.Errorf("focus=%v after second esc, want focusList", m.focus)
 	}
@@ -184,12 +194,7 @@ func TestSplit_FilterModalOverlaysWholeTerminal(t *testing.T) {
 	if !strings.Contains(got, "filter") {
 		t.Fatalf("filter modal did not render; output:\n%s", got)
 	}
-	// Modal box uses rounded border ╭ ╮ ╰ ╯; pane borders use the
-	// normal border (┌ ┐ └ ┘). One ╭ means the modal box is the
-	// only rounded panel on screen.
-	if c := strings.Count(got, "╭"); c != 1 {
-		t.Errorf("expected exactly 1 modal top-left ╭ corner, got %d", c)
-	}
+	assertSingleOverlayBox(t, got)
 }
 
 // TestSplit_NewIssueFormOverlaysWholeTerminal: same property for the
@@ -202,9 +207,7 @@ func TestSplit_NewIssueFormOverlaysWholeTerminal(t *testing.T) {
 	if !strings.Contains(got, "new issue") {
 		t.Fatalf("new-issue form did not render; output:\n%s", got)
 	}
-	if c := strings.Count(got, "╭"); c != 1 {
-		t.Errorf("expected exactly 1 modal top-left ╭ corner, got %d", c)
-	}
+	assertSingleOverlayBox(t, got)
 }
 
 // TestSplit_HelpRowSwapsWithFocus: focus=list shows list footer
@@ -243,10 +246,7 @@ func TestSplit_HelpRowSwapsWithFocus(t *testing.T) {
 func TestSplit_SuggestionMenuClampedToDetailPane(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	iss := m.list.issues[0]
-	m.detail.issue = &iss
-	m.detail.scopePID = 7
-	m.focus = focusDetail
+	focusFirstIssueDetail(&m)
 	// Seed the label cache so the menu has a known row to find.
 	m.projectLabels.byProject[7] = labelCacheEntry{
 		pid: 7, gen: 1,
@@ -278,14 +278,12 @@ func TestSplit_LayoutFlip_FromStackedToSplitFromList(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
 	// Already in split mode from setup — flip back to stacked first.
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	m = out.(Model)
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	if m.layout != layoutStacked {
 		t.Fatalf("setup failed: layout=%v want layoutStacked", m.layout)
 	}
 	m.list.selectedNumber = 7
-	out, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
-	m = out.(Model)
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
 	if m.layout != layoutSplit {
 		t.Errorf("layout=%v after resize up, want layoutSplit", m.layout)
 	}
@@ -309,11 +307,8 @@ func TestSplit_LayoutFlip_FromStackedToSplitFromList(t *testing.T) {
 func TestSplit_JumpDetail_SurvivesCursorFollowFocusDetail(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	// api must be non-nil for handleJumpDetail to dispatch the fetch.
-	m.api = &Client{}
 	// Press j to retarget detail via cursor-follow; m.view stays viewList.
-	out, _ := m.Update(runeKey('j'))
-	m = out.(Model)
+	m, _ = updateModel(m, runeKey('j'))
 	if m.detail.issue == nil {
 		t.Fatal("setup: cursor-follow did not retarget m.detail.issue")
 	}
@@ -321,8 +316,7 @@ func TestSplit_JumpDetail_SurvivesCursorFollowFocusDetail(t *testing.T) {
 		t.Fatalf("setup: m.view=%v want viewList (cursor-follow must not change m.view)", m.view)
 	}
 	// Tab advances focus to focusDetail; m.view still viewList.
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = out.(Model)
+	m, _ = updateModel(m, tea.KeyMsg{Type: tea.KeyTab})
 	if m.focus != focusDetail {
 		t.Fatalf("setup: m.focus=%v want focusDetail after Tab", m.focus)
 	}
@@ -337,63 +331,44 @@ func TestSplit_JumpDetail_SurvivesCursorFollowFocusDetail(t *testing.T) {
 	}
 }
 
-// TestSplit_JumpDetail_DroppedWhenHelpOverlayOpen covers Job 252:
-// when viewHelp is active in split mode (full-screen overlay hides
-// both panes), a queued jumpDetailMsg must NOT silently mutate the
-// hidden detail state. The original M6 fix used detailIsActive() which
+// TestSplit_JumpDetail_DroppedWhenViewObscured covers Job 252: when a
+// full-screen view (viewHelp / viewEmpty) hides both panes in split
+// mode, a queued jumpDetailMsg must NOT silently mutate the hidden
+// detail state. The original M6 fix used detailIsActive() which
 // ignored m.view; this test pins the corrected detailPaneVisible()
-// gate.
-func TestSplit_JumpDetail_DroppedWhenHelpOverlayOpen(t *testing.T) {
-	m, cleanup := splitTestSetup(t)
-	defer cleanup()
-	m.api = &Client{}
-	// Park focus on detail (the racy state: ? opens help while focus
-	// is still focusDetail). detailIsActive() alone returns true here,
-	// so the bare-helper gate would let the jump through.
-	m.focus = focusDetail
-	m.view = viewHelp
-	priorGen := m.detail.gen
-	if !m.detailIsActive() {
-		t.Fatalf("setup: detailIsActive=false with focusDetail, want true (test would not exercise the gate)")
+// gate across both obscuring views.
+func TestSplit_JumpDetail_DroppedWhenViewObscured(t *testing.T) {
+	cases := []struct {
+		name string
+		view viewID
+	}{
+		{"viewHelp", viewHelp},
+		{"viewEmpty", viewEmpty},
 	}
-	if m.detailPaneVisible() {
-		t.Fatalf("setup: detailPaneVisible=true with viewHelp, want false")
-	}
-	out, cmd := m.Update(jumpDetailMsg{number: 99})
-	if cmd != nil {
-		t.Fatal("jumpDetailMsg under viewHelp dispatched a cmd — hidden detail state mutated (Job 252 regression)")
-	}
-	nm := out.(Model)
-	if nm.detail.gen != priorGen {
-		t.Errorf("detail.gen advanced from %d to %d under viewHelp — hidden detail state mutated", priorGen, nm.detail.gen)
-	}
-}
-
-// TestSplit_JumpDetail_DroppedWhenEmptyState is the viewEmpty
-// counterpart of TestSplit_JumpDetail_DroppedWhenHelpOverlayOpen
-// (Job 252). viewEmpty (e.g. no project bound) is a full-screen
-// state that hides both panes; a queued jumpDetailMsg must not
-// mutate the hidden detail state.
-func TestSplit_JumpDetail_DroppedWhenEmptyState(t *testing.T) {
-	m, cleanup := splitTestSetup(t)
-	defer cleanup()
-	m.api = &Client{}
-	m.focus = focusDetail
-	m.view = viewEmpty
-	priorGen := m.detail.gen
-	if !m.detailIsActive() {
-		t.Fatalf("setup: detailIsActive=false with focusDetail, want true (test would not exercise the gate)")
-	}
-	if m.detailPaneVisible() {
-		t.Fatalf("setup: detailPaneVisible=true with viewEmpty, want false")
-	}
-	out, cmd := m.Update(jumpDetailMsg{number: 99})
-	if cmd != nil {
-		t.Fatal("jumpDetailMsg under viewEmpty dispatched a cmd — hidden detail state mutated (Job 252 regression)")
-	}
-	nm := out.(Model)
-	if nm.detail.gen != priorGen {
-		t.Errorf("detail.gen advanced from %d to %d under viewEmpty — hidden detail state mutated", priorGen, nm.detail.gen)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, cleanup := splitTestSetup(t)
+			defer cleanup()
+			// Park focus on detail (the racy state: ? opens help while
+			// focus is still focusDetail). detailIsActive() alone returns
+			// true here, so the bare-helper gate would let the jump through.
+			m.focus = focusDetail
+			m.view = tc.view
+			priorGen := m.detail.gen
+			if !m.detailIsActive() {
+				t.Fatalf("setup: detailIsActive=false with focusDetail, want true (test would not exercise the gate)")
+			}
+			if m.detailPaneVisible() {
+				t.Fatalf("setup: detailPaneVisible=true with %v, want false", tc.name)
+			}
+			nm, cmd := updateModel(m, jumpDetailMsg{number: 99})
+			if cmd != nil {
+				t.Fatalf("jumpDetailMsg under %s dispatched a cmd — hidden detail state mutated (Job 252 regression)", tc.name)
+			}
+			if nm.detail.gen != priorGen {
+				t.Errorf("detail.gen advanced from %d to %d under %s — hidden detail state mutated", priorGen, nm.detail.gen, tc.name)
+			}
+		})
 	}
 }
 
@@ -407,12 +382,8 @@ func TestSplit_JumpDetail_DroppedWhenEmptyState(t *testing.T) {
 func TestSplit_ListMutation_LandsOnListWhileFocusDetail(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	m.api = &Client{}
 	m.list.actor = "tester"
-	iss := m.list.issues[0]
-	m.detail.issue = &iss
-	m.detail.scopePID = 7
-	m.focus = focusDetail
+	focusFirstIssueDetail(&m)
 	if m.listIsActive() {
 		t.Fatalf("setup: listIsActive=true with focusDetail, want false")
 	}
@@ -420,8 +391,7 @@ func TestSplit_ListMutation_LandsOnListWhileFocusDetail(t *testing.T) {
 		origin: "list", kind: "close",
 		resp: &MutationResp{Issue: &Issue{Number: 42, Status: "closed"}},
 	}
-	out, _ := m.Update(mut)
-	nm := out.(Model)
+	nm, _ := updateModel(m, mut)
 	if nm.list.status == "" {
 		t.Fatal("list.status empty — list-origin mutation dropped while focusDetail")
 	}
@@ -439,7 +409,6 @@ func TestSplit_ListMutation_LandsOnListWhileFocusDetail(t *testing.T) {
 func TestSplit_DetailMutation_LandsOnDetailWhileFocusList(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	m.api = &Client{}
 	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Title: "to edit"}
 	m.detail.scopePID = 7
 	m.detail.gen = 5
@@ -451,8 +420,7 @@ func TestSplit_DetailMutation_LandsOnDetailWhileFocusList(t *testing.T) {
 		origin: "detail", gen: 5, kind: "body.edit",
 		resp: &MutationResp{Issue: &Issue{Number: 42, Body: "new"}},
 	}
-	out, _ := m.Update(mut)
-	nm := out.(Model)
+	nm, _ := updateModel(m, mut)
 	if nm.detail.status == "" {
 		t.Fatal("detail.status empty — detail-origin mutation dropped while focusList")
 	}
@@ -537,8 +505,7 @@ func TestSplit_CursorFollow_RetargetsOnSameNumberDifferentProject(t *testing.T) 
 	startGen := m.nextDetailFollowGen
 	// Press j — cursor moves to row 1; selectedNumber stays 1 because
 	// both rows share Number. Pre-fix this was a silent no-op.
-	out, _ := m.Update(runeKey('j'))
-	m = out.(Model)
+	m, _ = updateModel(m, runeKey('j'))
 	if m.list.cursor != 1 {
 		t.Fatalf("setup failed: cursor=%d after j, want 1", m.list.cursor)
 	}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -22,18 +21,9 @@ import (
 // inherited by v3).
 func TestV2ToV3CutoverFillsIdentity(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "kata.db")
-	writeLegacyV2DB(t, path)
+	d := openCutoverDB(ctx, t, writeLegacyV2DB)
 
-	require.NoError(t, jsonl.AutoCutover(ctx, path))
-
-	d, err := db.Open(ctx, path)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-
-	var localUID string
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&localUID))
+	localUID := fetchInstanceUID(ctx, t, d)
 	assert.True(t, uid.Valid(localUID))
 
 	// Every event has a valid uid + origin == new instance, AND the seeded
@@ -43,9 +33,9 @@ func TestV2ToV3CutoverFillsIdentity(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = rows.Close() }()
 	var (
-		eventCount   int
-		seenCreated  bool
-		seenComment  bool
+		eventCount  int
+		seenCreated bool
+		seenComment bool
 	)
 	for rows.Next() {
 		var u, typ, payload, origin string
@@ -95,12 +85,7 @@ func TestV2ToV3CutoverFillsIdentity(t *testing.T) {
 	// Re-running the cutover on a fresh copy of the same v2 source must yield
 	// identical event/purge_log row UIDs (FromStableSeed determinism), even
 	// though instance_uid/origin are intentionally non-deterministic.
-	pathB := filepath.Join(t.TempDir(), "b.db")
-	writeLegacyV2DB(t, pathB)
-	require.NoError(t, jsonl.AutoCutover(ctx, pathB))
-	b, err := db.Open(ctx, pathB)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = b.Close() })
+	b := openCutoverDB(ctx, t, writeLegacyV2DB)
 
 	for _, q := range []string{
 		`SELECT uid FROM events ORDER BY id ASC`,
@@ -116,18 +101,9 @@ func TestV2ToV3CutoverFillsIdentity(t *testing.T) {
 // matching the new local meta.instance_uid.
 func TestV1ToV3CutoverFillsIdentity(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "kata.db")
-	writeLegacyV1DB(t, path)
+	d := openCutoverDB(ctx, t, writeLegacyV1DB)
 
-	require.NoError(t, jsonl.AutoCutover(ctx, path))
-
-	d, err := db.Open(ctx, path)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.Close() })
-
-	var localUID string
-	require.NoError(t, d.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&localUID))
+	localUID := fetchInstanceUID(ctx, t, d)
 	assert.True(t, uid.Valid(localUID))
 
 	var eventUID, eventOrigin string
@@ -146,20 +122,8 @@ func TestV1ToV3CutoverFillsIdentity(t *testing.T) {
 func TestV1ToV3CutoverDeterministicRowUIDs(t *testing.T) {
 	ctx := context.Background()
 
-	pathA := filepath.Join(t.TempDir(), "a.db")
-	writeLegacyV1DB(t, pathA)
-	require.NoError(t, jsonl.AutoCutover(ctx, pathA))
-
-	pathB := filepath.Join(t.TempDir(), "b.db")
-	writeLegacyV1DB(t, pathB)
-	require.NoError(t, jsonl.AutoCutover(ctx, pathB))
-
-	a, err := db.Open(ctx, pathA)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = a.Close() })
-	b, err := db.Open(ctx, pathB)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = b.Close() })
+	a := openCutoverDB(ctx, t, writeLegacyV1DB)
+	b := openCutoverDB(ctx, t, writeLegacyV1DB)
 
 	for _, q := range []string{
 		`SELECT uid FROM projects ORDER BY id ASC`,
@@ -172,12 +136,7 @@ func TestV1ToV3CutoverDeterministicRowUIDs(t *testing.T) {
 	// Sanity: meta.instance_uid is intentionally NOT deterministic across
 	// reruns — two clones of the same v1 source must become two distinct
 	// installations.
-	var aUID, bUID string
-	require.NoError(t, a.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&aUID))
-	require.NoError(t, b.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&bUID))
-	assert.NotEqual(t, aUID, bUID)
+	assert.NotEqual(t, fetchInstanceUID(ctx, t, a), fetchInstanceUID(ctx, t, b))
 }
 
 // TestRoundtripV3PreservesInstanceUID covers spec §8.6: a v3 export → v3
@@ -193,23 +152,13 @@ func TestRoundtripV3PreservesInstanceUID(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var srcUID string
-	require.NoError(t, src.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&srcUID))
+	srcUID := fetchInstanceUID(ctx, t, src)
 
-	var buf bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, src, &buf, jsonl.ExportOptions{IncludeDeleted: true}))
-
-	dstPath := filepath.Join(t.TempDir(), "dst.db")
-	dst, err := db.Open(ctx, dstPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = dst.Close() })
+	buf := exportToBuffer(ctx, t, src)
+	dst := openImportTargetDB(t)
 	require.NoError(t, jsonl.Import(ctx, bytes.NewReader(buf.Bytes()), dst))
 
-	var dstUID string
-	require.NoError(t, dst.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&dstUID))
-	assert.Equal(t, srcUID, dstUID, "default mode preserves source identity")
+	assert.Equal(t, srcUID, fetchInstanceUID(ctx, t, dst), "default mode preserves source identity")
 
 	for _, origin := range scanUIDs(t, dst, `SELECT origin_instance_uid FROM events`) {
 		assert.Equal(t, srcUID, origin)
@@ -227,13 +176,9 @@ func TestImportRefreshesCachedInstanceUID(t *testing.T) {
 	src := openExportTestDB(t)
 	srcUID := src.InstanceUID()
 
-	var buf bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, src, &buf, jsonl.ExportOptions{IncludeDeleted: true}))
+	buf := exportToBuffer(ctx, t, src)
 
-	dstPath := filepath.Join(t.TempDir(), "dst.db")
-	dst, err := db.Open(ctx, dstPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = dst.Close() })
+	dst := openImportTargetDB(t)
 	preImport := dst.InstanceUID()
 	require.NotEqual(t, srcUID, preImport, "fresh target must start with its own identity")
 
@@ -266,24 +211,15 @@ func TestImportNewInstanceRegeneratesIdentity(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var srcUID string
-	require.NoError(t, src.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&srcUID))
+	srcUID := fetchInstanceUID(ctx, t, src)
 
-	var buf bytes.Buffer
-	require.NoError(t, jsonl.Export(ctx, src, &buf, jsonl.ExportOptions{IncludeDeleted: true}))
-
-	dstPath := filepath.Join(t.TempDir(), "dst.db")
-	dst, err := db.Open(ctx, dstPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = dst.Close() })
+	buf := exportToBuffer(ctx, t, src)
+	dst := openImportTargetDB(t)
 	require.NoError(t, jsonl.ImportWithOptions(ctx, bytes.NewReader(buf.Bytes()), dst, jsonl.ImportOptions{
 		NewInstance: true,
 	}))
 
-	var dstUID string
-	require.NoError(t, dst.QueryRowContext(ctx,
-		`SELECT value FROM meta WHERE key='instance_uid'`).Scan(&dstUID))
+	dstUID := fetchInstanceUID(ctx, t, dst)
 	assert.NotEqual(t, srcUID, dstUID, "new-instance keeps target's fresh identity")
 	assert.True(t, uid.Valid(dstUID))
 

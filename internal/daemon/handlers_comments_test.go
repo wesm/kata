@@ -1,8 +1,6 @@
 package daemon_test
 
 import (
-	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,14 +8,9 @@ import (
 )
 
 func TestCommentEndpoint_AppendsAndEmitsEvent(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		map[string]any{"actor": "x", "title": "x"})
+	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/comments",
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "comments"),
 		map[string]any{"actor": "agent", "body": "first comment"})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"body":"first comment"`)
@@ -25,52 +18,34 @@ func TestCommentEndpoint_AppendsAndEmitsEvent(t *testing.T) {
 }
 
 func TestActionsClose_ReopenRoundtrip(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		map[string]any{"actor": "x", "title": "x"})
+	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/close"),
 		map[string]any{"actor": "agent", "reason": "wontfix"})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"status":"closed"`)
 	assert.Contains(t, string(bs), `"closed_reason":"wontfix"`)
 
-	resp2, bs2 := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/reopen",
+	resp2, bs2 := postJSON(t, ts, issueURL(pid, num, "actions/reopen"),
 		map[string]any{"actor": "agent"})
 	require.Equal(t, 200, resp2.StatusCode, string(bs2))
 	assert.Contains(t, string(bs2), `"status":"open"`)
 }
 
 func TestActionsClose_RejectsUnsupportedReason(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		map[string]any{"actor": "x", "title": "x"})
+	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/close"),
 		map[string]any{"actor": "agent", "reason": "obsolete"})
-	assert.Equal(t, 400, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"validation"`)
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 }
 
 func TestActionsClose_AlreadyClosedIsNoOpEnvelope(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		map[string]any{"actor": "x", "title": "x"})
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+	_, ts, pid, num := bootstrapProjectWithIssue(t)
+	_, _ = postJSON(t, ts, issueURL(pid, num, "actions/close"),
 		map[string]any{"actor": "agent"})
 
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/close"),
 		map[string]any{"actor": "agent"})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"changed":false`)
@@ -78,43 +53,25 @@ func TestActionsClose_AlreadyClosedIsNoOpEnvelope(t *testing.T) {
 }
 
 func TestCreateComment_BlankActorIs400(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		map[string]any{"actor": "x", "title": "x"})
+	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/comments",
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "comments"),
 		map[string]any{"actor": "   ", "body": "hi"})
-	assert.Equal(t, 400, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"validation"`)
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 }
 
 func TestCloseIssue_BlankActorIs400(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		map[string]any{"actor": "x", "title": "x"})
+	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/close",
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/close"),
 		map[string]any{"actor": "   "})
-	assert.Equal(t, 400, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"validation"`)
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 }
 
 func TestReopenIssue_BlankActorIs400(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	_, _ = postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues",
-		map[string]any{"actor": "x", "title": "x"})
+	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
-	resp, bs := postJSON(t, ts,
-		"/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/issues/1/actions/reopen",
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/reopen"),
 		map[string]any{"actor": "   "})
-	assert.Equal(t, 400, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"code":"validation"`)
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 }

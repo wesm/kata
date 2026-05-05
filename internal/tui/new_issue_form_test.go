@@ -55,18 +55,26 @@ func newIssueFormFixture() Model {
 // openInputCmd, returning a model with m.input.kind == inputNewIssueForm.
 func openNewIssueForm(t *testing.T, m Model) Model {
 	t.Helper()
-	out, cmd := m.Update(runeKey('n'))
-	m = out.(Model)
+	m, cmd := stepModel(m, runeKey('n'))
 	if cmd == nil {
 		t.Fatalf("press n produced no cmd; expected openInputCmd")
 	}
-	msg := cmd()
-	out, _ = m.Update(msg)
-	m = out.(Model)
-	if m.input.kind != inputNewIssueForm {
-		t.Fatalf("openInput did not land inputNewIssueForm; got %v", m.input.kind)
-	}
+	m, _ = stepModel(m, cmd())
+	assertInputKind(t, m, inputNewIssueForm)
 	return m
+}
+
+// primeLabelCache seeds m.projectLabels with a known entry for projectID
+// at gen so tests can detect dispatchLabelFetch effects (gen advance,
+// fetching=true) or, conversely, confirm a stale-message path left the
+// entry untouched.
+func primeLabelCache(m *Model, projectID, gen int64) {
+	m.projectLabels = newLabelCache()
+	m.projectLabels.byProject[projectID] = labelCacheEntry{
+		pid: projectID, gen: gen,
+		labels: []LabelCount{{Label: "old", Count: 1}},
+	}
+	m.nextLabelsGen = gen
 }
 
 func focusNewIssueField(s inputState, idx int) inputState {
@@ -102,14 +110,11 @@ func TestNewIssueForm_OpensOnNKey_ListView(t *testing.T) {
 func TestNewIssueForm_AllProjectsScopeIsNoOp(t *testing.T) {
 	m := newIssueFormFixture()
 	m.scope = scope{allProjects: true}
-	out, cmd := m.Update(runeKey('n'))
-	nm := out.(Model)
+	nm, cmd := stepModel(m, runeKey('n'))
 	if cmd != nil {
 		t.Fatalf("expected nil cmd in all-projects mode, got %T", cmd)
 	}
-	if nm.input.kind != inputNone {
-		t.Fatalf("input opened in all-projects mode: kind=%v", nm.input.kind)
-	}
+	assertInputKind(t, nm, inputNone)
 	if nm.list.status == "" {
 		t.Fatal("expected a status hint explaining the no-op")
 	}
@@ -144,13 +149,9 @@ func TestNewIssueForm_ConstructorBlursAllFieldsFocusesField0(t *testing.T) {
 // blurs/focuses the right fields each step.
 func TestNewIssueForm_TabCyclesFieldsWithWrap(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	wants := []int{1, 2, 3, 4, 0}
-	for i, want := range wants {
-		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-		m = out.(Model)
-		if m.input.active != want {
-			t.Fatalf("step %d: active = %d, want %d", i, m.input.active, want)
-		}
+	for _, want := range []int{1, 2, 3, 4, 0} {
+		m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyTab})
+		assertActiveField(t, m, want)
 	}
 }
 
@@ -158,13 +159,9 @@ func TestNewIssueForm_TabCyclesFieldsWithWrap(t *testing.T) {
 // 0→4→3→2→1→0 with wrap.
 func TestNewIssueForm_ShiftTabReverseCyclesWithWrap(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	wants := []int{4, 3, 2, 1, 0}
-	for i, want := range wants {
-		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-		m = out.(Model)
-		if m.input.active != want {
-			t.Fatalf("step %d: active = %d, want %d", i, m.input.active, want)
-		}
+	for _, want := range []int{4, 3, 2, 1, 0} {
+		m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+		assertActiveField(t, m, want)
 	}
 }
 
@@ -173,36 +170,21 @@ func TestNewIssueForm_ShiftTabReverseCyclesWithWrap(t *testing.T) {
 // → Body, Labels → Owner, Owner → Parent, Parent → Title (wrap).
 func TestNewIssueForm_EnterInSingleLineAdvancesField(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = out.(Model)
+	m, cmd := stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatalf("enter on Title dispatched a cmd %T; expected advance only", cmd)
 	}
-	if m.input.active != 1 {
-		t.Fatalf("after enter on Title: active = %d, want 1 (Body)", m.input.active)
-	}
+	assertActiveField(t, m, 1)
 	// Skip Body — enter inserts a newline there. Cycle to Labels (idx 2).
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = out.(Model)
-	if m.input.active != 2 {
-		t.Fatalf("after tab from Body: active = %d, want 2 (Labels)", m.input.active)
-	}
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = out.(Model)
-	if m.input.active != 3 {
-		t.Fatalf("after enter on Labels: active = %d, want 3 (Owner)", m.input.active)
-	}
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = out.(Model)
-	if m.input.active != 4 {
-		t.Fatalf("after enter on Owner: active = %d, want 4 (Parent)", m.input.active)
-	}
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyTab})
+	assertActiveField(t, m, 2)
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	assertActiveField(t, m, 3)
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	assertActiveField(t, m, 4)
 	// Enter on Parent wraps to Title.
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = out.(Model)
-	if m.input.active != 0 {
-		t.Fatalf("after enter on Parent: active = %d, want 0 (wrap to Title)", m.input.active)
-	}
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	assertActiveField(t, m, 0)
 }
 
 // TestNewIssueForm_EnterInBodyInsertsNewline: enter on the body field
@@ -210,23 +192,13 @@ func TestNewIssueForm_EnterInSingleLineAdvancesField(t *testing.T) {
 func TestNewIssueForm_EnterInBodyInsertsNewline(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	// Tab to Body.
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = out.(Model)
-	if m.input.active != 1 {
-		t.Fatalf("setup: active = %d, want 1 (Body)", m.input.active)
-	}
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyTab})
+	assertActiveField(t, m, 1)
 	// Type a line then enter then another line.
-	for _, r := range "line1" {
-		m, _ = stepModel(m, runeKey(r))
-	}
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = out.(Model)
-	if m.input.active != 1 {
-		t.Fatalf("enter on Body advanced field: active = %d, want 1", m.input.active)
-	}
-	for _, r := range "line2" {
-		m, _ = stepModel(m, runeKey(r))
-	}
+	m = typeString(m, "line1")
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	assertActiveField(t, m, 1)
+	m = typeString(m, "line2")
 	body := m.input.fields[1].area.Value()
 	if !strings.Contains(body, "line1") || !strings.Contains(body, "line2") {
 		t.Fatalf("body missing one of the lines: %q", body)
@@ -240,14 +212,11 @@ func TestNewIssueForm_EnterInBodyInsertsNewline(t *testing.T) {
 // blank Title sets the in-form err and does NOT dispatch.
 func TestNewIssueForm_CtrlSEmptyTitleSetsErrNoDispatch(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	nm := out.(Model)
+	nm, cmd := stepModel(m, tea.KeyMsg{Type: tea.KeyCtrlS})
 	if cmd != nil {
 		t.Fatalf("empty-title ctrl+s dispatched cmd %T; want nil", cmd)
 	}
-	if nm.input.kind != inputNewIssueForm {
-		t.Fatalf("form closed on empty commit: kind=%v", nm.input.kind)
-	}
+	assertInputKind(t, nm, inputNewIssueForm)
 	if nm.input.err == "" {
 		t.Fatal("expected err on empty-title commit")
 	}
@@ -262,9 +231,7 @@ func TestNewIssueForm_CtrlSEmptyTitleSetsErrNoDispatch(t *testing.T) {
 func TestNewIssueForm_CtrlSTitleOnly_DispatchesWithMinimalPayload(t *testing.T) {
 	api := &fakeListAPI{createResult: &MutationResp{Issue: &Issue{Number: 99}}}
 	m := openNewIssueForm(t, newIssueFormFixture())
-	for _, r := range "fix bug" {
-		m, _ = stepModel(m, runeKey(r))
-	}
+	m = typeString(m, "fix bug")
 	// Drive dispatchCreateIssue directly to assert the wire shape; the
 	// commit cmd uses Model.api which is *Client and unfittable to
 	// fakeListAPI without major plumbing.
@@ -351,32 +318,22 @@ func TestNewIssueForm_CtrlSAllFields_NormalizedPayload(t *testing.T) {
 func TestNewIssueForm_CtrlEOnlyWhenBodyFocused(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	// Title focused — ctrl+e is a no-op.
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
-	m = out.(Model)
+	m, cmd := stepModel(m, tea.KeyMsg{Type: tea.KeyCtrlE})
 	if cmd != nil {
 		t.Fatalf("ctrl+e on Title dispatched cmd %T; want nil (gated)", cmd)
 	}
-	if m.input.kind != inputNewIssueForm {
-		t.Fatalf("ctrl+e on Title closed the form: kind=%v", m.input.kind)
-	}
+	assertInputKind(t, m, inputNewIssueForm)
 	// Tab to Body — ctrl+e fires.
-	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = out.(Model)
-	out, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
-	m = out.(Model)
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = stepModel(m, tea.KeyMsg{Type: tea.KeyCtrlE})
 	if cmd == nil {
 		t.Fatal("ctrl+e on Body produced no editor handoff cmd")
 	}
-	if m.input.kind != inputNewIssueForm {
-		t.Fatalf("ctrl+e on Body closed the form: kind=%v", m.input.kind)
-	}
+	assertInputKind(t, m, inputNewIssueForm)
 	// Tab through Labels, Owner, and Parent — ctrl+e is a no-op for all three.
 	for _, want := range []int{2, 3, 4} {
-		out, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-		m = out.(Model)
-		if m.input.active != want {
-			t.Fatalf("setup: active = %d, want %d", m.input.active, want)
-		}
+		m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyTab})
+		assertActiveField(t, m, want)
 		_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 		if cmd != nil {
 			t.Fatalf("ctrl+e on field[%d] dispatched cmd %T; want nil", want, cmd)
@@ -423,29 +380,22 @@ func TestNewIssueForm_ParentInvalidShowsError(t *testing.T) {
 
 func TestList_NewChild_NoSelectionNoOp(t *testing.T) {
 	m := newIssueFormFixture()
-	out, cmd := m.Update(runeKey('N'))
-	nm := out.(Model)
+	nm, cmd := stepModel(m, runeKey('N'))
 	if cmd != nil {
 		t.Fatalf("N with no selected row returned cmd %T, want nil", cmd)
 	}
-	if nm.input.kind != inputNone {
-		t.Fatalf("N with no selected row opened input kind=%v", nm.input.kind)
-	}
+	assertInputKind(t, nm, inputNone)
 }
 
 func TestList_NewChild_PrefillsSelectedParent(t *testing.T) {
 	m := newIssueFormFixture()
 	m.list.issues = []Issue{{ProjectID: 7, Number: 42, Title: "parent", Status: "open"}}
-	out, cmd := m.Update(runeKey('N'))
-	m = out.(Model)
+	m, cmd := stepModel(m, runeKey('N'))
 	if cmd == nil {
 		t.Fatal("N on a selected row produced no open-input command")
 	}
-	out, _ = m.Update(cmd())
-	m = out.(Model)
-	if m.input.kind != inputNewIssueForm {
-		t.Fatalf("input kind = %v, want inputNewIssueForm", m.input.kind)
-	}
+	m, _ = stepModel(m, cmd())
+	assertInputKind(t, m, inputNewIssueForm)
 	if m.input.title != "new child issue" {
 		t.Fatalf("title = %q, want new child issue", m.input.title)
 	}
@@ -489,14 +439,12 @@ func TestNewChildForm_ParentPrefillBackspaceClearsAndUnlocks(t *testing.T) {
 func TestNewIssueForm_StaleEditorReturnDropped(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	// Tab to Body and seed it.
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = out.(Model)
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyTab})
 	m.input.fields[1].area.SetValue("user-typed body")
 	staleGen := m.input.formGen + 999 // any non-matching value
-	out, _ = m.Update(editorReturnedMsg{
+	nm, _ := stepModel(m, editorReturnedMsg{
 		kind: "create", content: "stale editor content", formGen: staleGen,
 	})
-	nm := out.(Model)
 	if got := nm.input.fields[1].area.Value(); got != "user-typed body" {
 		t.Fatalf("body = %q, want unchanged (stale return must not write)", got)
 	}
@@ -508,14 +456,11 @@ func TestNewIssueForm_StaleEditorReturnDropped(t *testing.T) {
 func TestNewIssueForm_MutationFailureLeavesFormOpenWithErr(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	m.input.saving = true
-	out, _ := m.Update(mutationDoneMsg{
+	nm, _ := stepModel(m, mutationDoneMsg{
 		origin: "form", kind: "create", formGen: m.input.formGen,
 		err: errStub("daemon 500"),
 	})
-	nm := out.(Model)
-	if nm.input.kind != inputNewIssueForm {
-		t.Fatalf("form closed on failure: kind=%v", nm.input.kind)
-	}
+	assertInputKind(t, nm, inputNewIssueForm)
 	if nm.input.saving {
 		t.Fatal("saving stayed true after failure; user can't retry")
 	}
@@ -529,14 +474,9 @@ func TestNewIssueForm_MutationFailureLeavesFormOpenWithErr(t *testing.T) {
 // create chain forced detail open; the multi-field form does not).
 func TestNewIssueForm_EscDiscardsAndReturnsToList(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
-	for _, r := range "draft" {
-		m, _ = stepModel(m, runeKey(r))
-	}
-	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	nm := out.(Model)
-	if nm.input.kind != inputNone {
-		t.Fatalf("esc did not close form: kind=%v", nm.input.kind)
-	}
+	m = typeString(m, "draft")
+	nm, cmd := stepModel(m, tea.KeyMsg{Type: tea.KeyEsc})
+	assertInputKind(t, nm, inputNone)
 	if nm.view != viewList {
 		t.Fatalf("view = %v, want viewList (no auto-detail)", nm.view)
 	}
@@ -562,11 +502,8 @@ func TestNewIssueForm_MutationSuccessRoutesToList(t *testing.T) {
 		origin: "form", kind: "create", formGen: m.input.formGen,
 		resp: &MutationResp{Issue: &Issue{Number: 99}},
 	}
-	out, _ := m.Update(mut)
-	nm := out.(Model)
-	if nm.input.kind != inputNone {
-		t.Fatalf("form did not close on success: kind=%v", nm.input.kind)
-	}
+	nm, _ := stepModel(m, mut)
+	assertInputKind(t, nm, inputNone)
 	if nm.list.selectedNumber != 99 {
 		t.Fatalf("selectedNumber = %d, want 99 (seeded by lm.applyMutation)",
 			nm.list.selectedNumber)
@@ -625,21 +562,13 @@ func TestNewIssueForm_MutationSuccessRefreshesLabelCache(t *testing.T) {
 	// present, batchLabelRefresh's existence gate would skip the
 	// dispatch — but the test scenario is "user already opened menu,
 	// then created with labels, expects fresh counts on next open".
-	m.projectLabels = newLabelCache()
-	m.projectLabels.byProject[7] = labelCacheEntry{
-		pid: 7, gen: 1,
-		labels: []LabelCount{{Label: "old", Count: 1}},
-	}
-	m.nextLabelsGen = 1
+	primeLabelCache(&m, 7, 1)
 	mut := mutationDoneMsg{
 		origin: "form", kind: "create", formGen: m.input.formGen,
 		resp: &MutationResp{Issue: &Issue{Number: 99, ProjectID: 7}},
 	}
-	out, _ := m.Update(mut)
-	nm := out.(Model)
-	if nm.input.kind != inputNone {
-		t.Fatalf("form did not close on success: kind=%v", nm.input.kind)
-	}
+	nm, _ := stepModel(m, mut)
+	assertInputKind(t, nm, inputNone)
 	entry := nm.projectLabels.byProject[7]
 	if !entry.fetching {
 		t.Fatal("label cache for pid=7 did not enter fetching=true; " +
@@ -668,15 +597,10 @@ func TestNewIssueForm_StaleResponseFromPriorFormDropped(t *testing.T) {
 	m := openNewIssueForm(t, newIssueFormFixture())
 	staleGen := m.input.formGen
 	// Type something into the original form so we have observable state.
-	for _, r := range "draft A" {
-		m, _ = stepModel(m, runeKey(r))
-	}
+	m = typeString(m, "draft A")
 	// User presses esc, closing form A.
-	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = out.(Model)
-	if m.input.kind != inputNone {
-		t.Fatalf("setup: esc did not close form A: kind=%v", m.input.kind)
-	}
+	m, _ = stepModel(m, tea.KeyMsg{Type: tea.KeyEsc})
+	assertInputKind(t, m, inputNone)
 	// User opens form B — fresh formGen should be staleGen+1 (or larger).
 	m = openNewIssueForm(t, m)
 	freshGen := m.input.formGen
@@ -685,31 +609,21 @@ func TestNewIssueForm_StaleResponseFromPriorFormDropped(t *testing.T) {
 			freshGen, staleGen)
 	}
 	// Type something into form B so we can confirm it survives untouched.
-	for _, r := range "draft B" {
-		m, _ = stepModel(m, runeKey(r))
-	}
+	m = typeString(m, "draft B")
 	bBeforeBuf := m.input.fields[0].input.Value()
 	// Prime the label cache so a hypothetical stray batchLabelRefresh
 	// would visibly bump entry.gen — that lets the assertion catch the
 	// "stale response sneaks through and refreshes labels for the
 	// inactive project" failure mode too.
-	m.projectLabels = newLabelCache()
-	m.projectLabels.byProject[7] = labelCacheEntry{
-		pid: 7, gen: 5,
-		labels: []LabelCount{{Label: "old", Count: 1}},
-	}
-	m.nextLabelsGen = 5
+	primeLabelCache(&m, 7, 5)
 	// Stale response from form A finally lands.
 	stale := mutationDoneMsg{
 		origin: "form", kind: "create", formGen: staleGen,
 		resp: &MutationResp{Issue: &Issue{Number: 11, ProjectID: 7}},
 	}
-	out, _ = m.Update(stale)
-	nm := out.(Model)
+	nm, _ := stepModel(m, stale)
 	// Form B must remain open and untouched.
-	if nm.input.kind != inputNewIssueForm {
-		t.Fatalf("form B closed by stale form-A response: kind=%v", nm.input.kind)
-	}
+	assertInputKind(t, nm, inputNewIssueForm)
 	if nm.input.formGen != freshGen {
 		t.Fatalf("form B formGen mutated: got %d, want %d",
 			nm.input.formGen, freshGen)

@@ -12,7 +12,7 @@ import (
 func TestServerConfig_NilHooks_FillsNoop(t *testing.T) {
 	cfg := ServerConfig{Hooks: nil}
 	srv := NewServer(cfg)
-	defer func() { _ = srv.Close() }()
+	t.Cleanup(func() { _ = srv.Close() })
 	if srv.cfg.Hooks == nil {
 		t.Fatal("Hooks should default to NewNoop, not stay nil")
 	}

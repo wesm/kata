@@ -1,7 +1,6 @@
 package db_test
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -11,11 +10,7 @@ import (
 )
 
 func TestAddLabel_RoundTrips(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
 	row, err := d.AddLabel(ctx, i.ID, "needs-review", "tester")
 	require.NoError(t, err)
@@ -29,24 +24,16 @@ func TestAddLabel_RoundTrips(t *testing.T) {
 }
 
 func TestAddLabel_DuplicateIsErrLabelExists(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
-	_, err = d.AddLabel(ctx, i.ID, "bug", "tester")
+	_, err := d.AddLabel(ctx, i.ID, "bug", "tester")
 	require.NoError(t, err)
 	_, err = d.AddLabel(ctx, i.ID, "bug", "tester")
 	assert.True(t, errors.Is(err, db.ErrLabelExists), "got %v", err)
 }
 
 func TestAddLabel_RejectsBadCharset(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
 	for _, label := range []string{"UPPER", "with space", "emoji😀", "" /* empty */, "exclam!"} {
 		_, err := d.AddLabel(ctx, i.ID, label, "tester")
@@ -56,11 +43,7 @@ func TestAddLabel_RejectsBadCharset(t *testing.T) {
 }
 
 func TestAddLabel_AcceptsAllAllowedChars(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
 	for _, label := range []string{"bug", "priority:high", "v1.0", "needs-review", "a-z_0-9"} {
 		_, err := d.AddLabel(ctx, i.ID, label, "tester")
@@ -69,12 +52,8 @@ func TestAddLabel_AcceptsAllAllowedChars(t *testing.T) {
 }
 
 func TestRemoveLabel_RoundTrips(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
-	_, err = d.AddLabel(ctx, i.ID, "bug", "tester")
+	d, ctx, _, i := setupTestIssue(t)
+	_, err := d.AddLabel(ctx, i.ID, "bug", "tester")
 	require.NoError(t, err)
 
 	require.NoError(t, d.RemoveLabel(ctx, i.ID, "bug"))
@@ -89,24 +68,16 @@ func TestRemoveLabel_RoundTrips(t *testing.T) {
 }
 
 func TestAddLabel_BlankAuthorIsNotMisreportedAsInvalidLabel(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
-	_, err = d.AddLabel(ctx, i.ID, "bug", "" /* blank */)
+	_, err := d.AddLabel(ctx, i.ID, "bug", "" /* blank */)
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, db.ErrLabelInvalid),
 		"blank author must not surface as ErrLabelInvalid, got %v", err)
 }
 
 func TestLabelByEndpoints_FindsExisting(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
-	i := makeIssue(t, ctx, d, p.ID, "a", "tester")
+	d, ctx, _, i := setupTestIssue(t)
 
 	created, err := d.AddLabel(ctx, i.ID, "bug", "tester")
 	require.NoError(t, err)
@@ -121,18 +92,11 @@ func TestLabelByEndpoints_FindsExisting(t *testing.T) {
 }
 
 func TestLabelCounts_AggregatesPerProject(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
-	require.NoError(t, err)
+	d, ctx, p := setupTestProject(t)
 	a := makeIssue(t, ctx, d, p.ID, "a", "tester")
 	b := makeIssue(t, ctx, d, p.ID, "b", "tester")
-	for _, lab := range []string{"bug", "priority:high"} {
-		_, err := d.AddLabel(ctx, a.ID, lab, "tester")
-		require.NoError(t, err)
-	}
-	_, err = d.AddLabel(ctx, b.ID, "bug", "tester")
-	require.NoError(t, err)
+	addLabels(ctx, t, d, a.ID, "tester", "bug", "priority:high")
+	addLabels(ctx, t, d, b.ID, "tester", "bug")
 
 	counts, err := d.LabelCounts(ctx, p.ID)
 	require.NoError(t, err)

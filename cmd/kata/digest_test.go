@@ -1,31 +1,20 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wesm/kata/internal/testenv"
 )
 
 func TestDigest_HumanRender(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
-	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "first")
-	createIssue(t, env, pid, "second")
+	f := newCLIFixture(t)
+	createIssueViaHTTP(t, f.env, f.dir, "first")
+	createIssueViaHTTP(t, f.env, f.dir, "second")
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"--workspace", dir, "digest", "--since", "1h"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	require.NoError(t, cmd.Execute())
-	out := buf.String()
+	require.NoError(t, f.execute("digest", "--since", "1h"))
+	out := f.buf.String()
 	assert.Contains(t, out, "digest ")
 	assert.Contains(t, out, "created=2")
 	assert.Contains(t, out, "#1")
@@ -33,18 +22,9 @@ func TestDigest_HumanRender(t *testing.T) {
 }
 
 func TestDigest_RejectsBadSince(t *testing.T) {
-	resetFlags(t)
-	env := testenv.New(t)
-	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
-	_ = resolvePIDViaHTTP(t, env.URL, dir)
+	f := newCLIFixture(t)
 
-	cmd := newRootCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--workspace", dir, "digest", "--since", "blarg"})
-	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
-	err := cmd.Execute()
+	err := f.execute("digest", "--since", "blarg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid time spec")
 }
