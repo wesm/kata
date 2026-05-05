@@ -372,6 +372,91 @@ func TestSSE_GracePeriod_FastReconnect_NoReconnectingBadge(t *testing.T) {
 	}
 }
 
+// TestSSE_GracePeriod_TimerVsConnectIsRaceFree drives startSSE with a
+// very short grace so the timer is forced to fire nearly simultaneously
+// with the recovery on every cycle. The invariant under test: the
+// terminal sseStatusMsg observed for any outage must be sseConnected,
+// never sseReconnecting. Pre-lock the goroutine could send
+// sseReconnecting *after* sseConnected when the timer's check-then-send
+// straddled publishConnected; with the mutex the timer either bails
+// (hasConnected was already set) or sends sseReconnecting before
+// sseConnected and channel ordering preserves the correct final state.
+//
+// Run under -race -count=N for additional confidence.
+func TestSSE_GracePeriod_TimerVsConnectIsRaceFree(t *testing.T) {
+	saved := reconnectStatusGrace
+	reconnectStatusGrace = 1 * time.Millisecond
+	t.Cleanup(func() { reconnectStatusGrace = saved })
+
+	// Server flaps: even-numbered connects send a frame, odd-numbered
+	// close immediately. Two consecutive cycles cover the full
+	// disconnect → grace-fires → reconnect-with-frame path.
+	const cycles = 3
+	var connects int32
+	srv := newSSEMockServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt32(&connects, 1)
+		if n%2 == 1 {
+			return
+		}
+		writeSSEFrame(t, w, int64(n), "issue.created",
+			`{"type":"issue.created","project_id":7}`)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan tea.Msg, 256)
+	done := make(chan struct{})
+	go func() {
+		startSSE(ctx, srv.Client(), srv.URL, nil, ch)
+		close(done)
+	}()
+
+	// Track the last sseStatusMsg observed at any point and the count
+	// of frames so we know when enough cycles have completed.
+	var lastStatus *sseConnState
+	deadline := time.After(20 * time.Second)
+	frames := 0
+	for frames < cycles {
+		select {
+		case <-deadline:
+			t.Fatalf("only saw %d frames, want %d", frames, cycles)
+		case msg := <-ch:
+			switch m := msg.(type) {
+			case eventReceivedMsg:
+				frames++
+			case sseStatusMsg:
+				s := m.state
+				lastStatus = &s
+			}
+		}
+	}
+	cancel()
+	<-done
+
+	// Drain anything still buffered so the last observation is current.
+	for {
+		select {
+		case msg := <-ch:
+			if st, ok := msg.(sseStatusMsg); ok {
+				s := st.state
+				lastStatus = &s
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	if lastStatus == nil {
+		t.Fatal("no sseStatusMsg observed; expected at least one transition")
+	}
+	// The terminal state observed for the run must be sseConnected:
+	// every reconnect completed before the run ended. A pre-lock build
+	// could leave the terminal state at sseReconnecting if the timer's
+	// send raced past publishConnected's send.
+	if *lastStatus != sseConnected {
+		t.Fatalf("terminal sseStatusMsg = %v, want sseConnected (race fix regression)", *lastStatus)
+	}
+}
+
 // TestSSE_GracePeriod_LongOutage_SurfacesBadge verifies that a sustained
 // outage (no productive reconnect within the grace window) does push
 // sseReconnecting to the channel, and that recovery pushes sseConnected.
