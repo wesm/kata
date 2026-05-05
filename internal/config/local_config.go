@@ -60,7 +60,7 @@ func MergeLocalWithStderr(base, local *ProjectConfig, stderr io.Writer) *Project
 		return &merged
 	}
 	if local.Project.Identity != "" && local.Project.Identity != base.Project.Identity {
-		fmt.Fprintf(stderr, "kata: ignoring divergent project.identity %q in .kata.local.toml (canonical is %q in .kata.toml)\n",
+		_, _ = fmt.Fprintf(stderr, "kata: ignoring divergent project.identity %q in .kata.local.toml (canonical is %q in .kata.toml)\n",
 			local.Project.Identity, base.Project.Identity)
 	}
 	if local.Project.Name != "" {

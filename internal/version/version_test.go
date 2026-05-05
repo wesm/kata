@@ -1,3 +1,4 @@
+//nolint:revive // var-naming flags `version` as stdlib-conflicting but no such stdlib package exists; matches the production package name.
 package version
 
 import (

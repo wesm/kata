@@ -9,6 +9,7 @@ import (
 // Kind is the fixed record kind tag in a JSONL envelope.
 type Kind string
 
+// JSONL record kinds. Order matches the export sequence enforced by kindOrder.
 const (
 	KindMeta           Kind = "meta"
 	KindProject        Kind = "project"
@@ -22,6 +23,7 @@ const (
 	KindSQLiteSequence Kind = "sqlite_sequence"
 )
 
+// Sentinel errors returned by the decoder for malformed or out-of-order envelopes.
 var (
 	ErrMissingExportVersion = errors.New("missing export_version")
 	ErrUnknownKind          = errors.New("unknown kind")

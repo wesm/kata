@@ -1,3 +1,8 @@
+// Package version exposes the kata build's version string, derived from
+// runtime/debug.BuildInfo so a stripped binary still reports a stable
+// identifier.
+//
+//nolint:revive // var-naming flags `version` as stdlib-conflicting but no such stdlib package exists.
 package version
 
 import "runtime/debug"
