@@ -1,4 +1,4 @@
-.PHONY: build install test test-short lint vet clean fmt nilaway
+.PHONY: build install test test-short lint vet clean fmt nilaway tui-demo
 
 GOFLAGS_TEST := -shuffle=on
 
@@ -34,6 +34,18 @@ nilaway:
 
 fmt:
 	gofmt -w .
+
+tui-demo:
+	@tmp=$$(mktemp -d); \
+	trap 'KATA_HOME="$$tmp/home" "$$tmp/kata" daemon stop >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT; \
+	mkdir -p "$$tmp/ws"; \
+	GOFLAGS=-buildvcs=false go build -o "$$tmp/kata" ./cmd/kata; \
+	KATA_HOME="$$tmp/home" "$$tmp/kata" --workspace "$$tmp/ws" init --project github.com/wesm/kata --name kata >/dev/null; \
+	KATA_HOME="$$tmp/home" "$$tmp/kata" --workspace "$$tmp/ws" --as alice create "fix login bug on Safari" --owner claude-4.7 --label tui --label ux >/dev/null; \
+	KATA_HOME="$$tmp/home" "$$tmp/kata" --workspace "$$tmp/ws" --as wesm create "rebuild search index" --owner wesm --label infra >/dev/null; \
+	KATA_HOME="$$tmp/home" "$$tmp/kata" --workspace "$$tmp/ws" --as bob close 2 >/dev/null; \
+	KATA_HOME="$$tmp/home" "$$tmp/kata" --workspace "$$tmp/ws" --as alice create "purge stale tokens" --label cleanup >/dev/null; \
+	KATA_HOME="$$tmp/home" KATA_COLOR_MODE=dark "$$tmp/kata" --workspace "$$tmp/ws" tui
 
 clean:
 	rm -f kata kata.exe coverage.out
