@@ -209,4 +209,66 @@ describe("KataClient", () => {
 
     expect(calls).toContainEqual(["unassign-throw", "15"]);
   });
+
+  it("serializes concurrent claims for the same task", async () => {
+    const calls: string[][] = [];
+    let claimed = false;
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { number: 16, title: "One worker only", body: "Do work", status: "open", owner: claimed ? "pi-agent" : null },
+          labels: claimed ? [{ label: "agent:worker" }, { label: "in_progress" }] : [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "label" && args[1] === "add") {
+        claimed = true;
+      }
+      return json({ issue: { number: 16, title: "One worker only", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    const results = await Promise.allSettled([
+      kata.claimForExecution("16"),
+      kata.claimForExecution("16"),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(calls.filter((args) => args[0] === "label" && args[1] === "add")).toHaveLength(1);
+  });
+
+  it("propagates unexpected in-progress label removal failures", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "label" && args[1] === "rm") {
+        throw new Error("kata daemon unavailable");
+      }
+      return json({ issue: { number: 17, title: "Cleanup", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.failExecution("17", "agent-123", "boom")).rejects.toThrow("kata daemon unavailable");
+
+    expect(calls).toEqual([["label", "rm", "17", "in_progress", "--json"]]);
+  });
+
+  it("ignores absent in-progress label removal", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "label" && args[1] === "rm") {
+        throw new Error('kata label rm 18 in_progress failed with exit 1: label "in_progress" not found');
+      }
+      return json({ issue: { number: 18, title: "Cleanup", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await kata.failExecution("18", "agent-123", "boom");
+
+    expect(calls).toContainEqual(["comment", "18", "--body", "TaskExecute failed via agent agent-123.\n\nError:\nboom", "--json"]);
+  });
 });

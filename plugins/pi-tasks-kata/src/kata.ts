@@ -29,6 +29,7 @@ interface KataEnvelope {
 export class KataClient {
   private runner: KataRunner;
   private workspace?: string;
+  private claimLocks = new Map<string, Promise<void>>();
   readonly author: string;
 
   constructor(options: KataClientOptions = {}) {
@@ -114,6 +115,10 @@ export class KataClient {
   }
 
   async claimForExecution(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
+    return this.withClaimLock(taskId, () => this.claimForExecutionLocked(taskId, options));
+  }
+
+  private async claimForExecutionLocked(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
     const detail = await this.showTask(taskId);
     if (detail.issue.status === "closed") throw new Error(`Task #${taskId} is already completed`);
     if (detail.labels.includes("in_progress")) throw new Error(`Task #${taskId} is already in progress`);
@@ -185,11 +190,7 @@ export class KataClient {
   }
 
   async unassign(taskId: string): Promise<void> {
-    try {
-      await this.runJSON(["unassign", taskId, "--json"]);
-    } catch {
-      // Best-effort claim compensation should preserve the original failure.
-    }
+    await this.runJSON(["unassign", taskId, "--json"]);
   }
 
   async comment(taskId: string, body: string): Promise<void> {
@@ -203,8 +204,29 @@ export class KataClient {
   async removeLabel(taskId: string, label: string): Promise<void> {
     try {
       await this.runJSON(["label", "rm", taskId, label, "--json"]);
-    } catch {
-      // Removing an absent lifecycle label is harmless for this adapter.
+    } catch (error) {
+      if (isAbsentLabelError(error, label)) return;
+      throw error;
+    }
+  }
+
+  private async withClaimLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.claimLocks.get(taskId) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => {}).then(() => next);
+    this.claimLocks.set(taskId, tail);
+
+    await previous.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.claimLocks.get(taskId) === tail) {
+        this.claimLocks.delete(taskId);
+      }
     }
   }
 
@@ -254,6 +276,12 @@ function normalizeIssues(issues: KataIssue[]): KataIssue[] {
     ...issue,
     labels: normalizeLabels(issue.labels as unknown as KataEnvelope["labels"]),
   }));
+}
+
+function isAbsentLabelError(error: unknown, label: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.includes(label)) return false;
+  return /already removed|not found|no label|absent|not attached/i.test(message);
 }
 
 function agentTypeFromLabels(labels: string[]): string | undefined {

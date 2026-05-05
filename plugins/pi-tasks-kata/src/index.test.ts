@@ -212,4 +212,35 @@ describe("pi-tasks-kata extension", () => {
       expect.any(Error),
     );
   });
+
+  it("reports the original spawn failure and continues when failure cleanup fails", async () => {
+    const calls: string[][] = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { pi, tools } = fakePi(async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { number: Number(args[1]), title: `Task ${args[1]}`, body: "Run it", status: "open", owner: null },
+          labels: [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "label" && args[1] === "rm" && args[2] === "14") {
+        throw new Error("cleanup failed");
+      }
+      return json({ issue: { number: Number(args[1] ?? args[2]), title: "Task", status: "open" }, changed: true });
+    }, { spawnError: "subagents unavailable" });
+    plugin(pi);
+
+    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["14", "15"] });
+
+    expect(result.content[0].text).toContain("#14: subagents unavailable");
+    expect(result.content[0].text).toContain("#15: subagents unavailable");
+    expect(calls).toContainEqual(["show", "15", "--json"]);
+    expect(consoleError).toHaveBeenCalledWith(
+      "[pi-tasks-kata] failed to record spawn failure for task #14:",
+      expect.any(Error),
+    );
+  });
 });

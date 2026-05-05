@@ -132,7 +132,14 @@ export default function (pi: ExtensionAPI) {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (claimed) {
-            await kata.failExecution(taskId, "spawn", message);
+            try {
+              await kata.failExecution(taskId, "spawn", message);
+            } catch (cleanupError) {
+              console.error(
+                `[pi-tasks-kata] failed to record spawn failure for task #${taskId}:`,
+                cleanupError,
+              );
+            }
           }
           failures.push(`#${taskId}: ${message}`);
         }
