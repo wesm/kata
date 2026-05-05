@@ -180,6 +180,26 @@ describe("KataClient", () => {
     ]);
   });
 
+  it("closes tasks before removing the in-progress label when marking completed", async () => {
+    const { runner, calls } = recordingRunner([
+      json({
+        issue: { number: 28, title: "Finish", body: "Ship it", status: "open", owner: null },
+        labels: [{ label: "in_progress" }],
+        links: [],
+        comments: [],
+      }),
+    ]);
+    const kata = new KataClient({ runner });
+
+    await kata.updateTask("28", { status: "completed" });
+
+    expect(calls).toEqual([
+      ["show", "28", "--json"],
+      ["close", "28", "--reason", "done", "--json"],
+      ["label", "rm", "28", "in_progress", "--json"],
+    ]);
+  });
+
   it("claims and starts an executable task before returning spawn context", async () => {
     const { runner, calls } = recordingRunner([
       json({

@@ -115,10 +115,10 @@ export class KataClient {
       }
       changed.push("status");
     } else if (input.status === "completed") {
-      await this.removeLabel(taskId, "in_progress");
       if (!isClosed) {
         await this.runJSON(["close", taskId, "--reason", "done", "--json"]);
       }
+      await this.removeLabel(taskId, "in_progress");
       changed.push("status");
     } else if (input.status === "deleted") {
       throw new Error("TaskUpdate status=deleted is not supported by the Kata-backed plugin; use kata delete explicitly.");
