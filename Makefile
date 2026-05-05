@@ -1,4 +1,4 @@
-.PHONY: build install test test-short lint lint-ci vet clean fmt
+.PHONY: build install test test-short lint lint-ci vet clean fmt nilaway
 
 GOFLAGS_TEST := -shuffle=on
 
@@ -22,6 +22,18 @@ lint-ci:
 
 vet:
 	go vet ./...
+
+nilaway:
+	@if ! command -v nilaway >/dev/null 2>&1; then \
+		echo "nilaway not found. Install with:" >&2; \
+		echo "  go install go.uber.org/nilaway/cmd/nilaway@latest" >&2; \
+		exit 1; \
+	fi
+	@module_path="$$(go list -m)" || { \
+		echo "failed to determine module path" >&2; \
+		exit 1; \
+	}; \
+		nilaway -include-pkgs="$$module_path" -test=false ./...
 
 fmt:
 	gofmt -w .
