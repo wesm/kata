@@ -139,8 +139,16 @@ export class KataClient {
       labeled = true;
       await this.comment(taskId, `TaskExecute started by ${this.author} using agent type ${agentType}.`);
     } catch (error) {
-      if (labeled) await this.removeLabel(taskId, "in_progress");
-      if (assigned) await this.unassign(taskId);
+      if (labeled) {
+        try {
+          await this.removeLabel(taskId, "in_progress");
+        } catch {
+          // Continue rollback so unassignment still runs; preserve the original failure.
+        }
+      }
+      if (assigned) {
+        await this.unassign(taskId);
+      }
       throw error;
     }
 

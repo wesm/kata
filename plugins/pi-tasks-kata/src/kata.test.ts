@@ -151,4 +151,32 @@ describe("KataClient", () => {
       ["unassign", "8", "--json"],
     ]);
   });
+
+  it("still unassigns when claim rollback cannot remove the in-progress label", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { number: 14, title: "Rollback label failure", body: "Do work", status: "open", owner: null },
+          labels: [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "comment") {
+        throw new Error("comment failed");
+      }
+      if (args[0] === "label" && args[1] === "rm") {
+        throw new Error("label removal failed");
+      }
+      return json({ issue: { number: 14, title: "Rollback label failure", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.claimForExecution("14")).rejects.toThrow("comment failed");
+
+    expect(calls).toContainEqual(["label", "rm", "14", "in_progress", "--json"]);
+    expect(calls).toContainEqual(["unassign", "14", "--json"]);
+  });
 });
