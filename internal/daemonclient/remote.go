@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wesm/kata/internal/config"
@@ -90,14 +91,11 @@ func resolveRemote(ctx context.Context, workspaceStart string) (string, bool, er
 }
 
 // envAllowInsecure reports whether KATA_ALLOW_INSECURE is set to a
-// truthy value. Anything other than "1" or "true" (case-insensitive)
-// is false.
+// truthy value. Accepts "1" and "true" (case-insensitive) with
+// surrounding whitespace trimmed.
 func envAllowInsecure() bool {
-	switch os.Getenv(allowInsecureEnvVar) {
-	case "1", "true", "TRUE", "True":
-		return true
-	}
-	return false
+	v := strings.TrimSpace(os.Getenv(allowInsecureEnvVar))
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // findLocalConfig walks upward from start looking for .kata.local.toml,
@@ -221,7 +219,11 @@ func requireSecureOrPrivate(u *url.URL, allowInsecure bool) error {
 // probeRemote does a 1-second /api/v1/ping check against base. We keep
 // the budget tight: a misconfigured remote should fail fast, not stall
 // the user behind the 5-second auto-start deadline.
-func probeRemote(ctx context.Context, base string) bool {
+//
+// Indirected through a package-level var so tests that exercise
+// resolution paths past the probe (e.g. allow_insecure bypass) can
+// stub the network call without dialing TEST-NET addresses.
+var probeRemote = func(ctx context.Context, base string) bool {
 	client := &http.Client{Timeout: 1 * time.Second}
 	return Ping(ctx, client, base)
 }

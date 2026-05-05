@@ -3,6 +3,7 @@ package daemonclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -399,11 +400,12 @@ func TestResolveRemote_EnvSchemeGuardRejectsPublicHTTP(t *testing.T) {
 }
 
 // TestResolveRemote_EnvAllowInsecureBypassesGuard confirms the env
-// opt-out lets a public-http URL through the guard. The probe still
-// fails (the URL points nowhere) so the surface error is
-// ErrRemoteUnavailable, not the guard error.
+// opt-out lets a public-http URL through the guard. The probe is
+// stubbed to return false so the surface error is
+// ErrRemoteUnavailable; this avoids any real outbound dial.
 func TestResolveRemote_EnvAllowInsecureBypassesGuard(t *testing.T) {
-	t.Setenv("KATA_SERVER", "http://198.51.100.1:1") // TEST-NET-2, unroutable
+	stubProbe(t, false)
+	t.Setenv("KATA_SERVER", "http://198.51.100.1:7777") // TEST-NET-2, never dialed
 	t.Setenv("KATA_ALLOW_INSECURE", "1")
 
 	_, _, err := resolveRemote(context.Background(), "")
@@ -434,9 +436,11 @@ url = "http://8.8.8.8:7777"
 }
 
 // TestResolveRemote_FileAllowInsecureBypassesGuard confirms the file
-// opt-out lets a public-http URL through the guard. The probe still
-// fails (URL is unroutable) so the surface error is ErrRemoteUnavailable.
+// opt-out lets a public-http URL through the guard. The probe is
+// stubbed to return false so the surface error is
+// ErrRemoteUnavailable; this avoids any real outbound dial.
 func TestResolveRemote_FileAllowInsecureBypassesGuard(t *testing.T) {
+	stubProbe(t, false)
 	t.Setenv("KATA_SERVER", "")
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -444,7 +448,7 @@ func TestResolveRemote_FileAllowInsecureBypassesGuard(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
-url = "http://198.51.100.1:1"
+url = "http://198.51.100.1:7777"
 allow_insecure = true
 `), 0o600))
 
@@ -453,6 +457,44 @@ allow_insecure = true
 	assert.ErrorIs(t, err, ErrRemoteUnavailable)
 	assert.NotContains(t, err.Error(), "is not allowed",
 		"guard message must not appear when allow_insecure is set")
+}
+
+// TestEnvAllowInsecure_Truthiness covers the case-insensitive parsing
+// of KATA_ALLOW_INSECURE. Empty / "0" / "false" must be false; "1" and
+// "true" in any case must be true; surrounding whitespace is trimmed.
+func TestEnvAllowInsecure_Truthiness(t *testing.T) {
+	cases := []struct {
+		val  string
+		want bool
+	}{
+		{"", false},
+		{"0", false},
+		{"false", false},
+		{"yes", false},
+		{"1", true},
+		{"true", true},
+		{"TRUE", true},
+		{"True", true},
+		{"tRuE", true},
+		{" 1 ", true},
+		{"  true\t", true},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("val=%q", tc.val), func(t *testing.T) {
+			t.Setenv("KATA_ALLOW_INSECURE", tc.val)
+			assert.Equal(t, tc.want, envAllowInsecure())
+		})
+	}
+}
+
+// stubProbe replaces probeRemote for the duration of the test so
+// resolution paths past the guard don't issue real outbound dials.
+// Restored via t.Cleanup.
+func stubProbe(t *testing.T, ok bool) {
+	t.Helper()
+	saved := probeRemote
+	probeRemote = func(_ context.Context, _ string) bool { return ok }
+	t.Cleanup(func() { probeRemote = saved })
 }
 
 // writeWorkspaceMarker drops a minimal .kata.toml at dir so the
