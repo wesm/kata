@@ -6,6 +6,31 @@ We are using the latest production version of Go.
 Be pragmatic — raising theoretical or highly pedantic concerns produces
 unnecessary code churn and wasted review-fix cycles.
 
+## Do not assert external facts you cannot verify
+
+You only see the diff. You do NOT have network access and cannot check
+upstream registries, release pages, or package indexes. Therefore:
+
+- Do NOT claim a pinned version, package name, image tag, or URL "does
+  not exist" or is "invalid". Your training data is bounded; new
+  releases happen constantly. If a maintainer pinned `v2.10.1`, assume
+  it exists. Treat unfamiliar version numbers as "unfamiliar to me",
+  not "nonexistent".
+- Do NOT recommend "fix: change to v1.x" based on a hallucinated belief
+  that the pinned version is wrong. The maintainer pinned a SHA along
+  with the version comment; that SHA pin IS the source of truth, and
+  you can see the version comment matches what the maintainer chose.
+- Do NOT claim a SHA does not match the tagged release. You cannot
+  resolve tags to SHAs without the GitHub API.
+- Do NOT flag third-party action upgrades as "downgrade" or "wrong
+  version" unless you can point to a specific breaking-change finding
+  IN THE DIFF (e.g. an input field that was removed and is still
+  referenced in the workflow).
+
+If you genuinely suspect a version is wrong, phrase it as a question
+("verify this version exists") at LOW severity, not as a Medium/High
+finding with a confident "fix".
+
 ## Trust model — single-user local tool
 
 kata is a single-user local CLI + daemon. The daemon binds to either a
