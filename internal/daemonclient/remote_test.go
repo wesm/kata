@@ -313,6 +313,148 @@ url = "`+srv.URL+`"
 	assert.Equal(t, srv.URL, url)
 }
 
+// TestNormalizeRemoteURL_SchemeGuard covers the plain-http guard.
+// Plain http is rejected for public IPs and hostnames; loopback and
+// private IPs are accepted; https and allow_insecure short-circuit.
+func TestNormalizeRemoteURL_SchemeGuard(t *testing.T) {
+	cases := []struct {
+		name           string
+		url            string
+		allowInsecure  bool
+		wantOK         bool
+		wantErrSubstr  string
+		wantNormalized string
+	}{
+		{
+			name: "https public host allowed",
+			url:  "https://example.com:7777", wantOK: true,
+			wantNormalized: "https://example.com:7777",
+		},
+		{
+			name: "http loopback allowed",
+			url:  "http://127.0.0.1:7777", wantOK: true,
+			wantNormalized: "http://127.0.0.1:7777",
+		},
+		{
+			name: "http rfc1918 allowed",
+			url:  "http://10.0.0.5:7777", wantOK: true,
+			wantNormalized: "http://10.0.0.5:7777",
+		},
+		{
+			name: "http cgnat allowed (tailscale range)",
+			url:  "http://100.64.0.5:7777", wantOK: true,
+			wantNormalized: "http://100.64.0.5:7777",
+		},
+		{
+			name: "http public ipv4 rejected",
+			url:  "http://8.8.8.8:7777", wantOK: false,
+			wantErrSubstr: "plain http to \"8.8.8.8\"",
+		},
+		{
+			name: "http hostname rejected (cannot validate without DNS)",
+			url:  "http://kata.example.com:7777", wantOK: false,
+			wantErrSubstr: "plain http to \"kata.example.com\"",
+		},
+		{
+			name: "http localhost hostname rejected (use 127.0.0.1)",
+			url:  "http://localhost:7777", wantOK: false,
+			wantErrSubstr: "plain http to \"localhost\"",
+		},
+		{
+			name: "http public ipv4 allowed when allow_insecure",
+			url:  "http://8.8.8.8:7777", allowInsecure: true, wantOK: true,
+			wantNormalized: "http://8.8.8.8:7777",
+		},
+		{
+			name: "http hostname allowed when allow_insecure",
+			url:  "http://kata.example.com:7777", allowInsecure: true, wantOK: true,
+			wantNormalized: "http://kata.example.com:7777",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeRemoteURL(tc.url, tc.allowInsecure)
+			if tc.wantOK {
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantNormalized, got)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErrSubstr)
+		})
+	}
+}
+
+// TestResolveRemote_EnvSchemeGuardRejectsPublicHTTP verifies the guard
+// fires through the env-driven entry point with a clear actionable
+// error mentioning KATA_ALLOW_INSECURE.
+func TestResolveRemote_EnvSchemeGuardRejectsPublicHTTP(t *testing.T) {
+	t.Setenv("KATA_SERVER", "http://8.8.8.8:7777")
+	t.Setenv("KATA_ALLOW_INSECURE", "")
+
+	_, _, err := resolveRemote(context.Background(), "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "KATA_SERVER")
+	assert.Contains(t, err.Error(), "allow_insecure")
+}
+
+// TestResolveRemote_EnvAllowInsecureBypassesGuard confirms the env
+// opt-out lets a public-http URL through the guard. The probe still
+// fails (the URL points nowhere) so the surface error is
+// ErrRemoteUnavailable, not the guard error.
+func TestResolveRemote_EnvAllowInsecureBypassesGuard(t *testing.T) {
+	t.Setenv("KATA_SERVER", "http://198.51.100.1:1") // TEST-NET-2, unroutable
+	t.Setenv("KATA_ALLOW_INSECURE", "1")
+
+	_, _, err := resolveRemote(context.Background(), "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRemoteUnavailable)
+	assert.NotContains(t, err.Error(), "allow_insecure",
+		"guard message must not appear when allow_insecure is set")
+}
+
+// TestResolveRemote_FileSchemeGuardRejectsPublicHTTP exercises the
+// guard via .kata.local.toml. Without allow_insecure the URL is
+// rejected before the probe runs.
+func TestResolveRemote_FileSchemeGuardRejectsPublicHTTP(t *testing.T) {
+	t.Setenv("KATA_SERVER", "")
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeWorkspaceMarker(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "http://8.8.8.8:7777"
+`), 0o600))
+
+	_, _, err := resolveRemote(context.Background(), "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ".kata.local.toml")
+	assert.Contains(t, err.Error(), "allow_insecure")
+}
+
+// TestResolveRemote_FileAllowInsecureBypassesGuard confirms the file
+// opt-out lets a public-http URL through the guard. The probe still
+// fails (URL is unroutable) so the surface error is ErrRemoteUnavailable.
+func TestResolveRemote_FileAllowInsecureBypassesGuard(t *testing.T) {
+	t.Setenv("KATA_SERVER", "")
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeWorkspaceMarker(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "http://198.51.100.1:1"
+allow_insecure = true
+`), 0o600))
+
+	_, _, err := resolveRemote(context.Background(), "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRemoteUnavailable)
+	assert.NotContains(t, err.Error(), "is not allowed",
+		"guard message must not appear when allow_insecure is set")
+}
+
 // writeWorkspaceMarker drops a minimal .kata.toml at dir so the
 // test mimics a real kata workspace, anchoring .kata.local.toml
 // discovery to a legitimate boundary.

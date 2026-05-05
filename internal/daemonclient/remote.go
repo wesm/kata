@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,11 +12,17 @@ import (
 	"time"
 
 	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/daemon"
 )
 
 // remoteServerEnvVar is the environment variable that names a kata
 // daemon URL. When set, it takes precedence over .kata.local.toml.
 const remoteServerEnvVar = "KATA_SERVER"
+
+// allowInsecureEnvVar opts out of the plain-http guard for KATA_SERVER.
+// Truthy values: "1", "true". Has no effect on .kata.local.toml; the
+// equivalent there is `[server].allow_insecure = true`.
+const allowInsecureEnvVar = "KATA_ALLOW_INSECURE"
 
 // ErrRemoteUnavailable wraps probe failures against an explicitly
 // configured remote URL (env or .kata.local.toml). Callers translate
@@ -49,7 +56,7 @@ func ResolveRemote(ctx context.Context, workspaceStart string) (string, bool, er
 // would silently miss the workspace's local override.
 func resolveRemote(ctx context.Context, workspaceStart string) (string, bool, error) {
 	if v := os.Getenv(remoteServerEnvVar); v != "" {
-		u, err := normalizeRemoteURL(v)
+		u, err := normalizeRemoteURL(v, envAllowInsecure())
 		if err != nil {
 			return "", false, fmt.Errorf("KATA_SERVER %q: %w", v, err)
 		}
@@ -72,7 +79,7 @@ func resolveRemote(ctx context.Context, workspaceStart string) (string, bool, er
 	if cfg.Server.URL == "" {
 		return "", false, nil
 	}
-	u, err := normalizeRemoteURL(cfg.Server.URL)
+	u, err := normalizeRemoteURL(cfg.Server.URL, cfg.Server.AllowInsecure)
 	if err != nil {
 		return "", false, fmt.Errorf("%s server.url %q: %w", path, cfg.Server.URL, err)
 	}
@@ -80,6 +87,17 @@ func resolveRemote(ctx context.Context, workspaceStart string) (string, bool, er
 		return "", false, fmt.Errorf("%w: %s (%s)", ErrRemoteUnavailable, u, path)
 	}
 	return u, true, nil
+}
+
+// envAllowInsecure reports whether KATA_ALLOW_INSECURE is set to a
+// truthy value. Anything other than "1" or "true" (case-insensitive)
+// is false.
+func envAllowInsecure() bool {
+	switch os.Getenv(allowInsecureEnvVar) {
+	case "1", "true", "TRUE", "True":
+		return true
+	}
+	return false
 }
 
 // findLocalConfig walks upward from start looking for .kata.local.toml,
@@ -161,7 +179,13 @@ func isWorkspaceBoundary(dir string) bool {
 // normalizeRemoteURL parses a value as an http(s) URL and returns the
 // canonical scheme://host[:port] form (no path, no query). Empty path
 // matches the daemon's expectation: callers append /api/v1/... themselves.
-func normalizeRemoteURL(v string) (string, error) {
+//
+// Enforces a scheme guard: plain http is allowed only for private IP
+// literals (loopback, RFC1918, CGNAT, link-local, ULA — the same set
+// the daemon's listen-address validator accepts). Hostnames over plain
+// http and public IPs over plain http are rejected unless allowInsecure
+// is true. https URLs are unaffected.
+func normalizeRemoteURL(v string, allowInsecure bool) (string, error) {
 	u, err := url.Parse(v)
 	if err != nil {
 		return "", fmt.Errorf("parse url: %w", err)
@@ -172,7 +196,26 @@ func normalizeRemoteURL(v string) (string, error) {
 	if u.Host == "" {
 		return "", errors.New("url must include host")
 	}
+	if err := requireSecureOrPrivate(u, allowInsecure); err != nil {
+		return "", err
+	}
 	return u.Scheme + "://" + u.Host, nil
+}
+
+// requireSecureOrPrivate returns nil when the URL is safe to dial over
+// the given network posture. https is always safe; plain http is only
+// safe for a private IP literal. allowInsecure short-circuits the check
+// for users who know what they're doing (e.g. talking to an internal
+// service over a hostname inside a private overlay).
+func requireSecureOrPrivate(u *url.URL, allowInsecure bool) error {
+	if u.Scheme == "https" || allowInsecure {
+		return nil
+	}
+	host := u.Hostname()
+	if err := daemon.ValidateNonPublicAddress(net.JoinHostPort(host, "1")); err != nil {
+		return fmt.Errorf("plain http to %q is not allowed: %w; use https or set allow_insecure (env KATA_ALLOW_INSECURE=1, or [server].allow_insecure=true in .kata.local.toml)", host, err)
+	}
+	return nil
 }
 
 // probeRemote does a 1-second /api/v1/ping check against base. We keep

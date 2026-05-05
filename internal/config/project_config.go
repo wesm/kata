@@ -37,8 +37,14 @@ type ProjectBindings struct {
 // http://100.64.0.5:7777). When set on .kata.local.toml it directs
 // the client to a remote daemon; ignored if it appears in committed
 // .kata.toml in v1, but parsed without error.
+//
+// AllowInsecure opts out of the client-side scheme guard that rejects
+// plain http to a non-private host. Required when URL uses a hostname
+// (the client cannot resolve it without DNS access) or a public IP
+// over plain http. Has no effect on https URLs.
 type ServerConfig struct {
-	URL string `toml:"url,omitempty"`
+	URL           string `toml:"url,omitempty"`
+	AllowInsecure bool   `toml:"allow_insecure,omitempty"`
 }
 
 // ReadProjectConfig parses <workspaceRoot>/.kata.toml and validates v1 fields.
