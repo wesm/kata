@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,6 +22,9 @@ func TestTUI_CommandRegistered(t *testing.T) {
 	}
 	if !strings.Contains(out, "--uid-format") {
 		t.Fatalf("--uid-format missing from help: %s", out)
+	}
+	if !strings.Contains(out, "--mouse") {
+		t.Fatalf("--mouse missing from help: %s", out)
 	}
 	for _, banned := range []string{"--all-projects", "--include-deleted"} {
 		if strings.Contains(out, banned) {
@@ -52,5 +57,40 @@ func TestTUI_RejectsExtraArgs(t *testing.T) {
 	if !strings.Contains(msg, "unknown command") &&
 		!strings.Contains(msg, "accepts no args") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTUI_MouseOptionReadsConfigToml(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("[tui]\nmouse = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newTUICmd()
+	got, err := resolveTUIMouseOption(cmd, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("mouse option = false, want true from [tui] mouse")
+	}
+}
+
+func TestTUI_MouseFlagOverridesConfigToml(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("[tui]\nmouse = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newTUICmd()
+	if err := cmd.Flags().Set("mouse", "true"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveTUIMouseOption(cmd, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("mouse option = false, want true from --mouse")
 	}
 }

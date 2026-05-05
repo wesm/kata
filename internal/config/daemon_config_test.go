@@ -40,6 +40,17 @@ func TestReadDaemonConfig_TrimsWhitespace(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:7777", cfg.Listen)
 }
 
+func TestReadDaemonConfig_ReadsTUIMouse(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"),
+		[]byte("[tui]\nmouse = true\n"), 0o600))
+
+	cfg, err := config.ReadDaemonConfig()
+	require.NoError(t, err)
+	assert.True(t, cfg.TUI.Mouse)
+}
+
 func TestReadDaemonConfig_RejectsMalformed(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KATA_HOME", home)

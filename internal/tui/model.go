@@ -579,6 +579,9 @@ func projectIDFromMutation(m Model, mut mutationDoneMsg) int64 {
 // open/key. ok=true means the message was handled here.
 func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		next, cmd := m.routeMouse(msg)
+		return next, cmd, true
 	case tea.WindowSizeMsg:
 		prevLayout := m.layout
 		m.width, m.height = msg.Width, msg.Height

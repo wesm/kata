@@ -33,6 +33,7 @@ type Options struct {
 	Stdout           io.Writer // typically os.Stdout
 	Stderr           io.Writer // typically os.Stderr
 	DisplayUIDFormat string    // none, short, or full
+	Mouse            bool      // opt-in mouse capture and mouse-driven navigation
 }
 
 // Run starts the TUI. Blocks until the user quits or ctx is cancelled.
@@ -93,14 +94,16 @@ func buildRunModel(opts Options, c *Client, bi bootInit) Model {
 // Splitting this off Run keeps Run's cyclomatic complexity within the
 // project's ≤8 limit.
 func programOpts(ctx context.Context, opts Options) []tea.ProgramOption {
-	// Mouse capture is intentionally NOT enabled (plan §152): the TUI is
-	// keyboard-first, and tea.WithMouseAllMotion would emit mouse-tracking
-	// control sequences that prevent the user from selecting text natively
-	// in the alt-screen. Add it back in a future plan that actually wires
-	// MouseMsg handlers.
 	out := []tea.ProgramOption{
 		tea.WithContext(ctx),
 		tea.WithAltScreen(),
+	}
+	if opts.Mouse {
+		// Opt-in only: mouse tracking blocks native text selection in many
+		// terminals. CellMotion captures clicks/releases/wheel without idle
+		// all-motion churn; users can hold Option (macOS) or Shift (Linux)
+		// to bypass tracking for native selection.
+		out = append(out, tea.WithMouseCellMotion())
 	}
 	if opts.Stdout != nil {
 		out = append(out, tea.WithOutput(opts.Stdout))

@@ -20,6 +20,17 @@ type DaemonConfig struct {
 	// --listen flag is supplied. Same syntax as the flag (host:port).
 	// An empty value (or a missing file) means "default Unix socket".
 	Listen string `toml:"listen"`
+	// TUI carries client-side interactive UI defaults. Unlike remote
+	// daemon overrides, these are user preferences and belong in
+	// <KATA_HOME>/config.toml.
+	TUI TUIConfig `toml:"tui"`
+}
+
+// TUIConfig holds TUI user preferences from <KATA_HOME>/config.toml.
+type TUIConfig struct {
+	// Mouse enables Bubble Tea mouse cell-motion capture and additive
+	// click/wheel navigation. Default false preserves native selection.
+	Mouse bool `toml:"mouse"`
 }
 
 // ReadDaemonConfig parses <KATA_HOME>/config.toml. Returns a zero-value
