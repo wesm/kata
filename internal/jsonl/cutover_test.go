@@ -40,13 +40,13 @@ func TestAutoCutoverFailureLeavesSourceAndRemovesTemps(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "kata.db")
 	writeVersionZeroDB(t, path)
-	before, err := os.ReadFile(path)
+	before, err := os.ReadFile(path) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 
 	err = jsonl.AutoCutover(ctx, path)
 
 	require.Error(t, err)
-	after, readErr := os.ReadFile(path)
+	after, readErr := os.ReadFile(path) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, readErr)
 	assert.Equal(t, before, after)
 	assertNoCutoverTemps(t, path)

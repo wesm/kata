@@ -42,7 +42,7 @@ func newExportCmd() *cobra.Command {
 				return err
 			}
 			defer func() { _ = d.Close() }()
-			f, err := os.OpenFile(output, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+			f, err := os.OpenFile(output, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) //nolint:gosec // output path is user-supplied via --output CLI flag
 			if err != nil {
 				return fmt.Errorf("open export output: %w", err)
 			}

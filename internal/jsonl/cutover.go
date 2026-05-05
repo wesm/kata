@@ -77,7 +77,7 @@ func exportCutoverSource(ctx context.Context, sourcePath, tmpJSONL string) error
 		return err
 	}
 	defer func() { _ = source.Close() }()
-	f, err := os.OpenFile(tmpJSONL, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(tmpJSONL, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // tmpJSONL is daemon-controlled state-dir filename
 	if err != nil {
 		return fmt.Errorf("create cutover jsonl: %w", err)
 	}

@@ -45,7 +45,7 @@ func TestInit_AddsLocalToGitignoreWhenAbsent(t *testing.T) {
 	_, err := callInit(context.Background(), env.URL, dir, callInitOpts{})
 	require.NoError(t, err)
 
-	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore")) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 	assert.Contains(t, string(content), ".kata.local.toml")
 }
@@ -56,7 +56,7 @@ func TestInit_GitignoreIsIdempotent(t *testing.T) {
 	runGit(t, dir, "init", "--quiet")
 	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"),
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), //nolint:gosec // test fixture mirrors production .gitignore mode
 		[]byte("node_modules/\n.kata.local.toml\n"), 0o644))
 
 	flags.JSON = true
@@ -65,7 +65,7 @@ func TestInit_GitignoreIsIdempotent(t *testing.T) {
 	_, err := callInit(context.Background(), env.URL, dir, callInitOpts{})
 	require.NoError(t, err)
 
-	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore")) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 	// Exactly one occurrence — no duplication on re-run.
 	assert.Equal(t, 1, strings.Count(string(content), ".kata.local.toml"))
@@ -84,7 +84,7 @@ func TestInit_GitignoreLandsAtWorkspaceRoot(t *testing.T) {
 	runGit(t, root, "remote", "add", "origin", "https://github.com/wesm/kata.git")
 
 	sub := filepath.Join(root, "internal", "tui")
-	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir
 
 	flags.JSON = true
 	t.Cleanup(func() { flags.JSON = false })
@@ -99,7 +99,7 @@ func TestInit_GitignoreLandsAtWorkspaceRoot(t *testing.T) {
 	// .gitignore must follow .kata.toml — at the git root.
 	rootIgnore := filepath.Join(root, ".gitignore")
 	assert.FileExists(t, rootIgnore)
-	content, err := os.ReadFile(rootIgnore)
+	content, err := os.ReadFile(rootIgnore) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 	assert.Contains(t, string(content), ".kata.local.toml")
 
@@ -200,7 +200,7 @@ func TestInit_RemoteClient_WritesGitignore(t *testing.T) {
 	_, err := callInit(context.Background(), daemonStub.srv.URL, dir, callInitOpts{})
 	require.NoError(t, err)
 
-	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore")) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 	assert.Contains(t, string(content), ".kata.local.toml")
 }
@@ -298,7 +298,7 @@ func TestInit_GitignoreAppendsToExisting(t *testing.T) {
 	runGit(t, dir, "init", "--quiet")
 	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"),
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), //nolint:gosec // test fixture mirrors production .gitignore mode
 		[]byte("dist/\n"), 0o644))
 
 	flags.JSON = true
@@ -307,7 +307,7 @@ func TestInit_GitignoreAppendsToExisting(t *testing.T) {
 	_, err := callInit(context.Background(), env.URL, dir, callInitOpts{})
 	require.NoError(t, err)
 
-	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore")) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "dist/")
 	assert.Contains(t, string(content), ".kata.local.toml")

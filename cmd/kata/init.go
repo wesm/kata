@@ -480,7 +480,7 @@ func ensureGitignoreEntry(dir, entry string) error {
 		if len(existing) > 0 && existing[len(existing)-1] != '\n' {
 			prefix = "\n"
 		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec // .gitignore is world-readable by convention; mode is unused by O_APPEND on existing files but golangci-lint flags it
 		if err != nil {
 			return err
 		}

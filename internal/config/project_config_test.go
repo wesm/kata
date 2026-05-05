@@ -119,7 +119,7 @@ identity = "github.com/wesm/kata"
 name     = "kata"
 `)
 	sub := filepath.Join(root, "internal", "tui")
-	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir
 
 	cfg, foundDir, err := config.FindProjectConfig(sub)
 	require.NoError(t, err)

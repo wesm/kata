@@ -30,7 +30,7 @@ func TestExportWritesJSONLToOutput(t *testing.T) {
 	out, err := runCmdOutput(t, nil, "export", "--output", outPath)
 	require.NoError(t, err)
 
-	bs, err := os.ReadFile(outPath)
+	bs, err := os.ReadFile(outPath) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 	assert.Contains(t, string(bs), `"kind":"meta"`)
 	assert.Contains(t, string(bs), "exported issue")

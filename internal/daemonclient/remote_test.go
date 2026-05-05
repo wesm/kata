@@ -144,7 +144,7 @@ func TestResolveRemote_FileFoundInParentDirectory(t *testing.T) {
 	t.Setenv("KATA_SERVER", "")
 	parent := t.TempDir()
 	child := filepath.Join(parent, "subdir")
-	require.NoError(t, os.Mkdir(child, 0o755))
+	require.NoError(t, os.Mkdir(child, 0o755)) //nolint:gosec // test fixture under TempDir
 	writeWorkspaceMarker(t, parent)
 	require.NoError(t, os.WriteFile(filepath.Join(parent, ".kata.local.toml"),
 		[]byte(`version = 1
@@ -240,7 +240,7 @@ func TestResolveRemote_FileIgnoredAboveWorkspaceBoundary(t *testing.T) {
 	outer := t.TempDir()
 	workspace := filepath.Join(outer, "workspace")
 	sub := filepath.Join(workspace, "deep", "subdir")
-	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir
 	writeWorkspaceMarker(t, workspace)
 
 	// Attacker file in the shared ancestor — points at an unreachable
@@ -268,7 +268,7 @@ func TestResolveRemote_FileInsideWorkspaceWinsOverOutsideAncestor(t *testing.T) 
 	t.Setenv("KATA_SERVER", "")
 	outer := t.TempDir()
 	workspace := filepath.Join(outer, "workspace")
-	require.NoError(t, os.MkdirAll(workspace, 0o755))
+	require.NoError(t, os.MkdirAll(workspace, 0o755)) //nolint:gosec // test fixture under TempDir
 	writeWorkspaceMarker(t, workspace)
 
 	// Attacker file higher up — must be ignored.
@@ -299,7 +299,7 @@ func TestResolveRemote_GitMarkerCountsAsWorkspace(t *testing.T) {
 	srv := pingingServer(t)
 	t.Setenv("KATA_SERVER", "")
 	dir := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755)) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -318,7 +318,7 @@ url = "`+srv.URL+`"
 // discovery to a legitimate boundary.
 func writeWorkspaceMarker(t *testing.T, dir string) {
 	t.Helper()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"),
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"), //nolint:gosec // test fixture mirrors production .kata.toml mode
 		[]byte("version = 1\n\n[project]\nidentity = \"github.com/wesm/test\"\nname = \"test\"\n"),
 		0o644))
 }

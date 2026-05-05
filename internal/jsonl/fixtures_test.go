@@ -69,7 +69,7 @@ func assertSchemaVersion(t *testing.T, path string, expected int) {
 // SQL in testdata/<fixtureName>.
 func writeLegacyDBFromFixture(t *testing.T, path, fixtureName string) {
 	t.Helper()
-	schema, err := os.ReadFile(filepath.Join("testdata", fixtureName))
+	schema, err := os.ReadFile(filepath.Join("testdata", fixtureName)) //nolint:gosec // testdata path is constant per call site
 	require.NoError(t, err)
 	raw, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
