@@ -1,4 +1,4 @@
-.PHONY: build install test test-short lint vet clean fmt nilaway tui-demo
+.PHONY: build install test test-short lint vet clean fmt nilaway tui tui-demo
 
 GOFLAGS_TEST := -shuffle=on
 
@@ -34,6 +34,12 @@ nilaway:
 
 fmt:
 	gofmt -w .
+
+tui:
+	@tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	GOFLAGS=-buildvcs=false go build -o "$$tmp/kata" ./cmd/kata; \
+	KATA_COLOR_MODE="$${KATA_COLOR_MODE:-dark}" "$$tmp/kata" tui
 
 tui-demo:
 	@tmp=$$(mktemp -d); \
