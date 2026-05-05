@@ -149,6 +149,9 @@ func runHookLogOnce(stdout, stderr io.Writer, limit int, f *hookLogFilter) (acti
 			mark = activeMark{set: true, info: info, size: info.Size()}
 		}
 	}
+	if matches == nil {
+		return mark, nil
+	}
 	start := 0
 	if limit > 0 && len(matches) > limit {
 		start = len(matches) - limit

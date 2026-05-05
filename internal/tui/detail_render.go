@@ -467,7 +467,11 @@ func (dm detailModel) renderInfoLine(width int, chrome viewChrome, tabBudget int
 // keep it intact (don't sanitize — strips the cursor) and width-clip
 // with ansi.Truncate so escape sequences survive.
 func renderInfoPrompt(s inputState, innerWidth int) string {
-	body := s.title + ": " + s.activeField().input.View()
+	field := s.activeField()
+	if field == nil {
+		return ansi.Truncate(s.title+": ", innerWidth, "…")
+	}
+	body := s.title + ": " + field.input.View()
 	return ansi.Truncate(body, innerWidth, "…")
 }
 

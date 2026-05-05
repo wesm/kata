@@ -283,7 +283,10 @@ func renderListInfoLine(width int, chrome viewChrome, lm listModel, dataBudget i
 // Plan 8 commit 5a retired the owner bar; the search bar is the only
 // remaining inline command bar so the prefix is unconditionally "/".
 func renderInfoBar(s inputState, innerWidth int) string {
-	full := "/" + s.activeField().input.View()
+	full := "/"
+	if field := s.activeField(); field != nil {
+		full += field.input.View()
+	}
 	return ansi.Truncate(full, innerWidth, "…")
 }
 

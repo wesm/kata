@@ -383,6 +383,9 @@ func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 	out := make([]api.DigestIssueActions, 0, len(keys))
 	for _, k := range keys {
 		acc := m[k]
+		if acc == nil {
+			continue
+		}
 		out = append(out, api.DigestIssueActions{
 			ProjectID:       k.ProjectID,
 			ProjectIdentity: acc.ProjectIdentity,

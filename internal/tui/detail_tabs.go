@@ -191,6 +191,9 @@ func windowChunks(chunks []entryChunk, cursor, budget int) []entryChunk {
 // renderer's view) instead of comparing entry count to line budget
 // directly — see roborev #119 finding 2.
 func windowChunkBounds(chunks []entryChunk, cursor, budget int) (int, int) {
+	if chunks == nil {
+		return 0, 0
+	}
 	n := len(chunks)
 	if n == 0 {
 		return 0, 0

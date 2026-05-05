@@ -21,7 +21,10 @@ func renderInputBar(s inputState, width int) string {
 		BorderForeground(panelActiveBorder).
 		Width(width-2). // -2 for the side borders
 		Padding(0, 1)
-	body := sanitizeForDisplay(s.activeField().input.View())
+	var body string
+	if field := s.activeField(); field != nil {
+		body = sanitizeForDisplay(field.input.View())
+	}
 	rendered := box.Render(body)
 	// Embed the title in the top border via a manual overlay: lipgloss
 	// doesn't expose a "title in border" primitive yet, so prepend a
@@ -46,7 +49,10 @@ func renderPanelPrompt(s inputState, width int) string {
 		BorderForeground(panelActiveBorder).
 		Width(width-2).
 		Padding(0, 1)
-	body := sanitizeForDisplay(s.activeField().input.View())
+	var body string
+	if field := s.activeField(); field != nil {
+		body = sanitizeForDisplay(field.input.View())
+	}
 	rendered := box.Render(body)
 	title := titleStyle.Render(" " + s.title + " ")
 	return title + "\n" + rendered

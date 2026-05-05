@@ -298,7 +298,9 @@ func (s inputState) Update(msg tea.KeyMsg) (inputState, inputAction) {
 	case tea.KeyEsc:
 		return s, actionCancel
 	case tea.KeyCtrlU:
-		s.activeField().setValue("")
+		if f := s.activeField(); f != nil {
+			f.setValue("")
+		}
 		return s, actionNone
 	}
 	if isLabelPromptKind(s.kind) {

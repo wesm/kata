@@ -1136,7 +1136,11 @@ func (m Model) applyLiveBarFilter() Model {
 	if m.input.kind == inputNone {
 		return m
 	}
-	v := m.input.activeField().value()
+	field := m.input.activeField()
+	if field == nil {
+		return m
+	}
+	v := field.value()
 	if m.input.kind == inputSearchBar {
 		m.list.filter.Search = v
 	}
