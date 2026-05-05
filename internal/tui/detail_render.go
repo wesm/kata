@@ -386,33 +386,6 @@ func detailDocumentBudgets(avail, childCount int, hasActivity bool) (
 	return bodyRows, childRows, tabRows
 }
 
-func detailSplitBudgets(height, childCount int) (bodyRows, childRows, tabRows int) {
-	return detailBudgets(height-7, childCount)
-}
-
-func detailBudgets(avail, childCount int) (bodyRows, childRows, tabRows int) {
-	if avail < 1 {
-		avail = 1
-	}
-	if childCount > 0 && avail >= detailMinBodyRows+detailMinTabRows+2 {
-		childRows = min(childCount+1, max(2, avail/4))
-		avail -= childRows
-	}
-	bodyRows = avail * 2 / 3
-	if bodyRows < detailMinBodyRows && avail > detailMinBodyRows {
-		bodyRows = detailMinBodyRows
-	}
-	tabRows = avail - bodyRows
-	if tabRows < detailMinTabRows {
-		tabRows = min(detailMinTabRows, max(0, avail-1))
-		bodyRows = avail - tabRows
-	}
-	if bodyRows < 1 {
-		bodyRows = 1
-	}
-	return bodyRows, childRows, tabRows
-}
-
 // renderInfoLine renders the info line just above the footer for the
 // detail view. Same priority order as the list view: active panel
 // prompt > flash > SSE-degraded > toast > scroll indicator. Always
@@ -475,76 +448,12 @@ func renderInfoPrompt(s inputState, innerWidth int) string {
 	return ansi.Truncate(body, innerWidth, "…")
 }
 
-// detailMinSplit is the smallest tab-content + body budget that gets
-// the proportional split. Below it, fall back to the floors.
-const detailMinSplit = 8
-
 // detailMinBodyRows / detailMinTabRows are the floors so neither
 // pane collapses to zero on small terminals.
 const (
 	detailMinBodyRows = 4
 	detailMinTabRows  = 3
 )
-
-// renderHeaderMeta builds the first detail-header row:
-// `#N · status · author · created Xago · updated Yago`. Sanitized
-// agent text only — author flows through sanitizeForDisplay.
-func renderHeaderMeta(iss Issue) string {
-	left := fmt.Sprintf("#%d", iss.Number) + " · " + statusChip(iss)
-	bits := []string{}
-	if iss.Author != "" {
-		bits = append(bits, sanitizeForDisplay(iss.Author))
-	}
-	if !iss.CreatedAt.IsZero() {
-		bits = append(bits, "created "+humanizeRelative(iss.CreatedAt))
-	}
-	if !iss.UpdatedAt.IsZero() {
-		bits = append(bits, "updated "+humanizeRelative(iss.UpdatedAt))
-	}
-	right := strings.Join(bits, " · ")
-	if right == "" {
-		return left
-	}
-	return left + " · " + right
-}
-
-// renderHeaderAssignment builds the second header row: owner on the
-// left, label chips packed on the right. Width-aware so the chip
-// strip surrenders cells to the owner half rather than overflowing.
-// Owner placeholder `Owner: —` keeps the row's visible weight when
-// no owner is set.
-func renderHeaderAssignment(width int, iss Issue) string {
-	left := "Owner: " + ownerDisplay(iss.Owner)
-	leftCells := runewidth.StringWidth(left)
-	// Right side gets whatever remains after the owner half plus a
-	// 1-cell separator. Floor at 1 so renderLabelChips doesn't get a
-	// negative budget on tiny terminals — its own ultra-narrow path
-	// will degrade gracefully.
-	rightBudget := width - leftCells - 1
-	if rightBudget < 1 {
-		rightBudget = 1
-	}
-	right := renderLabelChips(iss.Labels, rightBudget)
-	return padLeftRightInside(left, right, width)
-}
-
-// ownerDisplay returns the rendered owner text, sanitized for display.
-// Nil or empty owner renders as the em-dash placeholder so the row
-// keeps its visible weight (`Owner: —`).
-func ownerDisplay(owner *string) string {
-	if owner == nil || *owner == "" {
-		return "—"
-	}
-	return sanitizeForDisplay(*owner)
-}
-
-// renderHeaderTitle is the bold full-width title row below the
-// assignment row. Sanitized + truncated so the rendered cell never
-// overflows or carries control sequences.
-func renderHeaderTitle(width int, iss Issue) string {
-	t := sanitizeForDisplay(iss.Title)
-	return titleStyle.Render(truncate(t, max(20, width)))
-}
 
 func renderHierarchySummary(width int, parent *IssueRef, children []Issue) string {
 	left := "Parent: -"
@@ -569,22 +478,6 @@ func childrenCountSummary(children []Issue) string {
 		}
 	}
 	return fmt.Sprintf("%d open / %d total", open, len(children))
-}
-
-// renderLabeledRule produces `── <label> ──` padded to width with
-// dashes. Falls back to a plain dash run when the label prefix is
-// wider than the available width — defensive against tiny terminals
-// so we never call strings.Repeat with a negative count.
-func renderLabeledRule(label string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	prefix := "── " + label + " ──"
-	prefixW := runewidth.StringWidth(prefix)
-	if prefixW > width {
-		return separatorRuleStyle.Render(strings.Repeat("─", width))
-	}
-	return separatorRuleStyle.Render(prefix + strings.Repeat("─", width-prefixW))
 }
 
 // activeTabLabel returns the singular noun for the active tab so the
@@ -720,28 +613,6 @@ func hardWrap(s string, width int) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-// renderTabStrip renders the three tab titles with their counts. The
-// active tab is wrapped in literal brackets (`[ Comments (4) ]`) plus
-// the bold/underline tabActive style; inactive tabs are plain text.
-// The bracket-and-bold combo gives the active state two redundant
-// signals so it remains visible in `KATA_COLOR_MODE=none`.
-func (dm detailModel) renderTabStrip() string {
-	titles := [detailTabCount]string{
-		fmt.Sprintf("Comments (%d)", len(dm.comments)),
-		fmt.Sprintf("Events (%d)", len(dm.events)),
-		fmt.Sprintf("Links (%d)", len(dm.links)),
-	}
-	parts := make([]string, 0, detailTabCount)
-	for i, t := range titles {
-		if detailTab(i) == dm.activeTab {
-			parts = append(parts, tabActive.Render("[ "+t+" ]"))
-		} else {
-			parts = append(parts, tabInactive.Render(t))
-		}
-	}
-	return strings.Join(parts, "  ")
 }
 
 // renderActiveTab dispatches to the per-tab renderer. The header line

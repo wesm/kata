@@ -102,15 +102,6 @@ func newUnrelateCmd() *cobra.Command {
 	}
 }
 
-// canonicalRelated returns (min, max) so callers don't need to remember
-// which direction the schema enforces.
-func canonicalRelated(a, b int64) (int64, int64) {
-	if a < b {
-		return a, b
-	}
-	return b, a
-}
-
 func runLinkCreate(cmd *cobra.Command, fromRef string, linkType string, toRef string, replace bool) error {
 	ctx := cmd.Context()
 	start, err := resolveStartPath(flags.Workspace)
