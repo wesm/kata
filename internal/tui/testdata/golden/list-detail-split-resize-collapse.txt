@@ -1,10 +1,10 @@
  Project: kata                                                                                                              kata カタ · dev 
 ┌──────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────────────────────┐
 │        #     status    title                   kids    updated   ││  #42  fix login bug on Safari                                  [open]│
-│──────────────────────────────────────────────────────────────────││  authored by wesm                                                    │
-│        #1    open      fix login bug on Safari         3h ago    ││  owner: none   parent: none                                          │
-│▶       #2    closed    rebuild search index            1h ago    ││  Body                                                                │
-│        #3    [deleted] purge stale tokens              2h ago    ││  Reproduces in Safari 17 only.                                       │
+│        #1    open      fix login bug on Safari         3h ago    ││  authored by wesm                                                    │
+│▶       #2    closed    rebuild search index            1h ago    ││  owner: none   parent: none                                          │
+│        #3    [deleted] purge stale tokens              2h ago    ││  Body                                                                │
+│                                                                  ││  Reproduces in Safari 17 only.                                       │
 │                                                                  ││  Click the login button twice.                                       │
 │                                                                  ││                                                                      │
 │                                                                  ││  Activity   [ Comments (2) ]   Events (2)   Links (1)                │

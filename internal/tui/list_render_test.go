@@ -321,6 +321,32 @@ func TestRenderListBody_SingleProjectOmitsPrefix(t *testing.T) {
 	}
 }
 
+func TestRenderListBody_HeaderBackgroundReplacesSeparatorRule(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	if !styleHasBackground(tableHeaderStyle) {
+		t.Fatal("tableHeaderStyle must carry a background in color modes")
+	}
+
+	lm := listModel{issues: []Issue{{Number: 1, Title: "row", Status: "open"}}}
+	got := stripANSI(lm.renderBody(80, 6, false))
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Trim(line, "─") == "" && strings.Contains(line, "─") {
+			t.Fatalf("renderBody still renders a separator rule:\n%s", got)
+		}
+	}
+}
+
+func TestRenderListBody_EmptyStateDoesNotRenderSeparatorRule(t *testing.T) {
+	applyColorMode(colorDark, io.Discard)
+	lm := listModel{}
+	got := stripANSI(lm.renderBody(80, 6, false))
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Trim(line, "─") == "" && strings.Contains(line, "─") {
+			t.Fatalf("empty renderBody still renders a separator rule:\n%s", got)
+		}
+	}
+}
+
 func TestRenderListInfoLine_TruncationNotice(t *testing.T) {
 	useNoColor(t)
 	lm := listModel{truncated: true, issues: []Issue{{Number: 1, Status: "open"}}}

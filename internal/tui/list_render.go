@@ -407,9 +407,9 @@ func (lm listModel) issueCounts() issueCounts {
 	return c
 }
 
-// renderBody is the table body — header, separator, then up to height
-// data rows around the cursor. No top/bottom borders (msgvault
-// pattern); just one separator under the column header.
+// renderBody is the table body — header, then up to height data rows
+// around the cursor. No top/bottom borders (msgvault pattern); the
+// header carries its own background instead of a separator rule.
 //
 // chrome.narrow=true (M6 split-mode list pane) drops the owner column so
 // the title column flexes into the recovered cells. chrome.scope and
@@ -421,7 +421,6 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 	if len(queueRows) == 0 {
 		hint := "no issues match. press c to clear filters or n to create one."
 		return tableHeaderRow(width, narrow) + "\n" +
-			separatorRuleStyle.Render(strings.Repeat("─", width)) + "\n" +
 			normalRowStyle.Render(padToWidth("  "+hint, width))
 	}
 	displayCursor := lm.cursor
@@ -464,16 +463,7 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 			}
 			return s.Inherit(normalRowStyle)
 		})
-	rendered := t.Render()
-	// Insert the separator rule between the header row and the data
-	// rows. lipgloss.Table renders as "header\nrow1\nrow2..."; we
-	// split, inject the rule, and re-join.
-	lines := strings.SplitN(rendered, "\n", 2)
-	if len(lines) < 2 {
-		return rendered
-	}
-	rule := separatorRuleStyle.Render(strings.Repeat("─", width))
-	return lines[0] + "\n" + rule + "\n" + lines[1]
+	return t.Render()
 }
 
 // listTableHeaders returns the column-header label slice for the
@@ -496,7 +486,7 @@ func tableHeaderRow(width int, narrow bool) string {
 	parts := make([]string, len(headers))
 	for i, h := range headers {
 		w := cols.byIndex(i, narrow)
-		parts[i] = tableHeaderStyle.Render(padToWidth(h, w-1)) + " "
+		parts[i] = tableHeaderStyle.Render(padToWidth(h, w-1) + " ")
 	}
 	return strings.Join(parts, "")
 }

@@ -1,8 +1,8 @@
  Project: kata                                                                                       kata カタ · v0.1.0 
  open: 1 · closed: 0 · all: 1                                                                  status:open  owner:alice 
         #     status    title                                                           kids    owner         updated   
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▶       #1    open      narrowed by chips                                                       alice         30m ago   
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

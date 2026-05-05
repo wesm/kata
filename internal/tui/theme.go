@@ -91,8 +91,9 @@ var (
 //	padding so the bar looks like a window-chrome strip.
 //
 // statsStyle: second header line + info line. Faint foreground.
-// tableHeaderStyle: column headers above the table body.
-// separatorRuleStyle: the single ─ line under the column headers.
+// tableHeaderStyle: column headers above the table body, with a
+// background in color modes.
+// separatorRuleStyle: subtle rules used by detail/chrome renderers.
 // cursorRowStyle: highlighted background for the row under the cursor.
 // altRowStyle: subtle alternate background for odd rows.
 // normalRowStyle: explicit background for even rows so partial-line
@@ -221,7 +222,8 @@ func applyColorMode(m colorMode, w io.Writer) {
 		Foreground(pick("242", "246")).
 		Background(pick("253", "234"))
 	tableHeaderStyle = r.NewStyle().Bold(true).
-		Foreground(pick("242", "246"))
+		Foreground(pick("242", "246")).
+		Background(pick("253", "234"))
 	separatorRuleStyle = r.NewStyle().Faint(true).
 		Foreground(pick("248", "242"))
 	cursorRowStyle = r.NewStyle().
