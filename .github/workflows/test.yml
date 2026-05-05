@@ -26,3 +26,23 @@ jobs:
 
       - name: Run tests
         run: go test -p 1 ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.10.1
+          args: --config .golangci.yml --no-fix
