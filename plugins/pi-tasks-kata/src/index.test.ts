@@ -106,6 +106,7 @@ describe("pi-tasks-kata extension", () => {
 
     expect(result.content[0].text).toContain("#10: subagents unavailable");
     expect(calls).toContainEqual(["label", "rm", "10", "in_progress", "--json"]);
+    expect(calls).toContainEqual(["unassign", "10", "--json"]);
     expect(calls).toContainEqual([
       "comment",
       "10",

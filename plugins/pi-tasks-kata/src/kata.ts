@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { mkdir, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { blockersFor } from "./format.js";
 import type {
   ClaimOptions,
@@ -16,6 +18,7 @@ export interface KataClientOptions {
   runner?: KataRunner;
   workspace?: string;
   author?: string;
+  claimLockRoot?: string | false;
 }
 
 interface KataEnvelope {
@@ -30,11 +33,15 @@ export class KataClient {
   private runner: KataRunner;
   private workspace?: string;
   private claimLocks = new Map<string, Promise<void>>();
+  private claimLockRoot?: string;
   readonly author: string;
 
   constructor(options: KataClientOptions = {}) {
     this.runner = options.runner ?? defaultKataRunner;
     this.workspace = options.workspace ?? process.env.KATA_WORKSPACE;
+    this.claimLockRoot = options.claimLockRoot === false
+      ? undefined
+      : options.claimLockRoot ?? (options.runner ? undefined : this.workspace ?? process.cwd());
     this.author = options.author ?? process.env.KATA_AUTHOR ?? process.env.PI_AGENT_NAME ?? process.env.USER ?? "pi-agent";
   }
 
@@ -115,7 +122,14 @@ export class KataClient {
   }
 
   async claimForExecution(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
-    return this.withClaimLock(taskId, () => this.claimForExecutionLocked(taskId, options));
+    const claimLockPath = await this.acquireClaimLock(taskId);
+    try {
+      const claim = await this.withClaimLock(taskId, () => this.claimForExecutionLocked(taskId, options));
+      return { ...claim, claimLockPath };
+    } catch (error) {
+      await this.releaseClaimLock(claimLockPath);
+      throw error;
+    }
   }
 
   private async claimForExecutionLocked(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
@@ -168,7 +182,12 @@ export class KataClient {
       issue: detail.issue,
       agentType,
       prompt: buildExecutionPrompt(detail, options.additionalContext),
+      assignedByClaim,
     };
+  }
+
+  async releaseExecutionClaim(claim: ExecutionClaim): Promise<void> {
+    await this.releaseClaimLock(claim.claimLockPath);
   }
 
   async recordAgentSpawn(taskId: string, agentId: string): Promise<void> {
@@ -182,8 +201,11 @@ export class KataClient {
     await this.comment(taskId, `TaskExecute completed via agent ${agentId}.${suffix}`);
   }
 
-  async failExecution(taskId: string, agentId: string, error?: string): Promise<void> {
+  async failExecution(taskId: string, agentId: string, error?: string, options: { releaseOwner?: boolean } = {}): Promise<void> {
     await this.removeLabel(taskId, "in_progress");
+    if (options.releaseOwner) {
+      await this.unassign(taskId);
+    }
     const suffix = error ? `\n\nError:\n${error}` : "";
     await this.comment(taskId, `TaskExecute failed via agent ${agentId}.${suffix}`);
   }
@@ -231,6 +253,26 @@ export class KataClient {
         this.claimLocks.delete(taskId);
       }
     }
+  }
+
+  private async acquireClaimLock(taskId: string): Promise<string | undefined> {
+    if (!this.claimLockRoot) return undefined;
+    const lockPath = join(this.claimLockRoot, ".kata", "pi-tasks-kata", "claims", `task-${safeLockName(taskId)}.lock`);
+    await mkdir(dirname(lockPath), { recursive: true });
+    try {
+      await mkdir(lockPath);
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        throw new Error(`Task #${taskId} claim lock is already held`);
+      }
+      throw error;
+    }
+    return lockPath;
+  }
+
+  private async releaseClaimLock(lockPath: string | undefined): Promise<void> {
+    if (!lockPath) return;
+    await rm(lockPath, { recursive: true, force: true });
   }
 
   private async runJSON(args: string[]): Promise<KataEnvelope> {
@@ -285,6 +327,14 @@ function isAbsentLabelError(error: unknown, label: string): boolean {
   const message = error instanceof Error ? error.message : String(error);
   if (!message.includes(label)) return false;
   return /already removed|not found|no label|absent|not attached/i.test(message);
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+
+function safeLockName(taskId: string): string {
+  return taskId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function agentTypeFromLabels(labels: string[]): string | undefined {

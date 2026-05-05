@@ -61,4 +61,6 @@ export interface ExecutionClaim {
   issue: KataIssue;
   agentType: string;
   prompt: string;
+  assignedByClaim: boolean;
+  claimLockPath?: string;
 }

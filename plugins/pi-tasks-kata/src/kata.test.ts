@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { KataClient, type KataRunner } from "./kata.js";
 
 function json(data: Record<string, unknown>) {
@@ -95,6 +98,7 @@ describe("KataClient", () => {
     const execution = await kata.claimForExecution("5", { additionalContext: "Use Vitest" });
 
     expect(execution.agentType).toBe("worker");
+    expect(execution.assignedByClaim).toBe(true);
     expect(execution.prompt).toContain("Write tests");
     expect(execution.prompt).toContain("Use Vitest");
     expect(calls).toEqual([
@@ -248,6 +252,20 @@ describe("KataClient", () => {
     await expect(kata.claimForExecution("20")).rejects.toThrow("comment failed");
 
     expect(calls).not.toContainEqual(["unassign", "20", "--json"]);
+  });
+
+  it("refuses to claim while a durable task lock exists", async () => {
+    const lockRoot = await mkdtemp(join(tmpdir(), "kata-claim-lock-"));
+    await mkdir(join(lockRoot, ".kata", "pi-tasks-kata", "claims", "task-21.lock"), { recursive: true });
+    const { runner, calls } = recordingRunner();
+    const kata = new KataClient({ runner, author: "pi-agent", claimLockRoot: lockRoot });
+
+    try {
+      await expect(kata.claimForExecution("21")).rejects.toThrow("claim lock is already held");
+      expect(calls).toEqual([]);
+    } finally {
+      await rm(lockRoot, { recursive: true, force: true });
+    }
   });
 
   it("serializes concurrent claims for the same task", async () => {

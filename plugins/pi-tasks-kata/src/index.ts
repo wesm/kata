@@ -4,7 +4,7 @@ import { formatTaskDetail, formatTaskList } from "./format.js";
 import { KataClient, type KataRunner } from "./kata.js";
 import { textResult } from "./result.js";
 import { spawnSubagent } from "./subagents.js";
-import type { UpdateTaskInput } from "./types.js";
+import type { ExecutionClaim, UpdateTaskInput } from "./types.js";
 
 type PiWithTestHooks = ExtensionAPI & {
   __kataRunner?: KataRunner;
@@ -106,8 +106,9 @@ export default function (pi: ExtensionAPI) {
       const failures: string[] = [];
       for (const taskId of params.task_ids) {
         let claimed = false;
+        let claim: ExecutionClaim | undefined;
         try {
-          const claim = await kata.claimForExecution(taskId, {
+          claim = await kata.claimForExecution(taskId, {
             agentType: params.agent_type,
             additionalContext: params.additional_context,
             model: params.model,
@@ -128,17 +129,20 @@ export default function (pi: ExtensionAPI) {
               error,
             );
           }
+          await releaseClaimLock(kata, claim);
           launched.push(`#${taskId} -> agent ${agentId}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (claimed) {
             try {
-              await kata.failExecution(taskId, "spawn", message);
+              await kata.failExecution(taskId, "spawn", message, { releaseOwner: claim?.assignedByClaim });
             } catch (cleanupError) {
               console.error(
                 `[pi-tasks-kata] failed to record spawn failure for task #${taskId}:`,
                 cleanupError,
               );
+            } finally {
+              if (claim) await releaseClaimLock(kata, claim);
             }
           }
           failures.push(`#${taskId}: ${message}`);
@@ -196,6 +200,17 @@ export default function (pi: ExtensionAPI) {
     } catch (error) {
       console.error(
         `[pi-tasks-kata] failed to record subagent ${kind} for ${agentId} / task #${taskId}:`,
+        error,
+      );
+    }
+  }
+
+  async function releaseClaimLock(kata: KataClient, claim: ExecutionClaim) {
+    try {
+      await kata.releaseExecutionClaim(claim);
+    } catch (error) {
+      console.error(
+        `[pi-tasks-kata] failed to release claim lock for task #${claim.issue.number}:`,
         error,
       );
     }
