@@ -104,4 +104,51 @@ describe("KataClient", () => {
       ["comment", "5", "--body", "TaskExecute started by pi-agent using agent type worker.", "--json"],
     ]);
   });
+
+  it("rejects tasks that are already in progress before claiming", async () => {
+    const { runner, calls } = recordingRunner([
+      json({
+        issue: { number: 6, title: "Already running", body: "Do work", status: "open", owner: "pi-agent" },
+        labels: [{ label: "agent:worker" }, { label: "in_progress" }],
+        links: [],
+        comments: [],
+      }),
+    ]);
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.claimForExecution("6")).rejects.toThrow("already in progress");
+
+    expect(calls).toEqual([["show", "6", "--json"]]);
+  });
+
+  it("compensates assignment and in-progress label when claim comments fail", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { number: 8, title: "Partial claim", body: "Do work", status: "open", owner: null },
+          labels: [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "comment") {
+        throw new Error("comment failed");
+      }
+      return json({ issue: { number: 8, title: "Partial claim", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.claimForExecution("8")).rejects.toThrow("comment failed");
+
+    expect(calls).toEqual([
+      ["show", "8", "--json"],
+      ["assign", "8", "pi-agent", "--json"],
+      ["label", "add", "8", "in_progress", "--json"],
+      ["comment", "8", "--body", "TaskExecute started by pi-agent using agent type worker.", "--json"],
+      ["label", "rm", "8", "in_progress", "--json"],
+      ["unassign", "8", "--json"],
+    ]);
+  });
 });

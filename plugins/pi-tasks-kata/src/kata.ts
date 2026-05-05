@@ -116,6 +116,7 @@ export class KataClient {
   async claimForExecution(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
     const detail = await this.showTask(taskId);
     if (detail.issue.status === "closed") throw new Error(`Task #${taskId} is already completed`);
+    if (detail.labels.includes("in_progress")) throw new Error(`Task #${taskId} is already in progress`);
 
     const openBlockers: number[] = [];
     for (const blocker of blockersFor(detail.issue.number, detail.links)) {
@@ -129,9 +130,19 @@ export class KataClient {
     const agentType = options.agentType ?? agentTypeFromLabels(detail.labels);
     if (!agentType) throw new Error(`Task #${taskId} has no agent type; add label agent:<type> or pass agent_type.`);
 
-    await this.assign(taskId, this.author);
-    await this.addLabel(taskId, "in_progress");
-    await this.comment(taskId, `TaskExecute started by ${this.author} using agent type ${agentType}.`);
+    let assigned = false;
+    let labeled = false;
+    try {
+      await this.assign(taskId, this.author);
+      assigned = true;
+      await this.addLabel(taskId, "in_progress");
+      labeled = true;
+      await this.comment(taskId, `TaskExecute started by ${this.author} using agent type ${agentType}.`);
+    } catch (error) {
+      if (labeled) await this.removeLabel(taskId, "in_progress");
+      if (assigned) await this.unassign(taskId);
+      throw error;
+    }
 
     return {
       issue: detail.issue,
@@ -159,6 +170,14 @@ export class KataClient {
 
   async assign(taskId: string, owner: string): Promise<void> {
     await this.runJSON(["assign", taskId, owner, "--json"]);
+  }
+
+  async unassign(taskId: string): Promise<void> {
+    try {
+      await this.runJSON(["unassign", taskId, "--json"]);
+    } catch {
+      // Best-effort claim compensation should preserve the original failure.
+    }
   }
 
   async comment(taskId: string, body: string): Promise<void> {

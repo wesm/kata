@@ -120,7 +120,14 @@ export default function (pi: ExtensionAPI) {
           }, 30_000, (agentId) => {
             agentTaskMap.set(agentId, taskId);
           });
-          await kata.recordAgentSpawn(taskId, agentId);
+          try {
+            await kata.recordAgentSpawn(taskId, agentId);
+          } catch (error) {
+            console.error(
+              `[pi-tasks-kata] failed to record spawn comment for ${agentId} / task #${taskId}:`,
+              error,
+            );
+          }
           launched.push(`#${taskId} -> agent ${agentId}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

@@ -172,4 +172,44 @@ describe("pi-tasks-kata extension", () => {
       expect.any(Error),
     );
   });
+
+  it("keeps a launched agent active when recording the spawn comment fails", async () => {
+    const calls: string[][] = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { pi, tools, handlers } = fakePi(async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { number: 13, title: "Comment fragile", body: "Keep running", status: "open", owner: null },
+          labels: [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "comment" && String(args[3]).includes("spawned subagent")) {
+        throw new Error("spawn comment failed");
+      }
+      return json({ issue: { number: 13, title: "Comment fragile", status: "open" }, changed: true });
+    });
+    plugin(pi);
+
+    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["13"] });
+    handlers.get("subagents:completed")?.({ id: "agent-123", result: "done" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(result.content[0].text).toContain("#13 -> agent agent-123");
+    expect(result.content[0].text).not.toContain("Failed");
+    expect(calls).toContainEqual(["close", "13", "--reason", "done", "--json"]);
+    expect(calls).not.toContainEqual([
+      "comment",
+      "13",
+      "--body",
+      "TaskExecute failed via agent spawn.\n\nError:\nspawn comment failed",
+      "--json",
+    ]);
+    expect(consoleError).toHaveBeenCalledWith(
+      "[pi-tasks-kata] failed to record spawn comment for agent-123 / task #13:",
+      expect.any(Error),
+    );
+  });
 });
