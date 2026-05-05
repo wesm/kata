@@ -65,7 +65,12 @@ func Run(ctx context.Context, opts Options) error {
 // frame renders with stats.
 func buildRunModel(opts Options, c *Client, bi bootInit) Model {
 	m := initialModel(opts)
-	m.api = c
+	// Guard against a typed-nil *Client becoming a non-nil KataAPI:
+	// only assign when c carries a value, so m.api stays a true nil
+	// interface otherwise and m.api != nil checks remain correct.
+	if c != nil {
+		m.api = c
+	}
 	m.scope = bi.scope
 	m.view = bi.view
 	if len(bi.projects) > 0 {
