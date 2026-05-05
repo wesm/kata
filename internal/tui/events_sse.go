@@ -19,6 +19,15 @@ type sseClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// reconnectStatusGrace defers surfacing sseReconnecting to the UI for
+// this long after a disconnect. Brief outages (daemon restarts, transient
+// network blips) usually recover inside the window so the user never sees
+// the badge. The grace runs in parallel with the reconnect loop — it does
+// not delay the reconnect attempt itself, only the user-visible signal.
+//
+// var (not const) so tests can shorten it.
+var reconnectStatusGrace = 1500 * time.Millisecond
+
 // startSSE is the long-lived consumer goroutine. Loops over
 // readSSEStream, reconnects with exponential backoff (1s → 30s, capped),
 // and resumes via Last-Event-ID once at least one frame was emitted on
@@ -30,21 +39,49 @@ type sseClient interface {
 // reconnecting on a flapping daemon: the user would see "connected" the
 // moment we issue the request, "reconnecting" on the inevitable error,
 // and so on per loop turn even though no frame ever made it through.
+//
+// sseReconnecting is debounced by reconnectStatusGrace: armed on the
+// first disconnect of an outage, fired only if the reconnect hasn't
+// produced a frame within the grace window, and cancelled when the next
+// successful read produces its first frame (or on goroutine exit).
 func startSSE(
 	ctx context.Context, hc sseClient, base string, projectID *int64, sseCh chan<- tea.Msg,
 ) {
 	const maxBackoff = 30 * time.Second
 	backoff := time.Second
 	var lastID int64
+	var graceTimer *time.Timer
+	inOutage := false
+
+	stopGrace := func() {
+		if graceTimer != nil {
+			graceTimer.Stop()
+			graceTimer = nil
+		}
+		inOutage = false
+	}
+	defer stopGrace()
+	armGrace := func() {
+		if inOutage {
+			return
+		}
+		inOutage = true
+		graceTimer = time.AfterFunc(reconnectStatusGrace, func() {
+			notifyStatus(ctx, sseCh, sseReconnecting)
+		})
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		connected, err := readSSEStream(ctx, hc, base, projectID, lastID, sseCh, &lastID)
+		connected, err := readSSEStream(
+			ctx, hc, base, projectID, lastID, sseCh, &lastID, stopGrace,
+		)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		notifyStatus(ctx, sseCh, sseReconnecting)
+		armGrace()
 		if connected {
 			backoff = time.Second
 		}
@@ -87,9 +124,14 @@ func notifyStatus(ctx context.Context, sseCh chan<- tea.Msg, st sseConnState) {
 // successful frame — never optimistically before a frame lands. A
 // connection that fails before any frame arrives produces no connected
 // status, only the reconnecting status the caller emits on disconnect.
+//
+// onConnect is invoked on the same first-frame transition that pushes
+// sseConnected. startSSE uses it to cancel a pending reconnect-status
+// grace timer so a fast recovery never surfaces the "reconnecting" badge.
+// nil is acceptable; tests that call readSSEStream directly pass nil.
 func readSSEStream(
 	ctx context.Context, hc sseClient, base string, projectID *int64,
-	lastID int64, sseCh chan<- tea.Msg, updateLastID *int64,
+	lastID int64, sseCh chan<- tea.Msg, updateLastID *int64, onConnect func(),
 ) (bool, error) {
 	req, err := buildSSERequest(ctx, base, projectID, lastID)
 	if err != nil {
@@ -114,6 +156,9 @@ func readSSEStream(
 			return connected, perr
 		}
 		if !connected {
+			if onConnect != nil {
+				onConnect()
+			}
 			notifyStatus(ctx, sseCh, sseConnected)
 			connected = true
 		}

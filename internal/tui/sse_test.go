@@ -201,7 +201,7 @@ func TestSSE_StreamForwardsMessages(t *testing.T) {
 	defer cancel()
 	ch := make(chan tea.Msg, 4)
 	var lastID int64
-	connected, _ := readSSEStream(ctx, srv.Client(), srv.URL, nil, 0, ch, &lastID)
+	connected, _ := readSSEStream(ctx, srv.Client(), srv.URL, nil, 0, ch, &lastID, nil)
 	if !connected {
 		t.Fatal("connected = false, want true")
 	}
@@ -241,7 +241,7 @@ func TestSSE_NoConnectedStatusBeforeFirstFrame(t *testing.T) {
 	defer cancel()
 	ch := make(chan tea.Msg, 4)
 	var lastID int64
-	connected, _ := readSSEStream(ctx, srv.Client(), srv.URL, nil, 0, ch, &lastID)
+	connected, _ := readSSEStream(ctx, srv.Client(), srv.URL, nil, 0, ch, &lastID, nil)
 	if connected {
 		t.Fatal("connected = true, want false (no frames arrived)")
 	}
@@ -315,6 +315,111 @@ Done:
 	if hdr != "5" {
 		t.Fatalf("Last-Event-ID on reconnect = %q, want 5", hdr)
 	}
+}
+
+// TestSSE_GracePeriod_FastReconnect_NoReconnectingBadge verifies that a
+// disconnect followed by a quick recovery (within reconnectStatusGrace)
+// never surfaces sseReconnecting to the channel — fast restarts must be
+// invisible to the UI. The handler returns a frame on the first connect,
+// closes, and returns another frame on the second connect; with the
+// default 1s initial backoff the reconnect lands well inside the 1.5s
+// grace window.
+func TestSSE_GracePeriod_FastReconnect_NoReconnectingBadge(t *testing.T) {
+	var connects int32
+	srv := newSSEMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&connects, 1)
+		writeSSEFrame(t, w, int64(n), "issue.created",
+			`{"type":"issue.created","project_id":7}`)
+		if n == 1 {
+			return // close so reconnect happens
+		}
+		<-r.Context().Done()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan tea.Msg, 16)
+	done := make(chan struct{})
+	go func() {
+		startSSE(ctx, srv.Client(), srv.URL, nil, ch)
+		close(done)
+	}()
+
+	// Wait for two eventReceivedMsg arrivals (one per connect). The
+	// second arrival proves the reconnect succeeded; if no sseReconnecting
+	// crossed the channel by then, the grace timer was correctly cancelled.
+	var sawEvents int
+	var sawReconnecting bool
+	deadline := time.After(5 * time.Second)
+	for sawEvents < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("only saw %d eventReceivedMsg, want 2", sawEvents)
+		case msg := <-ch:
+			switch m := msg.(type) {
+			case eventReceivedMsg:
+				sawEvents++
+			case sseStatusMsg:
+				if m.state == sseReconnecting {
+					sawReconnecting = true
+				}
+			}
+		}
+	}
+	cancel()
+	<-done
+	if sawReconnecting {
+		t.Fatal("sseReconnecting pushed during fast reconnect — grace timer should have suppressed it")
+	}
+}
+
+// TestSSE_GracePeriod_LongOutage_SurfacesBadge verifies that a sustained
+// outage (no productive reconnect within the grace window) does push
+// sseReconnecting to the channel, and that recovery pushes sseConnected.
+// The test shortens reconnectStatusGrace to keep the run fast.
+func TestSSE_GracePeriod_LongOutage_SurfacesBadge(t *testing.T) {
+	saved := reconnectStatusGrace
+	reconnectStatusGrace = 50 * time.Millisecond
+	t.Cleanup(func() { reconnectStatusGrace = saved })
+
+	var ready atomic.Bool
+	srv := newSSEMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if !ready.Load() {
+			return // empty body, close — readSSEStream sees EOF
+		}
+		writeSSEFrame(t, w, 1, "issue.created",
+			`{"type":"issue.created","project_id":7}`)
+		<-r.Context().Done()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan tea.Msg, 16)
+	done := make(chan struct{})
+	go func() {
+		startSSE(ctx, srv.Client(), srv.URL, nil, ch)
+		close(done)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+
+	waitForState := func(want sseConnState) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case <-deadline:
+				t.Fatalf("did not observe sseStatusMsg{%v}", want)
+			case msg := <-ch:
+				if st, ok := msg.(sseStatusMsg); ok && st.state == want {
+					return
+				}
+			}
+		}
+	}
+	// First the badge should surface (grace fires, no productive reconnect yet).
+	waitForState(sseReconnecting)
+	// Flip the server to ready; the next reconnect produces a frame and
+	// pushes sseConnected.
+	ready.Store(true)
+	waitForState(sseConnected)
 }
 
 // drainOne reads the next message off ch with a deadline so a stuck
