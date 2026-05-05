@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { KataClient, kataCommandForError, type KataRunner } from "./kata.js";
+import { KataClient, KataCommandError, kataCommandForError, type KataRunner } from "./kata.js";
 
 function json(data: Record<string, unknown>) {
   return JSON.stringify({ kata_api_version: 1, ...data });
@@ -424,5 +424,33 @@ describe("KataClient", () => {
     await kata.failExecution("18", "agent-123", "boom");
 
     expect(calls).toContainEqual(["comment", "18", "--body", "TaskExecute failed via agent agent-123.\n\nError:\nboom", "--json"]);
+  });
+
+  it("detects absent label errors from sanitized command output", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "label" && args[1] === "rm") {
+        throw new KataCommandError("kata label failed with exit 1 (output omitted)", 'label "in_progress" not found');
+      }
+      return json({ issue: { number: 26, title: "Cleanup", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await kata.failExecution("26", "agent-123", "boom");
+
+    expect(calls).toContainEqual(["comment", "26", "--body", "TaskExecute failed via agent agent-123.\n\nError:\nboom", "--json"]);
+  });
+
+  it("closes completed executions before removing the in-progress label", async () => {
+    const { runner, calls } = recordingRunner();
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await kata.completeExecution("27", "agent-123", "done");
+
+    expect(calls.slice(0, 2)).toEqual([
+      ["close", "27", "--reason", "done", "--json"],
+      ["label", "rm", "27", "in_progress", "--json"],
+    ]);
   });
 });

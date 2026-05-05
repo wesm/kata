@@ -219,8 +219,8 @@ export class KataClient {
   }
 
   async completeExecution(taskId: string, agentId: string, result?: string): Promise<void> {
-    await this.removeLabel(taskId, "in_progress");
     await this.runJSON(["close", taskId, "--reason", "done", "--json"]);
+    await this.removeLabel(taskId, "in_progress");
     const suffix = result ? `\n\nResult:\n${result}` : "";
     await this.comment(taskId, `TaskExecute completed via agent ${agentId}.${suffix}`);
   }
@@ -342,10 +342,18 @@ export const defaultKataRunner: KataRunner = (args, options = {}) =>
         resolve(stdout);
         return;
       }
-      const outputNote = stderr || stdout ? " (output omitted)" : "";
-      reject(new Error(`${kataCommandForError(args)} failed with exit ${code}${outputNote}`));
+      const output = stderr || stdout;
+      const outputNote = output ? " (output omitted)" : "";
+      reject(new KataCommandError(`${kataCommandForError(args)} failed with exit ${code}${outputNote}`, output));
     });
   });
+
+export class KataCommandError extends Error {
+  constructor(message: string, readonly output: string) {
+    super(message);
+    this.name = "KataCommandError";
+  }
+}
 
 export function kataCommandForError(args: string[]): string {
   return `kata ${kataSubcommand(args) ?? "command"}`;
@@ -377,7 +385,7 @@ function normalizeIssues(issues: KataIssue[]): KataIssue[] {
 }
 
 function isAbsentLabelError(error: unknown, label: string): boolean {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = error instanceof KataCommandError ? error.output : error instanceof Error ? error.message : String(error);
   if (!message.includes(label)) return false;
   return /already removed|not found|no label|absent|not attached/i.test(message);
 }
