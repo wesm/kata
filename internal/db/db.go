@@ -1,23 +1,24 @@
-// Package db opens the kata SQLite database and applies embedded migrations.
+// Package db opens the kata SQLite database and bootstraps it from the
+// canonical schema.sql. Older databases reach the current shape via JSONL
+// cutover (internal/jsonl/cutover.go) — there is no incremental migration
+// ladder in this package.
 package db
 
 import (
 	"context"
 	"database/sql"
-	"embed"
+	_ "embed"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
-	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver registered as "sqlite"
 
 	katauid "github.com/wesm/kata/internal/uid"
 )
 
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
+//go:embed schema.sql
+var schemaSQL string
 
 const currentSchemaVersion = 5
 
@@ -37,10 +38,12 @@ type DB struct {
 
 // Open opens (and if needed initializes) the kata SQLite database at path.
 // PRAGMAs are applied for every connection (via the connection string and
-// post-open exec) and pending migrations are run inside a transaction. Open is
-// the single authoritative writer of meta.instance_uid outside an import
-// transaction: after migrations, if the row is absent it generates one via
-// uid.New(). The cached value is exposed via InstanceUID for insert paths.
+// post-open exec). Fresh databases are bootstrapped from schema.sql inside a
+// transaction; older databases return ErrSchemaCutoverRequired so the daemon
+// can run JSONL cutover before reopening. Open is the single authoritative
+// writer of meta.instance_uid outside an import transaction: after bootstrap,
+// if the row is absent it generates one via uid.New(). The cached value is
+// exposed via InstanceUID for insert paths.
 func Open(ctx context.Context, path string) (*DB, error) {
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)",
@@ -56,7 +59,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("ping %s: %w", path, err)
 	}
 	d := &DB{DB: sdb, path: path}
-	if err := d.migrate(ctx); err != nil {
+	if err := d.bootstrap(ctx); err != nil {
 		_ = sdb.Close()
 		return nil, err
 	}
@@ -127,7 +130,7 @@ func (d *DB) ensureInstanceUID(ctx context.Context) error {
 	return nil
 }
 
-// OpenReadOnly opens an existing kata database without applying migrations.
+// OpenReadOnly opens an existing kata database without bootstrapping.
 // It is used by JSONL cutover so the old source DB can be exported without
 // the normal Open path mutating meta.schema_version first.
 func OpenReadOnly(ctx context.Context, path string) (*DB, error) {
@@ -149,7 +152,7 @@ func OpenReadOnly(ctx context.Context, path string) (*DB, error) {
 // Path returns the resolved database path.
 func (d *DB) Path() string { return d.path }
 
-// PeekSchemaVersion reads meta.schema_version without applying migrations.
+// PeekSchemaVersion reads meta.schema_version without bootstrapping the DB.
 // It returns 0 when the database exists but has no meta table or schema_version
 // row.
 func PeekSchemaVersion(ctx context.Context, path string) (int, error) {
@@ -161,49 +164,44 @@ func PeekSchemaVersion(ctx context.Context, path string) (int, error) {
 	return d.currentVersion(ctx)
 }
 
-func (d *DB) migrate(ctx context.Context) error {
+// bootstrap initializes a fresh database from schema.sql or refuses to open an
+// older database. Existing databases at the current schema version are left
+// untouched; older databases return ErrSchemaCutoverRequired so the daemon
+// startup path can run JSONL cutover; newer databases are an unrecoverable
+// state for this binary.
+func (d *DB) bootstrap(ctx context.Context) error {
 	current, err := d.currentVersion(ctx)
 	if err != nil {
 		return err
+	}
+	if current > currentSchemaVersion {
+		return fmt.Errorf("database schema_version %d is newer than binary schema %d",
+			current, currentSchemaVersion)
 	}
 	if current > 0 && current < currentSchemaVersion {
 		return fmt.Errorf("%w: database schema_version %d is older than binary schema %d; run JSONL cutover before opening",
 			ErrSchemaCutoverRequired, current, currentSchemaVersion)
 	}
-	files, err := migrationsFS.ReadDir("migrations")
-	if err != nil {
-		return fmt.Errorf("read embed: %w", err)
+	if current == currentSchemaVersion {
+		return nil
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
-	for _, f := range files {
-		ver, err := parseMigrationVersion(f.Name())
-		if err != nil {
-			return err
-		}
-		if ver <= current {
-			continue
-		}
-		body, err := migrationsFS.ReadFile("migrations/" + f.Name())
-		if err != nil {
-			return fmt.Errorf("read %s: %w", f.Name(), err)
-		}
-		tx, err := d.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin tx for %s: %w", f.Name(), err)
-		}
-		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("apply %s: %w", f.Name(), err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO meta(key,value) VALUES('schema_version', ?)
-			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(currentSchemaVersion)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("record schema version %d: %w", currentSchemaVersion, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit %s: %w", f.Name(), err)
-		}
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema bootstrap: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO meta(key,value) VALUES('schema_version', ?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		strconv.Itoa(currentSchemaVersion)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("record schema version %d: %w", currentSchemaVersion, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema bootstrap: %w", err)
 	}
 	return nil
 }
@@ -243,18 +241,4 @@ func (d *DB) tableExists(ctx context.Context, name string) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// parseMigrationVersion extracts the leading integer from filenames like
-// "0001_init.sql" → 1.
-func parseMigrationVersion(name string) (int, error) {
-	parts := strings.SplitN(name, "_", 2)
-	if len(parts) < 2 {
-		return 0, fmt.Errorf("invalid migration filename: %s", name)
-	}
-	n, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, fmt.Errorf("parse version in %s: %w", name, err)
-	}
-	return n, nil
 }

@@ -249,7 +249,7 @@ func TestDetail_AddLink_Blocks(t *testing.T) {
 // TestDetail_AddLink_Other: 'l' opens an inputLinkPrompt; commit of
 // "related 7" parses as <kind> <number> and calls AddLink. The
 // daemon's CHECK constraint accepts only 'parent', 'blocks', or
-// 'related' (internal/db/migrations/0001_init.sql:66); the l-key
+// 'related' (internal/db/schema.sql links table CHECK); the l-key
 // path passes the first whitespace token verbatim as Type. (Capital
 // L was rebound to ToggleLayout when the layout-toggle hotkey was
 // added — AddLink moved to lowercase l for ergonomics.)

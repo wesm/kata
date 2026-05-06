@@ -24,7 +24,7 @@ const labelsByIssuesChunkSize = 500
 // for cross-project safety: a caller passing an issueID that belongs to a
 // different project gets no rows for that ID rather than leaking labels
 // across projects. The issue_labels table itself has no project_id
-// column (see migrations/0001_init.sql) — projection has to go through
+// column (see schema.sql) — projection has to go through
 // issues.project_id.
 //
 // Chunked into groups of labelsByIssuesChunkSize to stay under SQLite's
