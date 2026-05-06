@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 )
@@ -23,52 +22,24 @@ type DaemonEndpoint interface {
 
 type unixEndpoint struct{ path string }
 
-// staleSocketProbeTimeout caps how long we wait when probing an
-// existing socket to decide whether it belongs to a live daemon. If
-// the previous daemon hung mid-shutdown the file is on disk but no
-// process accepts connections; a short timeout is enough to tell.
-const staleSocketProbeTimeout = 100 * time.Millisecond
+// staleSocketProbeTimeout caps how long the pre-bind probe waits
+// before giving up. A short timeout is enough on a healthy host: a
+// running daemon accepts immediately, and a stale socket whose owner
+// is gone returns ECONNREFUSED in microseconds. The timeout only
+// matters when the kernel is overloaded — and in that case the probe
+// result is ambiguous, so we refuse to remove rather than guess.
+const staleSocketProbeTimeout = 500 * time.Millisecond
 
 // ErrSocketInUse is returned by unixEndpoint.Listen when the socket
-// file already has a live daemon accepting connections. The launcher
-// translates this into "another daemon is running" rather than
-// silently clobbering the existing one.
-var ErrSocketInUse = errors.New("socket already in use by a live daemon")
+// path already has a daemon accepting connections. The per-namespace
+// runtime dir holds at most one daemon, so this is the launcher's
+// signal that another instance is already serving and the new start
+// should back off rather than clobber it.
+var ErrSocketInUse = errors.New("socket already in use")
 
-func (u unixEndpoint) Listen() (net.Listener, error) {
-	// A stale socket file may remain on disk after a previous daemon
-	// crashed (SIGKILL, panic, OOM, host reboot mid-shutdown). Without
-	// removing it the next bind fails with "address already in use" —
-	// the user-facing symptom is "kata: daemon failed to start within 5s"
-	// from the auto-start launcher, which is exactly what's-bad-about-
-	// this-CLI-tool material. Pre-bind probe + remove keeps the path
-	// clean while still refusing to clobber a live concurrent daemon.
-	if info, err := os.Stat(u.path); err == nil {
-		if info.Mode()&os.ModeSocket == 0 {
-			return nil, fmt.Errorf("listen unix %s: path exists and is not a socket", u.path)
-		}
-		if isUnixSocketLive(u.path) {
-			return nil, fmt.Errorf("listen unix %s: %w", u.path, ErrSocketInUse)
-		}
-		if err := os.Remove(u.path); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("remove stale socket %s: %w", u.path, err)
-		}
-	}
-	return net.Listen("unix", u.path)
-}
-
-// isUnixSocketLive reports whether dialing the socket succeeds within
-// staleSocketProbeTimeout. A successful dial means a daemon is
-// listening; refused/timed-out connections mean the file is stale.
-func isUnixSocketLive(path string) bool {
-	d := net.Dialer{Timeout: staleSocketProbeTimeout}
-	conn, err := d.Dial("unix", path)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
+// Listen for unixEndpoint is OS-specific because the cleanup path
+// uses flock(2) to serialize concurrent starters; see
+// endpoint_listen_unix.go and endpoint_listen_windows.go.
 
 func (u unixEndpoint) Dial(ctx context.Context) (net.Conn, error) {
 	d := net.Dialer{}

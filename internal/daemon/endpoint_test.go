@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -139,6 +140,52 @@ func TestUnixEndpoint_NonSocketRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a socket")
 	_, statErr := os.Stat(path)
 	require.NoError(t, statErr, "non-socket file must not be removed")
+}
+
+// TestUnixEndpoint_ConcurrentListenSerializes pins the locking
+// invariant: when N starters race for the same socket path, exactly
+// one ends up with a listener and the rest return ErrSocketInUse.
+//
+// Without flock around probe→remove→bind, two starters could both
+// observe a stale socket as removable and race os.Remove — the
+// loser's unlink would clobber the winner's freshly-bound listener,
+// orphaning one daemon while the other claims its path. A live
+// concurrent test catches the regression that loose serialization
+// would introduce.
+func TestUnixEndpoint_ConcurrentListenSerializes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets unsupported on windows")
+	}
+	sock := filepath.Join(shortTempDir(t), "d.sock")
+
+	const N = 8
+	listeners := make([]net.Listener, N)
+	errs := make([]error, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	start := make(chan struct{})
+	for i := range N {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			listeners[i], errs[i] = daemon.UnixEndpoint(sock).Listen()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	won := 0
+	for i, l := range listeners {
+		if l != nil {
+			won++
+			t.Cleanup(func() { _ = l.Close() })
+			continue
+		}
+		require.Error(t, errs[i], "goroutine %d: expected either a listener or an error", i)
+		require.True(t, errors.Is(errs[i], daemon.ErrSocketInUse),
+			"goroutine %d: expected ErrSocketInUse, got %v", i, errs[i])
+	}
+	require.Equal(t, 1, won, "exactly one Listen must succeed; got %d winners", won)
 }
 
 func TestTCPEndpoint_RoundTrip(t *testing.T) {
