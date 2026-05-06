@@ -62,6 +62,8 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	blockerMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "blocker")
 	require.NoError(t, err)
 	require.NotNil(t, blockerMap.IssueID)
+	blocker, err := d.IssueByID(ctx, *blockerMap.IssueID)
+	require.NoError(t, err)
 	links := linksForIssue(t, ctx, d, *blockerMap.IssueID)
 	require.Len(t, links, 1)
 	assert.Equal(t, *blockerMap.IssueID, links[0].FromIssueID)
@@ -72,6 +74,25 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, linkMap.LinkID)
 	assert.Equal(t, links[0].ID, *linkMap.LinkID)
+
+	var linkEvent *db.Event
+	for i := range events {
+		if events[i].Type == "issue.linked" {
+			linkEvent = &events[i]
+			break
+		}
+	}
+	require.NotNil(t, linkEvent)
+	payload := unmarshalPayload[struct {
+		LinkID     int64  `json:"link_id"`
+		Type       string `json:"type"`
+		FromNumber int64  `json:"from_number"`
+		ToNumber   int64  `json:"to_number"`
+	}](t, linkEvent.Payload)
+	assert.Equal(t, links[0].ID, payload.LinkID)
+	assert.Equal(t, "blocks", payload.Type)
+	assert.Equal(t, blocker.Number, payload.FromNumber)
+	assert.Equal(t, blocked.Number, payload.ToNumber)
 }
 
 func TestImportBatch_ReimportSourceNewerUpdatesFieldsAndTimestamp(t *testing.T) {
@@ -165,6 +186,44 @@ func TestImportBatch_SourceOwnedLabelsLinksReconcileLocalRemain(t *testing.T) {
 	require.Len(t, links, 2)
 	assert.Contains(t, linkTargets(links), *cMap.IssueID)
 	assert.NotContains(t, linkTargets(links), *bMap.IssueID)
+	_, err = d.LinkByID(ctx, localLink.ID)
+	assert.NoError(t, err)
+	_, err = d.ImportMappingBySource(ctx, p.ID, "beads", "link", "a:blocks:b")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestImportBatch_DoesNotAdoptPreExistingLocalLink(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	t1 := time.Now().UTC().Add(-24 * time.Hour)
+	t2 := time.Now().UTC().Add(time.Hour)
+	t3 := time.Now().UTC().Add(2 * time.Hour)
+
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "a", Title: "A", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+	aMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "a")
+	require.NoError(t, err)
+	bMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "b")
+	require.NoError(t, err)
+	localLink := makeLink(ctx, t, d, p.ID, *aMap.IssueID, *bMap.IssueID, "blocks")
+
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "a", Title: "A2", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t2, Links: []db.ImportLink{{Type: "blocks", TargetExternalID: "b"}}},
+		{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Updated)
+	assert.Equal(t, 0, res.Links)
+	_, err = d.ImportMappingBySource(ctx, p.ID, "beads", "link", "a:blocks:b")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+
+	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "a", Title: "A3", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t3},
+		{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
 	_, err = d.LinkByID(ctx, localLink.ID)
 	assert.NoError(t, err)
 	_, err = d.ImportMappingBySource(ctx, p.ID, "beads", "link", "a:blocks:b")

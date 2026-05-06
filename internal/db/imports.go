@@ -523,12 +523,7 @@ func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatch
 		if err != nil {
 			return nil, 0, err
 		}
-		if existing, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE from_issue_id = ? AND to_issue_id = ? AND type = ?`, fromID, toID, importLink.Type)); err == nil {
-			linkID := existing.ID
-			_, err = upsertImportMapping(ctx, tx, ImportMappingParams{Source: p.Source, ExternalID: externalID, ObjectType: "link", ProjectID: p.ProjectID, IssueID: &issue.ID, LinkID: &linkID, SourceUpdatedAt: &item.UpdatedAt})
-			if err != nil {
-				return nil, 0, err
-			}
+		if _, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE from_issue_id = ? AND to_issue_id = ? AND type = ?`, fromID, toID, importLink.Type)); err == nil {
 			continue
 		} else if !errors.Is(err, ErrNotFound) {
 			return nil, 0, err
@@ -570,11 +565,26 @@ func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParam
 	if relatedID == issue.ID {
 		relatedID = link.FromIssueID
 	}
-	payload, err := json.Marshal(map[string]any{"source": p.Source, "link_id": link.ID, "type": link.Type})
+	fromNumber, toNumber, err := linkEndpointNumbers(ctx, tx, link)
+	if err != nil {
+		return Event{}, err
+	}
+	payload, err := json.Marshal(map[string]any{"source": p.Source, "link_id": link.ID, "type": link.Type, "from_number": fromNumber, "to_number": toNumber})
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
 	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectIdentity: projectIdentity, IssueID: &issue.ID, IssueNumber: &issue.Number, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
+}
+
+func linkEndpointNumbers(ctx context.Context, tx *sql.Tx, link Link) (int64, int64, error) {
+	var fromNumber, toNumber int64
+	if err := tx.QueryRowContext(ctx, `SELECT f.number, t.number FROM issues f JOIN issues t ON t.id = ? WHERE f.id = ?`, link.ToIssueID, link.FromIssueID).Scan(&fromNumber, &toNumber); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, 0, ErrNotFound
+		}
+		return 0, 0, fmt.Errorf("lookup link endpoint numbers: %w", err)
+	}
+	return fromNumber, toNumber, nil
 }
 
 func importEventPayload(source, externalID string) (string, error) {
