@@ -2,7 +2,9 @@ package daemon_test
 
 import (
 	"context"
+	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -48,6 +50,95 @@ func TestUnixEndpoint_RoundTrip(t *testing.T) {
 
 	assertEndpointRoundTrip(t, l, ep)
 	assert.Equal(t, "unix://"+sock, ep.Address())
+}
+
+// shortTempDir returns a per-test directory short enough to host a
+// Unix socket on darwin/linux (sockaddr_un.sun_path = 104/108 bytes).
+// t.TempDir embeds the test name and a random suffix, which is fine
+// for files but pushes socket paths past the kernel limit on macOS.
+// We reuse the test's TempDir for cleanup but mint a sibling dir
+// directly under /tmp to keep the absolute path tiny.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ka-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// TestUnixEndpoint_StaleListen is the regression for the auto-start
+// failure mode where a previous daemon crashed (SIGKILL, panic, host
+// reboot mid-shutdown) and left its socket file on disk. Without the
+// pre-bind cleanup, the next Listen returns "address already in use"
+// and the launcher reports "kata: daemon failed to start within 5s".
+// A second Listen on the same path must succeed when nothing is
+// actually accepting connections there.
+func TestUnixEndpoint_StaleListen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets unsupported on windows")
+	}
+	sock := filepath.Join(shortTempDir(t), "d.sock")
+	// Simulate a crashed daemon: bind a listener with the unlink-on-
+	// close hook disabled, then close. The file on disk is a real Unix
+	// socket (right ModeSocket bit) but no process accepts on it — the
+	// exact state a SIGKILL/panic leaves behind.
+	first, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	first.(*net.UnixListener).SetUnlinkOnClose(false)
+	require.NoError(t, first.Close())
+	info, statErr := os.Stat(sock)
+	require.NoError(t, statErr)
+	require.NotZero(t, info.Mode()&os.ModeSocket, "test setup: expected stale socket file")
+
+	second, err := daemon.UnixEndpoint(sock).Listen()
+	require.NoError(t, err, "Listen must clean up the stale socket file")
+	t.Cleanup(func() { _ = second.Close() })
+	assertEndpointRoundTrip(t, second, daemon.UnixEndpoint(sock))
+}
+
+// TestUnixEndpoint_LiveRefused pins the safety property the cleanup
+// must not violate: when a healthy daemon is already accepting on the
+// path, a concurrent Listen must NOT remove the file and bind on top —
+// that would steal connections. The error wraps daemon.ErrSocketInUse.
+func TestUnixEndpoint_LiveRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets unsupported on windows")
+	}
+	sock := filepath.Join(shortTempDir(t), "d.sock")
+	live, err := daemon.UnixEndpoint(sock).Listen()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = live.Close() })
+	go func() {
+		for {
+			c, err := live.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	_, err = daemon.UnixEndpoint(sock).Listen()
+	require.Error(t, err)
+	require.True(t, errors.Is(err, daemon.ErrSocketInUse),
+		"expected ErrSocketInUse, got %v", err)
+}
+
+// TestUnixEndpoint_NonSocketRefused: when the path points at a
+// regular file the pre-bind cleanup must NOT remove it — that would
+// destroy unrelated user data sharing the namespace.
+func TestUnixEndpoint_NonSocketRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets unsupported on windows")
+	}
+	path := filepath.Join(shortTempDir(t), "d.sock")
+	require.NoError(t, os.WriteFile(path, []byte("not a socket"), 0o600))
+
+	_, err := daemon.UnixEndpoint(path).Listen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a socket")
+	_, statErr := os.Stat(path)
+	require.NoError(t, statErr, "non-socket file must not be removed")
 }
 
 func TestTCPEndpoint_RoundTrip(t *testing.T) {
