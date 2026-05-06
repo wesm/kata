@@ -49,8 +49,14 @@ model and should not be raised:
 - `validateActor` is **audit metadata**, not authorization — every handler
   uses it the same way. Calling it out as a "missing auth gate" misreads
   its purpose.
-- "DoS" from request bodies on loopback (bounded by the local user's own
-  inputs, not external attackers).
+- "DoS" from request bodies, bulk/batch endpoints (e.g. `/imports`
+  accepting many items), large comments/labels/links, or aggregate-size
+  / item-count limits on loopback. Inputs are bounded by the local
+  user's own data (their own repos, their own beads/JSONL exports) —
+  not external attackers. Do not recommend per-request item caps,
+  body-size ceilings, or memory-bound guards as security findings;
+  a single-user local tool that exhausts its own RAM is a correctness
+  bug at worst, not a vulnerability.
 - Symlink-following or local file overwrites under the kata data
   directory (controlled by the local user).
 - "Race conditions" in CLI⇄daemon handoff visible only to a colocated
