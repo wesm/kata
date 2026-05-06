@@ -95,6 +95,59 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	assert.Equal(t, blocked.Number, payload.ToNumber)
 }
 
+func TestImportBatch_RelatedLinkEventPayloadKeepsImportDirectionWhenStorageCanonicalizes(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	ts := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	res, events, err := d.ImportBatch(ctx, db.ImportBatchParams{
+		ProjectID: p.ID,
+		Source:    "beads",
+		Actor:     "importer",
+		Items: []db.ImportItem{
+			{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: ts, UpdatedAt: ts},
+			{ExternalID: "a", Title: "A", Body: "body", Author: "alice", Status: "open", CreatedAt: ts, UpdatedAt: ts, Links: []db.ImportLink{{Type: "related", TargetExternalID: "b"}}},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Links)
+
+	aMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "a")
+	require.NoError(t, err)
+	require.NotNil(t, aMap.IssueID)
+	bMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "b")
+	require.NoError(t, err)
+	require.NotNil(t, bMap.IssueID)
+	a, err := d.IssueByID(ctx, *aMap.IssueID)
+	require.NoError(t, err)
+	b, err := d.IssueByID(ctx, *bMap.IssueID)
+	require.NoError(t, err)
+	require.Greater(t, a.ID, b.ID)
+
+	links := linksForIssue(t, ctx, d, a.ID)
+	require.Len(t, links, 1)
+	assert.Equal(t, b.ID, links[0].FromIssueID)
+	assert.Equal(t, a.ID, links[0].ToIssueID)
+
+	var linkEvent *db.Event
+	for i := range events {
+		if events[i].Type == "issue.linked" {
+			linkEvent = &events[i]
+			break
+		}
+	}
+	require.NotNil(t, linkEvent)
+	payload := unmarshalPayload[struct {
+		LinkID     int64  `json:"link_id"`
+		Type       string `json:"type"`
+		FromNumber int64  `json:"from_number"`
+		ToNumber   int64  `json:"to_number"`
+	}](t, linkEvent.Payload)
+	assert.Equal(t, links[0].ID, payload.LinkID)
+	assert.Equal(t, "related", payload.Type)
+	assert.Equal(t, a.Number, payload.FromNumber)
+	assert.Equal(t, b.Number, payload.ToNumber)
+}
+
 func TestImportBatch_ReimportSourceNewerUpdatesFieldsAndTimestamp(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	older := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)

@@ -565,26 +565,26 @@ func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParam
 	if relatedID == issue.ID {
 		relatedID = link.FromIssueID
 	}
-	fromNumber, toNumber, err := linkEndpointNumbers(ctx, tx, link)
+	toNumber, err := issueNumberByID(ctx, tx, relatedID)
 	if err != nil {
 		return Event{}, err
 	}
-	payload, err := json.Marshal(map[string]any{"source": p.Source, "link_id": link.ID, "type": link.Type, "from_number": fromNumber, "to_number": toNumber})
+	payload, err := json.Marshal(map[string]any{"source": p.Source, "link_id": link.ID, "type": link.Type, "from_number": issue.Number, "to_number": toNumber})
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
 	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectIdentity: projectIdentity, IssueID: &issue.ID, IssueNumber: &issue.Number, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
-func linkEndpointNumbers(ctx context.Context, tx *sql.Tx, link Link) (int64, int64, error) {
-	var fromNumber, toNumber int64
-	if err := tx.QueryRowContext(ctx, `SELECT f.number, t.number FROM issues f JOIN issues t ON t.id = ? WHERE f.id = ?`, link.ToIssueID, link.FromIssueID).Scan(&fromNumber, &toNumber); err != nil {
+func issueNumberByID(ctx context.Context, tx *sql.Tx, issueID int64) (int64, error) {
+	var number int64
+	if err := tx.QueryRowContext(ctx, `SELECT number FROM issues WHERE id = ?`, issueID).Scan(&number); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, 0, ErrNotFound
+			return 0, ErrNotFound
 		}
-		return 0, 0, fmt.Errorf("lookup link endpoint numbers: %w", err)
+		return 0, fmt.Errorf("lookup issue number: %w", err)
 	}
-	return fromNumber, toNumber, nil
+	return number, nil
 }
 
 func importEventPayload(source, externalID string) (string, error) {
