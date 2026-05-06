@@ -196,6 +196,9 @@ func validateImportBatch(p ImportBatchParams) error {
 		if item.Status == "closed" && item.ClosedAt == nil {
 			return fmt.Errorf("%w: closed issues require closed_at", ErrImportValidation)
 		}
+		if item.ClosedReason != nil && !validImportClosedReason(*item.ClosedReason) {
+			return fmt.Errorf("%w: closed_reason must be done, wontfix, or duplicate", ErrImportValidation)
+		}
 		for _, label := range item.Labels {
 			if !validImportLabel(label) {
 				return fmt.Errorf("%w: invalid label %q", ErrImportValidation, label)
@@ -594,6 +597,15 @@ func importEventPayload(source, externalID string) (string, error) {
 		return "", fmt.Errorf("marshal import event payload: %w", err)
 	}
 	return string(payload), nil
+}
+
+func validImportClosedReason(reason string) bool {
+	switch reason {
+	case "done", "wontfix", "duplicate":
+		return true
+	default:
+		return false
+	}
 }
 
 func validImportLabel(label string) bool {

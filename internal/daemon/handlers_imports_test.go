@@ -201,6 +201,14 @@ func TestImportEndpoint_InvalidImportMapsToValidation(t *testing.T) {
 			name: "label",
 			item: importEndpointItem(map[string]any{"labels": []string{"BadCase"}}),
 		},
+		{
+			name: "empty closed reason",
+			item: importEndpointItem(map[string]any{
+				"status":        "closed",
+				"closed_reason": "",
+				"closed_at":     "2026-05-01T10:00:00Z",
+			}),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, body := envDoRaw(t, env, http.MethodPost, importEndpointPath(pid), map[string]any{
