@@ -151,6 +151,13 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 
 	for _, item := range p.Items {
 		state := states[item.ExternalID]
+		// Defensive: the first loop populates an entry per item so this
+		// lookup always hits, but nilaway can't infer that — skip
+		// rather than deref a nil *importIssueState if the invariant
+		// ever drifts.
+		if state == nil {
+			continue
+		}
 		commentEvents, n, err := d.importComments(ctx, tx, p, state.issue, item, projectIdentity)
 		if err != nil {
 			return ImportBatchResult{}, nil, err
@@ -168,6 +175,9 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 
 	for _, item := range p.Items {
 		state := states[item.ExternalID]
+		if state == nil {
+			continue
+		}
 		if state.created || state.sourceNewer {
 			linkEvents, n, err := d.reconcileImportLinks(ctx, tx, p, state.issue, item, states, projectIdentity)
 			if err != nil {
