@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,10 @@ import (
 	"time"
 )
 
-const beadsSource = "beads"
+const (
+	beadsSource               = "beads"
+	maxBeadsCommentsJSONBytes = 16 * 1024 * 1024
+)
 
 type beadsIssue struct {
 	ID           string            `json:"id"`
@@ -111,11 +115,18 @@ func parseBeadsExport(r io.Reader) ([]beadsIssue, error) {
 }
 
 func parseBeadsCommentsJSON(r io.Reader) ([]beadsComment, error) {
-	data, err := io.ReadAll(r)
+	data, err := io.ReadAll(io.LimitReader(r, maxBeadsCommentsJSONBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read beads comments: %w", err)
 	}
-	data = []byte(strings.TrimSpace(string(data)))
+	if len(data) > maxBeadsCommentsJSONBytes {
+		return nil, &cliError{
+			Message:  fmt.Sprintf("beads comments JSON exceeds %d byte limit", maxBeadsCommentsJSONBytes),
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
+	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
 		return nil, nil
 	}
@@ -288,20 +299,15 @@ func beadsFooter(b beadsIssue) string {
 	if err != nil {
 		labels = []byte("[]")
 	}
-	dependencies, err := json.Marshal(b.Dependencies)
-	if err != nil {
-		dependencies = []byte("[]")
-	}
 	closedAt := ""
 	if b.ClosedAt != nil {
 		closedAt = b.ClosedAt.Format(time.RFC3339Nano)
 	}
-	return fmt.Sprintf("\n---\nImported from Beads\nbeads_id: %s\nbeads_type: %s\nbeads_priority: %d\nbeads_original_labels: %s\nbeads_dependencies: %s\nbeads_created_at: %s\nbeads_updated_at: %s\nbeads_closed_at: %s\nbeads_close_reason: %s\nbeads_comment_count: %d\n",
+	return fmt.Sprintf("\n---\nImported from Beads\nbeads_id: %s\nbeads_type: %s\nbeads_priority: %d\nbeads_original_labels: %s\nbeads_created_at: %s\nbeads_updated_at: %s\nbeads_closed_at: %s\nbeads_close_reason: %s\nbeads_comment_count: %d\n",
 		b.ID,
 		b.IssueType,
 		b.Priority,
 		string(labels),
-		string(dependencies),
 		b.CreatedAt.Format(time.RFC3339Nano),
 		b.UpdatedAt.Format(time.RFC3339Nano),
 		closedAt,

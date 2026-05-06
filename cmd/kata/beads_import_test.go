@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +50,10 @@ func TestParseBeadsExportAndBuildImportRequest(t *testing.T) {
 	assert.Contains(t, blocker.Body, "beads_type: task")
 	assert.Contains(t, blocker.Body, "beads_priority: 1")
 	assert.Contains(t, blocker.Body, `beads_original_labels: ["Needs Review","bad label!"`)
+	assert.NotContains(t, blocker.Body, "beads_dependencies")
+	assert.NotContains(t, req.Items[1].Body, "beads_dependencies")
+	assert.NotContains(t, req.Items[1].Body, "metadata")
+	assert.NotContains(t, req.Items[1].Body, "created_by")
 	assert.Contains(t, blocker.Body, "beads_created_at: 2026-05-01T10:00:00Z")
 	assert.Contains(t, blocker.Body, "beads_updated_at: 2026-05-01T10:00:00Z")
 	assert.Contains(t, blocker.Body, "beads_comment_count: 0")
@@ -93,6 +99,25 @@ func TestBeadsRejectsDependencyTargetMissingFromExport(t *testing.T) {
 	_, err := buildBeadsImportRequest(export, nil, "importer")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dependency target")
+}
+
+func TestBeadsRejectsOversizedCommentsJSON(t *testing.T) {
+	_, err := parseBeadsCommentsJSON(io.LimitReader(repeatedByteReader(' '), maxBeadsCommentsJSONBytes+1))
+	require.Error(t, err)
+	var ce *cliError
+	require.True(t, errors.As(err, &ce), "expected validation cliError, got %T", err)
+	assert.Equal(t, kindValidation, ce.Kind)
+	assert.Equal(t, ExitValidation, ce.ExitCode)
+	assert.Contains(t, err.Error(), "beads comments JSON exceeds")
+}
+
+type repeatedByteReader byte
+
+func (r repeatedByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
 }
 
 func mustParseTime(t *testing.T, s string) time.Time {
