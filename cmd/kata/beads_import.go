@@ -73,6 +73,7 @@ type beadsImportIssueInput struct {
 	Body         string                    `json:"body"`
 	Author       string                    `json:"author"`
 	Owner        *string                   `json:"owner,omitempty"`
+	Priority     *int64                    `json:"priority,omitempty"`
 	Status       string                    `json:"status"`
 	ClosedReason *string                   `json:"closed_reason,omitempty"`
 	CreatedAt    time.Time                 `json:"created_at"`
@@ -372,6 +373,7 @@ func buildBeadsImportRequest(r io.Reader, comments map[string][]beadsComment, ac
 			Body:         strings.TrimRight(b.Description, "\n") + beadsFooter(b),
 			Author:       author,
 			Owner:        owner,
+			Priority:     mapBeadsPriority(b.Priority),
 			Status:       status,
 			ClosedReason: closedReason,
 			CreatedAt:    b.CreatedAt,
@@ -479,10 +481,9 @@ func beadsFooter(b beadsIssue) string {
 	if b.ClosedAt != nil {
 		closedAt = b.ClosedAt.Format(time.RFC3339Nano)
 	}
-	return fmt.Sprintf("\n---\nImported from Beads\nbeads_id: %s\nbeads_type: %s\nbeads_priority: %d\nbeads_original_labels: %s\nbeads_created_at: %s\nbeads_updated_at: %s\nbeads_closed_at: %s\nbeads_close_reason: %s\nbeads_comment_count: %d\n",
+	return fmt.Sprintf("\n---\nImported from Beads\nbeads_id: %s\nbeads_type: %s\nbeads_original_labels: %s\nbeads_created_at: %s\nbeads_updated_at: %s\nbeads_closed_at: %s\nbeads_close_reason: %s\nbeads_comment_count: %d\n",
 		b.ID,
 		b.IssueType,
-		b.Priority,
 		string(labels),
 		b.CreatedAt.Format(time.RFC3339Nano),
 		b.UpdatedAt.Format(time.RFC3339Nano),
@@ -490,4 +491,19 @@ func beadsFooter(b beadsIssue) string {
 		b.CloseReason,
 		b.CommentCount,
 	)
+}
+
+// mapBeadsPriority maps the beads priority integer (0-N) to a kata
+// priority pointer (0..4 or nil). Beads ships values 0..3 (critical /
+// high / medium / low) by convention; kata ranges 0..4 (0 = highest).
+// We pass a value through verbatim when it lands inside the kata range
+// and drop priorities outside [0..4] to nil rather than rejecting the
+// whole import — preserves migration progress when a Beads workspace
+// has stray data.
+func mapBeadsPriority(p int) *int64 {
+	if p < 0 || p > 4 {
+		return nil
+	}
+	v := int64(p)
+	return &v
 }

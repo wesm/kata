@@ -695,6 +695,7 @@ type ImportIssueInput struct {
 	Body         string               `json:"body,omitempty"`
 	Author       string               `json:"author" required:"true"`
 	Owner        *string              `json:"owner,omitempty"`
+	Priority     *int64               `json:"priority,omitempty"`
 	Status       string               `json:"status" enum:"open,closed"`
 	ClosedReason *string              `json:"closed_reason,omitempty" enum:"done,wontfix,duplicate,"`
 	CreatedAt    time.Time            `json:"created_at" required:"true"`

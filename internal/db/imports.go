@@ -31,6 +31,7 @@ type ImportItem struct {
 	Body         string
 	Author       string
 	Owner        *string
+	Priority     *int64
 	Status       string
 	ClosedReason *string
 	CreatedAt    time.Time
@@ -218,6 +219,9 @@ func validateImportBatch(p ImportBatchParams) error {
 		if item.ClosedReason != nil && !validImportClosedReason(*item.ClosedReason) {
 			return fmt.Errorf("%w: closed_reason must be done, wontfix, or duplicate", ErrImportValidation)
 		}
+		if item.Priority != nil && (*item.Priority < 0 || *item.Priority > 4) {
+			return fmt.Errorf("%w: priority must be between 0 and 4", ErrImportValidation)
+		}
 		for _, label := range item.Labels {
 			if !validImportLabel(label) {
 				return fmt.Errorf("%w: invalid label %q", ErrImportValidation, label)
@@ -302,9 +306,9 @@ func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO issues(uid, project_id, number, title, body, status, closed_reason, owner, author, created_at, updated_at, closed_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, nextNum, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.Author, item.CreatedAt, item.UpdatedAt, item.ClosedAt)
+	res, err := tx.ExecContext(ctx, `INSERT INTO issues(uid, project_id, number, title, body, status, closed_reason, owner, author, created_at, updated_at, closed_at, priority)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		issueUID, p.ProjectID, nextNum, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.Author, item.CreatedAt, item.UpdatedAt, item.ClosedAt, item.Priority)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert imported issue: %w", err)
 	}
@@ -329,8 +333,8 @@ func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 
 func (d *DB) updateImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, existing Issue, projectIdentity string) (Issue, Event, error) {
 	_, err := tx.ExecContext(ctx, `UPDATE issues
-		SET title = ?, body = ?, status = ?, closed_reason = ?, owner = ?, updated_at = ?, closed_at = ?
-		WHERE id = ?`, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.UpdatedAt, item.ClosedAt, existing.ID)
+		SET title = ?, body = ?, status = ?, closed_reason = ?, owner = ?, updated_at = ?, closed_at = ?, priority = ?
+		WHERE id = ?`, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.UpdatedAt, item.ClosedAt, item.Priority, existing.ID)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("update imported issue: %w", err)
 	}

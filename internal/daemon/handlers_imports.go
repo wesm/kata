@@ -32,6 +32,7 @@ func registerImportsHandlers(humaAPI huma.API, cfg ServerConfig) {
 				Body:         src.Body,
 				Author:       src.Author,
 				Owner:        src.Owner,
+				Priority:     src.Priority,
 				Status:       src.Status,
 				ClosedReason: src.ClosedReason,
 				CreatedAt:    src.CreatedAt,

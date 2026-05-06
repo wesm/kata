@@ -168,6 +168,45 @@ func TestImportEndpoint_SourceNewerUpdatesIssue(t *testing.T) {
 	assert.Equal(t, "done", *issue.ClosedReason)
 }
 
+func TestImportEndpoint_PriorityRoundtrips(t *testing.T) {
+	env := testenv.New(t)
+	pid := createImportTestProject(t, env, "github.com/wesm/kata", "kata").ID
+	body := map[string]any{
+		"actor":  "importer",
+		"source": "beads",
+		"items": []map[string]any{importEndpointItem(map[string]any{
+			"external_id": "beads-prio",
+			"priority":    1,
+		})},
+	}
+	var out struct {
+		Items []struct {
+			IssueNumber int64 `json:"issue_number"`
+		} `json:"items"`
+	}
+	envPostJSON(t, env, importEndpointPath(pid), body, &out)
+	require.Len(t, out.Items, 1)
+	issue, err := env.DB.IssueByNumber(context.Background(), pid, out.Items[0].IssueNumber)
+	require.NoError(t, err)
+	require.NotNil(t, issue.Priority)
+	assert.Equal(t, int64(1), *issue.Priority)
+}
+
+func TestImportEndpoint_PriorityOutOfRangeIsValidation(t *testing.T) {
+	env := testenv.New(t)
+	pid := createImportTestProject(t, env, "github.com/wesm/kata", "kata").ID
+	body := map[string]any{
+		"actor":  "importer",
+		"source": "beads",
+		"items": []map[string]any{importEndpointItem(map[string]any{
+			"external_id": "beads-bad-prio",
+			"priority":    9,
+		})},
+	}
+	resp, raw := envDoRaw(t, env, http.MethodPost, importEndpointPath(pid), body, nil)
+	assertAPIError(t, resp.StatusCode, raw, http.StatusBadRequest, "validation")
+}
+
 func TestImportEndpoint_RejectsBlankActor(t *testing.T) {
 	env := testenv.New(t)
 	pid := createImportTestProject(t, env, "github.com/wesm/kata", "kata").ID

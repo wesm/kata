@@ -201,7 +201,10 @@ func TestParseBeadsExportAndBuildImportRequest(t *testing.T) {
 	assert.Contains(t, blocker.Body, "Imported from Beads")
 	assert.Contains(t, blocker.Body, "beads_id: b1")
 	assert.Contains(t, blocker.Body, "beads_type: task")
-	assert.Contains(t, blocker.Body, "beads_priority: 1")
+	assert.NotContains(t, blocker.Body, "beads_priority:",
+		"priority is now a first-class field; footer should not duplicate it")
+	require.NotNil(t, blocker.Priority)
+	assert.Equal(t, int64(1), *blocker.Priority)
 	assert.Contains(t, blocker.Body, `beads_original_labels: ["Needs Review","bad label!"`)
 	assert.NotContains(t, blocker.Body, "beads_dependencies")
 	assert.NotContains(t, req.Items[1].Body, "beads_dependencies")
@@ -239,6 +242,33 @@ func TestNormalizeKataLabel(t *testing.T) {
 	assert.LessOrEqual(t, len(long), 64)
 	assert.Regexp(t, `^[a-z0-9._:-]+$`, long)
 }
+
+func TestMapBeadsPriority(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want *int64
+	}{
+		{"zero is highest", 0, ptrInt64(0)},
+		{"in range one", 1, ptrInt64(1)},
+		{"top of range", 4, ptrInt64(4)},
+		{"out of range above drops", 5, nil},
+		{"negative drops", -1, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapBeadsPriority(tc.in)
+			if tc.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, *tc.want, *got)
+		})
+	}
+}
+
+func ptrInt64(n int64) *int64 { return &n }
 
 func TestBeadsRejectsUnsupportedStatus(t *testing.T) {
 	export := strings.NewReader(`{"id":"b1","title":"Bad","description":"body","status":"in_progress","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z"}`)
