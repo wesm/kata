@@ -11,7 +11,11 @@ func mouseLeftClick(x, y int) tea.MouseMsg {
 }
 
 func mouseWheelDown() tea.MouseMsg {
-	return tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown}
+	return mouseWheelDownAt(0)
+}
+
+func mouseWheelDownAt(x int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown}
 }
 
 func mouseWheelUp() tea.MouseMsg {
@@ -51,6 +55,33 @@ func TestMouseClickSelectsIssueListRow(t *testing.T) {
 	}
 	if nm.list.cursor != 2 || nm.list.selectedNumber != 3 {
 		t.Fatalf("cursor=%d selected=%d, want cursor=2 selected #3", nm.list.cursor, nm.list.selectedNumber)
+	}
+}
+
+func TestMouseSplitClickFirstIssueRowSelectsFirstVisibleRow(t *testing.T) {
+	m := resizeModel(newTestModel(), 160, 30)
+	m.opts.Mouse = true
+	m.layout = layoutSplit
+	m.list.issues = makeTestIssues(5)
+	m.list.cursor = 0
+
+	nm, _ := updateModel(m, mouseLeftClick(4, 4)) // title, pane border, table header, rule, first row
+	if nm.list.cursor != 0 || nm.list.selectedNumber != 1 {
+		t.Fatalf("cursor=%d selected=%d, want first visible issue", nm.list.cursor, nm.list.selectedNumber)
+	}
+}
+
+func TestMouseFullScreenHelpIgnoresSplitPaneMouse(t *testing.T) {
+	m := resizeModel(newTestModel(), 160, 30)
+	m.opts.Mouse = true
+	m.layout = layoutSplit
+	m.view = viewHelp
+	m.list.issues = makeTestIssues(5)
+	m.list.cursor = 0
+
+	nm, _ := updateModel(m, mouseWheelDownAt(4))
+	if nm.list.cursor != 0 {
+		t.Fatalf("help-view mouse wheel moved list cursor to %d, want no-op", nm.list.cursor)
 	}
 }
 

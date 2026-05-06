@@ -4,12 +4,16 @@ import tea "github.com/charmbracelet/bubbletea"
 
 const (
 	stackedListDataRowY   = 4
+	splitListDataRowY     = 4
 	projectsFirstRowY     = 4
 	mouseWheelScrollLines = 3
 )
 
 func (m Model) routeMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	if !m.opts.Mouse || msg.Action != tea.MouseActionPress || !m.canQuit() {
+		return m, nil
+	}
+	if !m.mouseVisibleViewAcceptsInput() {
 		return m, nil
 	}
 	switch msg.Button {
@@ -21,6 +25,14 @@ func (m Model) routeMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 		return m.mouseLeftClick(msg.X, msg.Y)
 	}
 	return m, nil
+}
+
+func (m Model) mouseVisibleViewAcceptsInput() bool {
+	switch m.view {
+	case viewList, viewDetail, viewProjects:
+		return true
+	}
+	return false
 }
 
 func (m Model) mouseWheelAt(delta, x int) (Model, tea.Cmd) {
@@ -86,7 +98,8 @@ func (m Model) mouseLeftClick(x, y int) (Model, tea.Cmd) {
 }
 
 func splitListRowY(y int) int {
-	return y - 2 // title row + pane top border; list pane data starts at first inner row
+	// Title, pane top border, table header, separator, then first data row.
+	return y - splitListDataRowY
 }
 
 func (m Model) mouseListClick(row int) (Model, tea.Cmd) {
