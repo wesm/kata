@@ -25,6 +25,6 @@
         #39   —    open      issue 39                                                                          1d ago   
         #40   —    open      issue 40                                                                          1d ago   
         #41   —    open      issue 41                                                                          1d ago   
-        #42   —    open      issue 42                                                                          1d ago   
-                                                                                                          [18-42 of 50] 
- ↑↓ move▕ ↵ open▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ L layout▕ ? help▕ q quit     
+                                                                                                          [18-41 of 50] 
+ ↑↓ move▕ ↵ open▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ ! priority▕ L layout▕ ? help 
+ q quit                                                                                                                 

@@ -25,6 +25,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
                                                                                                                   [2/3] 
- ↑↓ move▕ ↵ open▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ L layout▕ ? help▕ q quit     
+ ↑↓ move▕ ↵ open▕ n new▕ N child▕ / search▕ f filter▕ s status▕ o order▕ c clear▕ x close▕ ! priority▕ L layout▕ ? help 
+ q quit                                                                                                                 
