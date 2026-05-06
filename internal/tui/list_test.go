@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
+	"github.com/mattn/go-runewidth"
 )
 
 // ptrString is a test-only helper for taking the address of a string
@@ -72,6 +73,27 @@ func TestList_Render_Fixture(t *testing.T) {
 		return strings.Contains(s, "fix login bug on Safari") &&
 			strings.Contains(s, "[deleted]")
 	}, teatest.WithDuration(2*time.Second))
+}
+
+// TestList_Render_FitsAt80Cols locks the wide-mode column budget at the
+// 80-column supported minimum: the rendered table rows must not exceed
+// 80 visible cells. Adding the prio column at 5 cells previously pushed
+// the sum to 81 (cursor 2 + context 2 + tree 4 + num 6 + prio 5 +
+// status 10 + children 8 + owner 14 + updated 10 + title 20 = 81). With
+// prio at 4 the sum stays at 80 even with the title floor.
+func TestList_Render_FitsAt80Cols(t *testing.T) {
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = []Issue{
+		{Number: 1, Title: "fits at the floor", Status: "open", Priority: ptrInt64(1)},
+	}
+	out := lm.View(80, 30, viewChrome{})
+	for i, line := range strings.Split(out, "\n") {
+		w := runewidth.StringWidth(stripANSI(line))
+		if w > 80 {
+			t.Fatalf("line %d exceeds 80 cells: width=%d, line=%q", i, w, line)
+		}
+	}
 }
 
 // TestList_Render_PriorityColumn drives the priority cell through both

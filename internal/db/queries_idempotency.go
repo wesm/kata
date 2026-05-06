@@ -21,18 +21,23 @@ import (
 const sqliteTimeFormat = "2006-01-02T15:04:05.000Z"
 
 // Fingerprint returns the lowercase hex SHA-256 of the canonical concatenation
-// of (title, body, owner, sorted labels, sorted links) per spec §3.6. The
-// fingerprint is order-independent for labels and links: both are sorted before
-// hashing. Owner is canonicalized as "" when nil or empty. Labels are
+// of (title, body, owner, sorted labels, sorted links, priority) per spec §3.6.
+// The fingerprint is order-independent for labels and links: both are sorted
+// before hashing. Owner is canonicalized as "" when nil or empty. Labels are
 // alphabetized. Links are sorted by (type, to_number).
 //
 // Canonical byte layout (the input to SHA-256):
 //
 //	title=<canonical-title>\nbody=<canonical-body>\nowner=<canonical-owner>\nlabels=<csv-of-sorted-labels>\nlinks=<canonical-json>
 //
+// When priority is non-nil, an extra "\npriority=<N>" line is appended after
+// the links line. Nil priority emits no priority line so the canonical layout
+// matches pre-priority fingerprints byte-for-byte; existing idempotency events
+// stored against the five-line layout continue to match.
+//
 // where canonical-* applies similarity.Canonical (NFC + trim + collapse internal
 // whitespace, case preserved). Cross-language clients reproducing this must use
-// the same five-line layout, sort labels alphabetically, sort links by
+// the same line layout, sort labels alphabetically, sort links by
 // (type, to_number), and emit links as the JSON shape
 // `[{"type":"…","other_number":N},…]`.
 //
@@ -40,7 +45,7 @@ const sqliteTimeFormat = "2006-01-02T15:04:05.000Z"
 // `[a-z0-9._:-]` (see the labels CHECK constraint in schema.sql), so the `,`
 // separator can never collide with a label byte. Bypassing API validation
 // before calling Fingerprint may break this contract.
-func Fingerprint(title, body string, owner *string, labels []string, links []InitialLink) string {
+func Fingerprint(title, body string, owner *string, labels []string, links []InitialLink, priority *int64) string {
 	ownerStr := ""
 	if owner != nil {
 		ownerStr = *owner
@@ -78,6 +83,9 @@ func Fingerprint(title, body string, owner *string, labels []string, links []Ini
 	b.WriteString(strings.Join(sortedLabels, ","))
 	b.WriteString("\nlinks=")
 	b.WriteString(similarity.Canonical(string(linksJSON)))
+	if priority != nil {
+		fmt.Fprintf(&b, "\npriority=%d", *priority)
+	}
 
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])

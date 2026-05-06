@@ -16,31 +16,33 @@ func TestFingerprint_DeterministicOverInputOrder(t *testing.T) {
 	owner := "alice"
 	a := db.Fingerprint("fix login", "details", &owner,
 		[]string{"bug", "ui"},
-		[]db.InitialLink{{Type: "blocks", ToNumber: 7}, {Type: "parent", ToNumber: 3}})
+		[]db.InitialLink{{Type: "blocks", ToNumber: 7}, {Type: "parent", ToNumber: 3}}, nil)
 	b := db.Fingerprint("fix login", "details", &owner,
 		[]string{"ui", "bug"}, // labels reordered
-		[]db.InitialLink{{Type: "parent", ToNumber: 3}, {Type: "blocks", ToNumber: 7}}) // links reordered
+		[]db.InitialLink{{Type: "parent", ToNumber: 3}, {Type: "blocks", ToNumber: 7}}, nil) // links reordered
 	assert.Equal(t, a, b, "fingerprint must be order-independent for labels and links")
 }
 
 func TestFingerprint_CanonicalizesWhitespace(t *testing.T) {
-	a := db.Fingerprint("fix login", "body text", nil, nil, nil)
-	b := db.Fingerprint("  fix\t\n  login  ", "body  text", nil, nil, nil)
+	a := db.Fingerprint("fix login", "body text", nil, nil, nil, nil)
+	b := db.Fingerprint("  fix\t\n  login  ", "body  text", nil, nil, nil, nil)
 	assert.Equal(t, a, b, "internal whitespace runs and trimming must collapse")
 }
 
 func TestFingerprint_DiffersOnDifferentInputs(t *testing.T) {
-	base := db.Fingerprint("a", "b", nil, nil, nil)
+	base := db.Fingerprint("a", "b", nil, nil, nil, nil)
+	priority := int64(1)
 	cases := []struct {
 		name        string
 		fingerprint string
 	}{
-		{"different_title", db.Fingerprint("aa", "b", nil, nil, nil)},
-		{"different_body", db.Fingerprint("a", "bb", nil, nil, nil)},
-		{"different_owner", db.Fingerprint("a", "b", strPtr("x"), nil, nil)},
-		{"different_labels", db.Fingerprint("a", "b", nil, []string{"bug"}, nil)},
+		{"different_title", db.Fingerprint("aa", "b", nil, nil, nil, nil)},
+		{"different_body", db.Fingerprint("a", "bb", nil, nil, nil, nil)},
+		{"different_owner", db.Fingerprint("a", "b", strPtr("x"), nil, nil, nil)},
+		{"different_labels", db.Fingerprint("a", "b", nil, []string{"bug"}, nil, nil)},
 		{"different_links", db.Fingerprint("a", "b", nil, nil,
-			[]db.InitialLink{{Type: "blocks", ToNumber: 1}})},
+			[]db.InitialLink{{Type: "blocks", ToNumber: 1}}, nil)},
+		{"different_priority", db.Fingerprint("a", "b", nil, nil, nil, &priority)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,20 +53,20 @@ func TestFingerprint_DiffersOnDifferentInputs(t *testing.T) {
 
 func TestFingerprint_CaseSensitive(t *testing.T) {
 	// Spec §3.6: canonical() does NOT lowercase. Title casing matters.
-	a := db.Fingerprint("Fix Login", "", nil, nil, nil)
-	b := db.Fingerprint("fix login", "", nil, nil, nil)
+	a := db.Fingerprint("Fix Login", "", nil, nil, nil, nil)
+	b := db.Fingerprint("fix login", "", nil, nil, nil, nil)
 	assert.NotEqual(t, a, b)
 }
 
 func TestFingerprint_NilAndEmptyOwnerAreEquivalent(t *testing.T) {
 	empty := ""
-	a := db.Fingerprint("a", "b", nil, nil, nil)
-	b := db.Fingerprint("a", "b", &empty, nil, nil)
+	a := db.Fingerprint("a", "b", nil, nil, nil, nil)
+	b := db.Fingerprint("a", "b", &empty, nil, nil, nil)
 	assert.Equal(t, a, b, "nil owner and empty owner produce the same fingerprint")
 }
 
 func TestFingerprint_HexLowercaseSHA256(t *testing.T) {
-	got := db.Fingerprint("a", "b", nil, nil, nil)
+	got := db.Fingerprint("a", "b", nil, nil, nil, nil)
 	assert.Len(t, got, 64, "sha256 hex is 64 chars")
 	assert.True(t, strings.ToLower(got) == got, "must be lowercase hex")
 }
@@ -74,17 +76,39 @@ func TestFingerprint_HexLowercaseSHA256(t *testing.T) {
 // behavior immediately breaks the test. This is the cross-language contract.
 func TestFingerprint_Vector(t *testing.T) {
 	// All-empty inputs: title=\nbody=\nowner=\nlabels=\nlinks=[]
+	// Nil priority MUST omit the priority line so this hash matches the
+	// pre-priority five-line fingerprint shape — existing idempotency events
+	// in older databases continue to match.
 	assert.Equal(t,
 		"3e3678620b59364a3d56c8608ff431933b042a8619e74892243b0d2bfdb09af2",
-		db.Fingerprint("", "", nil, nil, nil),
+		db.Fingerprint("", "", nil, nil, nil, nil),
 		"empty-everything fingerprint must not drift")
 
 	// Filled: one label, one parent link.
 	assert.Equal(t,
 		"2c77531b9b3e7522ccf86eb353fc2aaa8cd8418e1132c8ebb1f2f80ea1dca8db",
 		db.Fingerprint("hello", "world", nil, []string{"bug"},
-			[]db.InitialLink{{Type: "parent", ToNumber: 3}}),
+			[]db.InitialLink{{Type: "parent", ToNumber: 3}}, nil),
 		"filled fingerprint must not drift")
+}
+
+// TestFingerprint_PriorityNilPreservesLegacyShape locks the rule that nil
+// priority emits the same canonical bytes as the pre-priority signature, so
+// existing fingerprints stored in databases keep matching after the upgrade.
+func TestFingerprint_PriorityNilPreservesLegacyShape(t *testing.T) {
+	// Same hash whether priority is nil or omitted entirely.
+	a := db.Fingerprint("a", "b", nil, []string{"bug"},
+		[]db.InitialLink{{Type: "parent", ToNumber: 3}}, nil)
+	b := db.Fingerprint("a", "b", nil, []string{"bug"},
+		[]db.InitialLink{{Type: "parent", ToNumber: 3}}, nil)
+	assert.Equal(t, a, b)
+
+	// Setting any priority diverges from the nil-priority hash.
+	zero := int64(0)
+	withZero := db.Fingerprint("a", "b", nil, []string{"bug"},
+		[]db.InitialLink{{Type: "parent", ToNumber: 3}}, &zero)
+	assert.NotEqual(t, a, withZero,
+		"P0 differs from nil priority — they are not the same identity")
 }
 
 func TestLookupIdempotency_ReturnsMatchWithinWindow(t *testing.T) {

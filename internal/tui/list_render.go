@@ -467,13 +467,16 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 }
 
 // listTableHeaders returns the column-header label slice for the
-// list table. Wide (default) mode renders the prio + owner columns;
-// narrow (M6 split-mode list pane) drops owner.
+// list table. Wide (default) mode renders the pri + owner columns;
+// narrow (M6 split-mode list pane) drops owner. The priority header
+// reads "pri" (not "prio") so the column fits in 4 cells without
+// truncation — keeps the wide column-sum at 60, leaving room for the
+// 20-cell title floor at the 80-col supported minimum.
 func listTableHeaders(narrow bool) []string {
 	if narrow {
-		return []string{"", "", "", "#", "prio", "status", "title", "kids", "updated"}
+		return []string{"", "", "", "#", "pri", "status", "title", "kids", "updated"}
 	}
-	return []string{"", "", "", "#", "prio", "status", "title", "kids", "owner", "updated"}
+	return []string{"", "", "", "#", "pri", "status", "title", "kids", "owner", "updated"}
 }
 
 // tableHeaderRow renders just the column-header line at the given
@@ -565,7 +568,7 @@ func listColumnWidths(termWidth int, narrow bool) listColWidths {
 		context:  2,  // "~" + padding
 		tree:     4,  // disclosure + shallow indent
 		num:      6,  // "#9999"
-		prio:     5,  // "prio" header / "P0" cell + padding
+		prio:     4,  // "pri" header / "P0" cell + padding
 		status:   10, // "[deleted]"
 		children: 8,  // "12/100"
 		owner:    14,

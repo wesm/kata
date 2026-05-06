@@ -290,6 +290,54 @@ func TestCreate_IdempotencyMismatch(t *testing.T) {
 		"mismatch payload must echo the original issue's number")
 }
 
+// TestCreate_IdempotencyMismatchOnPriorityChange verifies that reusing the
+// same Idempotency-Key with a different priority is a 409 mismatch — priority
+// is part of the request identity, so a creator who keys on a body+priority
+// pair gets the right surface when a later request shifts priority.
+func TestCreate_IdempotencyMismatchOnPriorityChange(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := issuesURL(pid)
+
+	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "Kprio"},
+		map[string]any{"actor": "agent-1", "title": "issue", "body": "body", "priority": 1})
+	requireOK(t, first)
+
+	second := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "Kprio"},
+		map[string]any{"actor": "agent-1", "title": "issue", "body": "body", "priority": 2})
+	require.Equal(t, 409, second.status, string(second.body))
+	assert.Contains(t, string(second.body), `"code":"idempotency_mismatch"`)
+
+	// Re-sending with the same priority reuses the original issue.
+	third := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "Kprio"},
+		map[string]any{"actor": "agent-1", "title": "issue", "body": "body", "priority": 1})
+	requireOK(t, third)
+	var thirdOut struct {
+		Reused bool `json:"reused"`
+	}
+	require.NoError(t, json.Unmarshal(third.body, &thirdOut))
+	assert.True(t, thirdOut.Reused, "same key + same priority should reuse")
+}
+
+// TestCreate_PriorityValidatedBeforeIdempotency verifies that an out-of-range
+// priority surfaces as a 400 even when an Idempotency-Key matches a prior
+// issue. The validate-before-lookup ordering keeps the API contract honest:
+// invalid input is never silently absorbed by a reuse path.
+func TestCreate_PriorityValidatedBeforeIdempotency(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	path := issuesURL(pid)
+
+	first := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "Kbad"},
+		map[string]any{"actor": "agent-1", "title": "issue", "body": "body"})
+	requireOK(t, first)
+
+	bad := postWithHeader(t, ts, path, map[string]string{"Idempotency-Key": "Kbad"},
+		map[string]any{"actor": "agent-1", "title": "issue", "body": "body", "priority": 9})
+	require.Equal(t, 400, bad.status, string(bad.body))
+	assert.Contains(t, string(bad.body), "priority must be between 0 and 4")
+}
+
 // TestCreate_IdempotencyDeletedIs409 verifies the §3.6 deleted-issue branch:
 // when the idempotent-matched issue has been soft-deleted, retrying with the
 // same key yields 409 idempotency_deleted with a restore hint.
