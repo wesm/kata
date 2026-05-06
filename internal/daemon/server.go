@@ -154,6 +154,7 @@ func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerInstanceHandlers(humaAPI, cfg)
 	registerProjects(humaAPI, cfg)
 	registerIssues(humaAPI, cfg)
+	registerImportsHandlers(humaAPI, cfg)
 	registerComments(humaAPI, cfg)
 	registerActions(humaAPI, cfg)
 	registerLinks(humaAPI, cfg)

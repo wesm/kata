@@ -651,3 +651,51 @@ type SearchResponse struct {
 		Results []SearchHit `json:"results"`
 	}
 }
+
+// ImportRequest is POST /api/v1/projects/{project_id}/imports. It carries a
+// normalized external issue batch that the daemon passes to db.ImportBatch.
+type ImportRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		Actor  string             `json:"actor" required:"true"`
+		Source string             `json:"source" required:"true"`
+		Items  []ImportIssueInput `json:"items"`
+	}
+}
+
+// ImportIssueInput is one normalized issue in an import request.
+type ImportIssueInput struct {
+	ExternalID   string               `json:"external_id" required:"true"`
+	Title        string               `json:"title" required:"true"`
+	Body         string               `json:"body,omitempty"`
+	Author       string               `json:"author" required:"true"`
+	Owner        *string              `json:"owner,omitempty"`
+	Status       string               `json:"status" enum:"open,closed"`
+	ClosedReason *string              `json:"closed_reason,omitempty" enum:"done,wontfix,duplicate,"`
+	CreatedAt    time.Time            `json:"created_at" required:"true"`
+	UpdatedAt    time.Time            `json:"updated_at" required:"true"`
+	ClosedAt     *time.Time           `json:"closed_at,omitempty"`
+	Labels       []string             `json:"labels,omitempty"`
+	Comments     []ImportCommentInput `json:"comments,omitempty"`
+	Links        []ImportLinkInput    `json:"links,omitempty"`
+}
+
+// ImportCommentInput is one normalized external comment.
+type ImportCommentInput struct {
+	ExternalID string    `json:"external_id" required:"true"`
+	Author     string    `json:"author" required:"true"`
+	Body       string    `json:"body" required:"true"`
+	CreatedAt  time.Time `json:"created_at" required:"true"`
+}
+
+// ImportLinkInput is one normalized external relationship. TargetExternalID
+// resolves against issues from the same source and project.
+type ImportLinkInput struct {
+	Type             string `json:"type" required:"true" enum:"parent,blocks,related"`
+	TargetExternalID string `json:"target_external_id" required:"true"`
+}
+
+// ImportResponse returns db.ImportBatchResult at the response body top level.
+type ImportResponse struct {
+	Body db.ImportBatchResult
+}
