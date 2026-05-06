@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -443,7 +443,7 @@ func normalizeKataLabelMax(s string, maxLen int) string {
 	if len(normalized) <= maxLen {
 		return normalized
 	}
-	sum := sha1.Sum([]byte(normalized))
+	sum := sha256.Sum256([]byte(normalized))
 	suffix := hex.EncodeToString(sum[:])[:8]
 	prefixLen := maxLen - len(suffix) - 1
 	if prefixLen < 1 {

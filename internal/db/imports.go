@@ -12,6 +12,9 @@ import (
 	katauid "github.com/wesm/kata/internal/uid"
 )
 
+// ImportBatchParams is the input to ImportBatch: the project receiving the
+// import, the source identifier (e.g. "beads"), the actor recorded on emitted
+// events, and the normalized issue items to upsert.
 type ImportBatchParams struct {
 	ProjectID int64
 	Source    string
@@ -19,6 +22,9 @@ type ImportBatchParams struct {
 	Items     []ImportItem
 }
 
+// ImportItem is one normalized issue in an import batch. ExternalID is the
+// source-side identifier used for upsert via import_mappings; CreatedAt and
+// UpdatedAt drive timestamp fidelity and source-vs-local conflict resolution.
 type ImportItem struct {
 	ExternalID   string
 	Title        string
@@ -35,6 +41,8 @@ type ImportItem struct {
 	Links        []ImportLink
 }
 
+// ImportComment is one normalized comment attached to an ImportItem. ExternalID
+// is the source-side comment identifier used for upsert via import_mappings.
 type ImportComment struct {
 	ExternalID string
 	Author     string
@@ -42,11 +50,16 @@ type ImportComment struct {
 	CreatedAt  time.Time
 }
 
+// ImportLink is one normalized outgoing link from an ImportItem. TargetExternalID
+// references another item's ExternalID in the same batch (or an existing mapped
+// item); the daemon resolves it to a kata issue number.
 type ImportLink struct {
 	Type             string
 	TargetExternalID string
 }
 
+// ImportBatchResult summarizes a completed import batch: per-status counts and
+// a per-item breakdown the CLI uses for human and JSON output.
 type ImportBatchResult struct {
 	Source    string             `json:"source"`
 	Created   int                `json:"created"`
@@ -58,6 +71,9 @@ type ImportBatchResult struct {
 	Errors    []string           `json:"errors"`
 }
 
+// ImportItemResult is the per-item entry in ImportBatchResult.Items. Status is
+// "created", "updated", or "unchanged"; Reason carries an optional rationale
+// (e.g. "local newer").
 type ImportItemResult struct {
 	ExternalID  string `json:"external_id"`
 	IssueNumber int64  `json:"issue_number"`
@@ -65,6 +81,9 @@ type ImportItemResult struct {
 	Reason      string `json:"reason,omitempty"`
 }
 
+// ErrImportValidation is returned by ImportBatch when the request fails
+// validation (missing fields, bad status, unresolved link target). The daemon
+// translates it into a 400 with kind="import_validation".
 var ErrImportValidation = errors.New("invalid import")
 
 type importIssueState struct {

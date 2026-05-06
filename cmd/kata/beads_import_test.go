@@ -160,7 +160,7 @@ else
 	exit 2
 fi
 `
-	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755)) //nolint:gosec // test fixture: fake bd script needs executable bit
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

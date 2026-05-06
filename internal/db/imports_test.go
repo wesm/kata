@@ -43,7 +43,7 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	require.NotNil(t, blocked.ClosedAt)
 	assert.True(t, blocked.ClosedAt.Equal(t2))
 
-	comments := commentsForIssue(t, ctx, d, blocked.ID)
+	comments := commentsForIssue(ctx, t, d, blocked.ID)
 	require.Len(t, comments, 1)
 	assert.Equal(t, "note", comments[0].Body)
 	assert.True(t, comments[0].CreatedAt.Equal(t2))
@@ -52,7 +52,7 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	require.NotNil(t, commentMap.CommentID)
 	assert.Equal(t, comments[0].ID, *commentMap.CommentID)
 
-	labels := labelsForIssue(t, ctx, d, blocked.ID)
+	labels := labelsForIssue(ctx, t, d, blocked.ID)
 	require.Len(t, labels, 2)
 	assert.Equal(t, "beads-id:blocked", labels[0].Label)
 	assert.True(t, labels[0].CreatedAt.Equal(t1))
@@ -64,7 +64,7 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	require.NotNil(t, blockerMap.IssueID)
 	blocker, err := d.IssueByID(ctx, *blockerMap.IssueID)
 	require.NoError(t, err)
-	links := linksForIssue(t, ctx, d, *blockerMap.IssueID)
+	links := linksForIssue(ctx, t, d, *blockerMap.IssueID)
 	require.Len(t, links, 1)
 	assert.Equal(t, *blockerMap.IssueID, links[0].FromIssueID)
 	assert.Equal(t, blocked.ID, links[0].ToIssueID)
@@ -123,7 +123,7 @@ func TestImportBatch_RelatedLinkEventPayloadKeepsImportDirectionWhenStorageCanon
 	require.NoError(t, err)
 	require.Greater(t, a.ID, b.ID)
 
-	links := linksForIssue(t, ctx, d, a.ID)
+	links := linksForIssue(ctx, t, d, a.ID)
 	require.Len(t, links, 1)
 	assert.Equal(t, b.ID, links[0].FromIssueID)
 	assert.Equal(t, a.ID, links[0].ToIssueID)
@@ -191,13 +191,13 @@ func TestImportBatch_LocalNewerIssueUnchangedButMissingCommentsMerge(t *testing.
 	after, err := d.IssueByID(ctx, *m.IssueID)
 	require.NoError(t, err)
 	assert.Equal(t, "local wins", after.Title)
-	comments := commentsForIssue(t, ctx, d, *m.IssueID)
+	comments := commentsForIssue(ctx, t, d, *m.IssueID)
 	require.Len(t, comments, 1)
 	assert.Equal(t, "missing", comments[0].Body)
 
 	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "stale", Body: "stale body", Author: "alice", Status: "open", CreatedAt: older, UpdatedAt: older, Comments: []db.ImportComment{{ExternalID: "c1", Author: "alice", Body: "missing", CreatedAt: older}}}}})
 	require.NoError(t, err)
-	comments = commentsForIssue(t, ctx, d, *m.IssueID)
+	comments = commentsForIssue(ctx, t, d, *m.IssueID)
 	assert.Len(t, comments, 1)
 }
 
@@ -230,12 +230,12 @@ func TestImportBatch_SourceOwnedLabelsLinksReconcileLocalRemain(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.Updated)
 
-	labels := labelsForIssue(t, ctx, d, *aMap.IssueID)
+	labels := labelsForIssue(ctx, t, d, *aMap.IssueID)
 	assert.Equal(t, []string{"local", "new", "source:beads"}, labelNames(labels))
 	_, err = d.ImportMappingBySource(ctx, p.ID, "beads", "label", "a:label:old")
 	assert.ErrorIs(t, err, db.ErrNotFound)
 
-	links := linksForIssue(t, ctx, d, *aMap.IssueID)
+	links := linksForIssue(ctx, t, d, *aMap.IssueID)
 	require.Len(t, links, 2)
 	assert.Contains(t, linkTargets(links), *cMap.IssueID)
 	assert.NotContains(t, linkTargets(links), *bMap.IssueID)
@@ -396,7 +396,7 @@ func TestImportBatch_TimestampValidationErrors(t *testing.T) {
 	})
 }
 
-func commentsForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) []db.Comment {
+func commentsForIssue(ctx context.Context, t *testing.T, d *db.DB, issueID int64) []db.Comment {
 	t.Helper()
 	rows, err := d.QueryContext(ctx, `SELECT id, issue_id, author, body, created_at FROM comments WHERE issue_id = ? ORDER BY id ASC`, issueID)
 	require.NoError(t, err)
@@ -411,7 +411,7 @@ func commentsForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64
 	return out
 }
 
-func labelsForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) []db.IssueLabel {
+func labelsForIssue(ctx context.Context, t *testing.T, d *db.DB, issueID int64) []db.IssueLabel {
 	t.Helper()
 	rows, err := d.QueryContext(ctx, `SELECT issue_id, label, author, created_at FROM issue_labels WHERE issue_id = ? ORDER BY label ASC`, issueID)
 	require.NoError(t, err)
@@ -426,7 +426,7 @@ func labelsForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) 
 	return out
 }
 
-func linksForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) []db.Link {
+func linksForIssue(ctx context.Context, t *testing.T, d *db.DB, issueID int64) []db.Link {
 	t.Helper()
 	rows, err := d.QueryContext(ctx, `SELECT id, project_id, from_issue_id, from_issue_uid, to_issue_id, to_issue_uid, type, author, created_at FROM links WHERE from_issue_id = ? OR to_issue_id = ? ORDER BY id ASC`, issueID, issueID)
 	require.NoError(t, err)
