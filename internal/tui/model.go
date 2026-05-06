@@ -591,9 +591,7 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 		// Cache the terminal/detail viewport so PgDn can clamp body
 		// scroll against the same dimensions the renderer will use.
-		m.detail.lastTermWidth = m.width
-		m.detail.lastTermHeight = m.height
-		m.detail = m.cacheDetailViewport(m.detail)
+		m.detail = m.applyDetailViewportCache(m.detail)
 		return m, nil, true
 	case tea.KeyMsg:
 		// Modal owns input when active. Enter the modal-specific
@@ -634,6 +632,19 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+// applyDetailViewportCache copies the latest terminal dimensions into
+// dm and recomputes the split-pane cache. Run this after installing a
+// fresh detailModel (open/jump/follow) or after a layout toggle so
+// PgUp/PgDn page-stepping and scrollViewportBy's EOF clamp see correct
+// viewport dimensions on the very first key press, without waiting
+// for the next tea.WindowSizeMsg. Without this seed, viewportDims
+// returns ok=false and pageStep degrades to detailFallbackPageStep.
+func (m Model) applyDetailViewportCache(dm detailModel) detailModel {
+	dm.lastTermWidth = m.width
+	dm.lastTermHeight = m.height
+	return m.cacheDetailViewport(dm)
 }
 
 func (m Model) cacheDetailViewport(dm detailModel) detailModel {
@@ -1975,6 +1986,7 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	m.detail.commentsLoading = true
 	m.detail.eventsLoading = true
 	m.detail.linksLoading = true
+	m.detail = m.applyDetailViewportCache(m.detail)
 	m.view = viewDetail
 	// In M6 split layout, "enter from list → detail" means focus
 	// moves to the detail pane on open. m.view also moves to
@@ -2054,7 +2066,7 @@ func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 		eventsLoading:   true,
 		linksLoading:    true,
 	}
-	m.detail = next
+	m.detail = m.applyDetailViewportCache(next)
 	cmds := []tea.Cmd{
 		fetchIssue(m.api, pid, msg.number, gen),
 		fetchComments(m.api, pid, msg.number, gen),
@@ -2216,6 +2228,7 @@ func (m Model) scheduleDetailFollow() (Model, tea.Cmd) {
 	m.detail.commentsLoading = true
 	m.detail.eventsLoading = true
 	m.detail.linksLoading = true
+	m.detail = m.applyDetailViewportCache(m.detail)
 	m.nextDetailFollowGen++
 	tickGen := m.nextDetailFollowGen
 	return m, tea.Tick(detailFollowDebounce, func(time.Time) tea.Msg {

@@ -399,6 +399,65 @@ func TestDetail_Scroll_SplitViewportClamp(t *testing.T) {
 	}
 }
 
+// TestDetail_OpenFromList_SeedsViewportCache pins the regression:
+// the freshly-installed detail model in handleOpenDetail must inherit
+// the terminal dimensions, not start from zero. Without the seed,
+// viewportDims() returns ok=false, pageStep falls back to
+// detailFallbackPageStep (8) regardless of how tall the terminal is,
+// and scrollViewportBy skips its EOF clamp until the next
+// WindowSizeMsg arrives.
+func TestDetail_OpenFromList_SeedsViewportCache(t *testing.T) {
+	m := scenarioModel(t, 200, 40) // split layout breakpoint is 140x36
+	iss := listFixture()[0]
+	out, _ := m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+
+	if m.detail.lastTermWidth != 200 || m.detail.lastTermHeight != 40 {
+		t.Fatalf("lastTerm = %dx%d, want 200x40 after open",
+			m.detail.lastTermWidth, m.detail.lastTermHeight)
+	}
+	if !m.detail.lastDetailSplit {
+		t.Fatalf("lastDetailSplit = false at split layout 200x40")
+	}
+	_, visible, ok := m.detail.viewportDims()
+	if !ok {
+		t.Fatalf("viewportDims().ok = false after open; pageStep would be %d",
+			m.detail.pageStep())
+	}
+	if step := m.detail.pageStep(); step != visible-detailPageOverlap {
+		t.Errorf("pageStep = %d, want %d (visible-overlap)",
+			step, visible-detailPageOverlap)
+	}
+}
+
+// TestModel_ToggleLayout_RefreshesViewportCache pins the regression:
+// pressing the layout-toggle key changes the detail pane's effective
+// size (full-width stacked vs boxed split-pane inner area). Without
+// refreshing the cache the next PgUp/PgDn keeps using the pre-toggle
+// dimensions — overshooting after stacked → split (the split pane is
+// smaller) or leaving slack after split → stacked.
+func TestModel_ToggleLayout_RefreshesViewportCache(t *testing.T) {
+	m := scenarioModel(t, 200, 40) // starts in split
+	iss := listFixture()[0]
+	out, _ := m.Update(openDetailMsg{issue: iss})
+	m = out.(Model)
+	if !m.detail.lastDetailSplit {
+		t.Fatalf("setup: expected split layout cached")
+	}
+
+	m = m.toggleLayout() // split → stacked
+	if m.detail.lastDetailSplit {
+		t.Fatalf("after toggle: lastDetailSplit still true; cache is stale")
+	}
+	if m.detail.lastTermWidth != 200 || m.detail.lastTermHeight != 40 {
+		t.Fatalf("after toggle: lastTerm = %dx%d, want preserved 200x40",
+			m.detail.lastTermWidth, m.detail.lastTermHeight)
+	}
+	if _, _, ok := m.detail.viewportDims(); !ok {
+		t.Fatalf("viewportDims().ok = false after toggle")
+	}
+}
+
 // TestDetail_Back_EmitsPopMsg: esc returns a tea.Cmd that emits
 // popDetailMsg when the nav stack is empty.
 func TestDetail_Back_EmitsPopMsg(t *testing.T) {

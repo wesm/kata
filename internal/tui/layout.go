@@ -138,6 +138,12 @@ func (m Model) toggleLayout() Model {
 	if prev != m.layout {
 		m = m.handleLayoutFlip(prev)
 	}
+	// The layout flip changes which footer help-row table is rendered
+	// and whether the detail pane is full-width or boxed in a split
+	// pane, both of which feed the viewport-dim calculation. Refresh
+	// the cache so PgUp/PgDn paging and EOF clamping use the new
+	// dimensions immediately, not the stale ones from before the flip.
+	m.detail = m.applyDetailViewportCache(m.detail)
 	return m
 }
 
