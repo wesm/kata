@@ -17,6 +17,10 @@ var (
 	// would violate the target's UNIQUE(project_id, number) constraint.
 	ErrProjectMergeIssueNumberCollision = errors.New("project merge issue number collision")
 
+	// ErrProjectMergeImportMappingCollision is returned when moving source import
+	// mappings would violate the target's source identity uniqueness.
+	ErrProjectMergeImportMappingCollision = errors.New("project merge import mapping collision")
+
 	// ErrProjectMergeArchivedSource is returned when MergeProjects is asked
 	// to merge from a project that's been archived via RemoveProject (#24).
 	// Merging out of an archive is a restore-then-merge flow that doesn't
@@ -41,6 +45,32 @@ func (e *ProjectMergeCollisionError) Error() string {
 
 func (e *ProjectMergeCollisionError) Unwrap() error {
 	return ErrProjectMergeIssueNumberCollision
+}
+
+// ProjectMergeImportMappingCollision identifies one import mapping identity
+// that already exists on the target project.
+type ProjectMergeImportMappingCollision struct {
+	Source     string
+	ExternalID string
+	ObjectType string
+}
+
+// ProjectMergeImportMappingCollisionError carries the import mapping
+// identities that blocked a merge.
+type ProjectMergeImportMappingCollisionError struct {
+	Mappings []ProjectMergeImportMappingCollision
+}
+
+func (e *ProjectMergeImportMappingCollisionError) Error() string {
+	parts := make([]string, 0, len(e.Mappings))
+	for _, m := range e.Mappings {
+		parts = append(parts, fmt.Sprintf("%s/%s/%s", m.Source, m.ObjectType, m.ExternalID))
+	}
+	return fmt.Sprintf("%v: %s", ErrProjectMergeImportMappingCollision, strings.Join(parts, ", "))
+}
+
+func (e *ProjectMergeImportMappingCollisionError) Unwrap() error {
+	return ErrProjectMergeImportMappingCollision
 }
 
 // MergeProjectsParams identifies a source project to fold into a surviving
@@ -96,6 +126,13 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 	if len(collisions) > 0 {
 		return ProjectMergeResult{}, &ProjectMergeCollisionError{Numbers: collisions}
 	}
+	mappingCollisions, err := projectMergeImportMappingCollisions(ctx, tx, p.SourceProjectID, p.TargetProjectID)
+	if err != nil {
+		return ProjectMergeResult{}, err
+	}
+	if len(mappingCollisions) > 0 {
+		return ProjectMergeResult{}, &ProjectMergeImportMappingCollisionError{Mappings: mappingCollisions}
+	}
 
 	kind, rootPath := aliasDefaultsForMergedIdentity(source.Identity)
 	var existingAliasProjectID int64
@@ -145,6 +182,9 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 		`UPDATE purge_log SET project_id = ?, project_identity = ? WHERE project_id = ?`,
 		target.ID, target.Identity, source.ID); err != nil {
 		return ProjectMergeResult{}, fmt.Errorf("move purge log: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE import_mappings SET project_id = ? WHERE project_id = ?`, target.ID, source.ID); err != nil {
+		return ProjectMergeResult{}, fmt.Errorf("move import mappings: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE project_aliases SET project_id = ? WHERE project_id = ?`, target.ID, source.ID); err != nil {
 		return ProjectMergeResult{}, fmt.Errorf("move aliases: %w", err)
@@ -206,6 +246,37 @@ func projectMergeIssueNumberCollisions(ctx context.Context, tx *sql.Tx, sourceID
 			return nil, fmt.Errorf("scan project merge collision: %w", err)
 		}
 		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+func projectMergeImportMappingCollisions(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceID, targetID int64,
+) ([]ProjectMergeImportMappingCollision, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT s.source, s.external_id, s.object_type
+		FROM import_mappings s
+		INNER JOIN import_mappings t
+		  ON t.project_id = ?
+		 AND t.source = s.source
+		 AND t.external_id = s.external_id
+		 AND t.object_type = s.object_type
+		WHERE s.project_id = ?
+		ORDER BY s.source, s.object_type, s.external_id
+		LIMIT 20`, targetID, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("check project merge import mapping collisions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ProjectMergeImportMappingCollision
+	for rows.Next() {
+		var c ProjectMergeImportMappingCollision
+		if err := rows.Scan(&c.Source, &c.ExternalID, &c.ObjectType); err != nil {
+			return nil, fmt.Errorf("scan project merge import mapping collision: %w", err)
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

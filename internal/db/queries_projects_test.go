@@ -298,6 +298,66 @@ func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
 	assert.Equal(t, "github.com/wesm/kenn", got.Identity)
 }
 
+func TestMergeProjects_MovesImportMappingsToTargetProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source := createProject(ctx, t, d, "github.com/wesm/import-src", "src")
+	target := createProject(ctx, t, d, "github.com/wesm/import-target", "target")
+	issue := makeIssue(t, ctx, d, source.ID, "mapped issue", "tester")
+	comment, _, err := d.CreateComment(ctx, db.CreateCommentParams{IssueID: issue.ID, Author: "tester", Body: "mapped comment"})
+	require.NoError(t, err)
+
+	_, err = d.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source: "beads", ExternalID: "issue-1", ObjectType: "issue", ProjectID: source.ID, IssueID: &issue.ID,
+	})
+	require.NoError(t, err)
+	_, err = d.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source: "beads", ExternalID: "comment-1", ObjectType: "comment", ProjectID: source.ID, IssueID: &issue.ID, CommentID: &comment.ID,
+	})
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{SourceProjectID: source.ID, TargetProjectID: target.ID})
+	require.NoError(t, err)
+
+	mappings, err := d.ImportMappingsByProjectSource(ctx, target.ID, "beads")
+	require.NoError(t, err)
+	require.Len(t, mappings, 2)
+	for _, mapping := range mappings {
+		assert.Equal(t, target.ID, mapping.ProjectID)
+	}
+	_, err = d.ImportMappingBySource(ctx, source.ID, "beads", "issue", "issue-1")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestMergeProjects_ImportMappingCollisionReturnsError(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	source := createProject(ctx, t, d, "github.com/wesm/import-src", "src")
+	target := createProject(ctx, t, d, "github.com/wesm/import-target", "target")
+	sourceIssue := makeIssue(t, ctx, d, source.ID, "source mapped", "tester")
+	require.NoError(t, d.ResetIssueCounter(ctx, target.ID, 100))
+	targetIssue := makeIssue(t, ctx, d, target.ID, "target mapped", "tester")
+
+	_, err := d.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source: "beads", ExternalID: "issue-1", ObjectType: "issue", ProjectID: source.ID, IssueID: &sourceIssue.ID,
+	})
+	require.NoError(t, err)
+	_, err = d.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source: "beads", ExternalID: "issue-1", ObjectType: "issue", ProjectID: target.ID, IssueID: &targetIssue.ID,
+	})
+	require.NoError(t, err)
+
+	_, err = d.MergeProjects(ctx, db.MergeProjectsParams{SourceProjectID: source.ID, TargetProjectID: target.ID})
+	require.ErrorIs(t, err, db.ErrProjectMergeImportMappingCollision)
+
+	_, lookupErr := d.ProjectByID(ctx, source.ID)
+	require.NoError(t, lookupErr)
+	assertRowCount(ctx, t, d, 1, "source mapping preserved after failed merge",
+		`SELECT count(*) FROM import_mappings WHERE project_id = ?`, source.ID)
+	assertRowCount(ctx, t, d, 1, "target mapping preserved after failed merge",
+		`SELECT count(*) FROM import_mappings WHERE project_id = ?`, target.ID)
+}
+
 func TestResetIssueCounter_EmptyProjectMovesCounter(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 
