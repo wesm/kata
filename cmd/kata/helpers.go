@@ -84,14 +84,25 @@ func resolveBody(b BodySources, stdin io.Reader) (string, error) {
 	}
 }
 
-// resolveActor implements precedence flag > env > git > "anonymous". Returns
-// (actor, source) where source is one of "flag"|"env"|"git"|"fallback".
+// resolveActor implements precedence
+// flag > KATA_AUTHOR > $USER > git user.name > "anonymous".
+// Returns (actor, source) where source is one of
+// "flag"|"env"|"user"|"git"|"fallback".
+//
+// $USER takes precedence over `git config user.name` because login names
+// (e.g. "wesm") read more cleanly as event actors and owner tokens than
+// display names with spaces (e.g. "Wes McKinney"). Git user.name remains
+// in the chain as a final fallback for environments where $USER is unset
+// (some sandboxes / cron jobs) but git is configured.
 func resolveActor(flag string, gitUser gitUserFn) (string, string) {
 	if flag != "" {
 		return flag, "flag"
 	}
 	if v := os.Getenv("KATA_AUTHOR"); v != "" {
 		return v, "env"
+	}
+	if v := os.Getenv("USER"); v != "" {
+		return v, "user"
 	}
 	if gitUser == nil {
 		gitUser = readGitUserName

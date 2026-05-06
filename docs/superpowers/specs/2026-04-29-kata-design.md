@@ -718,9 +718,9 @@ The CLI text path treats `reset_required: true` the same way the TUI does on `sy
 
 ### 5.2 Identity (actor)
 
-Precedence: `--as <name>` > `KATA_AUTHOR` > `git config user.name` > `anonymous`. `kata whoami` echoes the resolved identity and source (`flag`/`env`/`git`/`fallback`).
+Precedence: `--as <name>` > `KATA_AUTHOR` > `$USER` > `git config user.name` > `anonymous`. `kata whoami` echoes the resolved identity and source (`flag`/`env`/`user`/`git`/`fallback`). `$USER` ranks above `git user.name` because login names (`wesm`) read more cleanly as event actors and owner tokens than display names with spaces (`Wes McKinney`).
 
-Skills tell agents: set `KATA_AUTHOR` once at session start; use a name that includes the model and a recognizable suffix (e.g. `claude-4.7-wesm-laptop`). Don't pass `--as` per-call unless acting as someone else.
+Skills tell agents: set `KATA_AUTHOR` only when you need an actor distinct from `$USER` (e.g. an agent handle like `claude-4.7-wesm-laptop`). Otherwise the default is your shell login. Don't pass `--as` per-call unless acting as someone else.
 
 ### 5.3 Search before create
 

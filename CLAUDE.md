@@ -5,7 +5,9 @@
 This project tracks its own work in **kata**. Run `kata quickstart` at the
 start of each session for the agent contract; the short version:
 
-- Set `KATA_AUTHOR` once per session.
+- Author defaults to `$KATA_AUTHOR > $USER > git user.name`; set
+  `KATA_AUTHOR` only if you need a different actor (e.g. an agent
+  handle distinct from your login).
 - `kata list --json` to see open work; `kata show <N> --json` for detail.
 - Search before creating: `kata search "<keywords>" --json`.
 - Update existing issues over creating duplicates (`kata comment`,

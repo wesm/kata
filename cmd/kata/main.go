@@ -43,7 +43,7 @@ func newRootCmd() *cobra.Command {
 	}
 	cmd.PersistentFlags().BoolVar(&flags.JSON, "json", false, "emit machine-readable JSON")
 	cmd.PersistentFlags().BoolVarP(&flags.Quiet, "quiet", "q", false, "suppress non-essential output")
-	cmd.PersistentFlags().StringVar(&flags.As, "as", "", "override actor (default: $KATA_AUTHOR > git > anonymous)")
+	cmd.PersistentFlags().StringVar(&flags.As, "as", "", "override actor (default: $KATA_AUTHOR > $USER > git > anonymous)")
 	cmd.PersistentFlags().StringVar(&flags.Workspace, "workspace", "", "path used for project resolution (default: cwd)")
 	// Catch the cobra/pflag pitfall where a positional that looks like
 	// a negative integer (kata show -1, kata delete -1) is parsed as

@@ -12,7 +12,8 @@ const agentQuickstartText = `# kata agent quickstart
 Use kata as the shared issue ledger for this workspace.
 
 1. Run from the project workspace, or pass --workspace <path>.
-2. Set KATA_AUTHOR once at session start.
+2. Author defaults to $KATA_AUTHOR > $USER > git user.name; set KATA_AUTHOR
+   only when you need an actor different from your login.
 3. Prefer --json for reads and writes when parsing output.
 4. If the workspace is not initialized, report that kata init is needed.
 5. Search before creating:
