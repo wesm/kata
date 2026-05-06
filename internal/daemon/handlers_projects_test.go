@@ -943,6 +943,34 @@ func TestListProjects_DefaultShapeUnchangedAfterStats(t *testing.T) {
 	assert.False(t, has, "stats must omit without ?include=stats")
 }
 
+func TestMergeProject_ImportMappingCollisionReturns409(t *testing.T) {
+	ts, h := startDefaultTestServer(t)
+	ctx := t.Context()
+	source, err := h.db.CreateProject(ctx, "github.com/wesm/source", "source")
+	require.NoError(t, err)
+	target, err := h.db.CreateProject(ctx, "github.com/wesm/target", "target")
+	require.NoError(t, err)
+	require.NoError(t, h.db.ResetIssueCounter(ctx, target.ID, 10))
+	sourceIssue, _, err := h.db.CreateIssue(ctx, db.CreateIssueParams{ProjectID: source.ID, Title: "source", Author: "tester"})
+	require.NoError(t, err)
+	targetIssue, _, err := h.db.CreateIssue(ctx, db.CreateIssueParams{ProjectID: target.ID, Title: "target", Author: "tester"})
+	require.NoError(t, err)
+	_, err = h.db.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source: "beads", ExternalID: "same", ObjectType: "issue", ProjectID: source.ID, IssueID: &sourceIssue.ID,
+	})
+	require.NoError(t, err)
+	_, err = h.db.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source: "beads", ExternalID: "same", ObjectType: "issue", ProjectID: target.ID, IssueID: &targetIssue.ID,
+	})
+	require.NoError(t, err)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/"+strconv.FormatInt(target.ID, 10)+"/merge", map[string]any{
+		"source_project_id": source.ID,
+	})
+
+	assertAPIError(t, resp.StatusCode, bs, 409, "project_merge_import_mapping_collision")
+}
+
 func TestInit_MergedKataTomlIdentityResolvesToSurvivingProject(t *testing.T) {
 	h := newServerWithGitWorkspace(t, "https://github.com/wesm/steward.git")
 	store := h.DB()
