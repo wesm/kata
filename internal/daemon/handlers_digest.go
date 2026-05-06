@@ -107,6 +107,8 @@ type issueAccum struct {
 	CommentCount    int
 	AssignedTo      string // last value wins
 	Unassigned      bool
+	PrioritySet     *int64 // last value wins; nil = unchanged in window
+	PriorityCleared bool
 	LabelsAdded     []string
 	LabelsRemoved   []string
 	Linked          []string // formatted "type:#N"
@@ -231,6 +233,19 @@ func applyEvent(e db.Event, totals, grand *api.DigestTotals, acc *issueAccum) {
 		if acc != nil {
 			acc.Unassigned = true
 		}
+	case "issue.priority_set":
+		bump(&totals.PrioritySet, &grand.PrioritySet)
+		if acc != nil {
+			if p, ok := priorityOf(e.Payload); ok {
+				v := p
+				acc.PrioritySet = &v
+			}
+		}
+	case "issue.priority_cleared":
+		bump(&totals.PriorityCleared, &grand.PriorityCleared)
+		if acc != nil {
+			acc.PriorityCleared = true
+		}
 	case "issue.labeled":
 		bump(&totals.Labeled, &grand.Labeled)
 		if acc != nil {
@@ -300,6 +315,21 @@ func closeReasonOf(payload string) string {
 		return ""
 	}
 	return p.Reason
+}
+
+// priorityOf extracts the new priority from an issue.priority_set payload.
+// Returns ok=false on parse failure or when the field is missing.
+func priorityOf(payload string) (int64, bool) {
+	if payload == "" {
+		return 0, false
+	}
+	var p struct {
+		Priority *int64 `json:"priority"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil || p.Priority == nil {
+		return 0, false
+	}
+	return *p.Priority, true
 }
 
 func ownerOf(payload string) string {
@@ -419,6 +449,12 @@ func renderActions(acc *issueAccum) []string {
 	}
 	if acc.Unassigned {
 		actions = append(actions, "unassigned")
+	}
+	if acc.PrioritySet != nil {
+		actions = append(actions, fmt.Sprintf("priority:%d", *acc.PrioritySet))
+	}
+	if acc.PriorityCleared {
+		actions = append(actions, "priority_cleared")
 	}
 	for _, l := range acc.LabelsAdded {
 		actions = append(actions, "labeled:"+l)

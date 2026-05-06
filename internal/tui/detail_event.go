@@ -31,19 +31,57 @@ func payloadDesc(prefix, field string) eventDescriber {
 // Unknown types fall through to a stripped "issue." prefix in
 // eventDescription so the column always carries something readable.
 var eventDescribers = map[string]eventDescriber{
-	"issue.created":      staticDesc("created"),
-	"issue.closed":       func(e EventLogEntry) string { return "closed" + reasonSuffix(e) },
-	"issue.reopened":     staticDesc("reopened"),
-	"issue.commented":    staticDesc("added comment"),
-	"issue.labeled":      payloadDesc("labeled", "label"),
-	"issue.unlabeled":    payloadDesc("unlabeled", "label"),
-	"issue.linked":       func(e EventLogEntry) string { return "linked " + linkPayloadDesc(e) },
-	"issue.unlinked":     func(e EventLogEntry) string { return "unlinked " + linkPayloadDesc(e) },
-	"issue.assigned":     payloadDesc("assigned", "owner"),
-	"issue.unassigned":   staticDesc("unassigned"),
-	"issue.updated":      staticDesc("updated"),
-	"issue.soft_deleted": staticDesc("deleted"),
-	"issue.restored":     staticDesc("restored"),
+	"issue.created":          staticDesc("created"),
+	"issue.closed":           func(e EventLogEntry) string { return "closed" + reasonSuffix(e) },
+	"issue.reopened":         staticDesc("reopened"),
+	"issue.commented":        staticDesc("added comment"),
+	"issue.labeled":          payloadDesc("labeled", "label"),
+	"issue.unlabeled":        payloadDesc("unlabeled", "label"),
+	"issue.linked":           func(e EventLogEntry) string { return "linked " + linkPayloadDesc(e) },
+	"issue.unlinked":         func(e EventLogEntry) string { return "unlinked " + linkPayloadDesc(e) },
+	"issue.assigned":         payloadDesc("assigned", "owner"),
+	"issue.unassigned":       staticDesc("unassigned"),
+	"issue.priority_set":     prioritySetDesc,
+	"issue.priority_cleared": priorityClearedDesc,
+	"issue.updated":          staticDesc("updated"),
+	"issue.soft_deleted":     staticDesc("deleted"),
+	"issue.restored":         staticDesc("restored"),
+}
+
+// prioritySetDesc renders "priority set to N" or "priority N → M" when the
+// payload carries the prior value, so digest-style scrubbing surfaces both
+// old and new priorities in one line.
+func prioritySetDesc(e EventLogEntry) string {
+	newP, ok := payloadInt(e, "priority")
+	if !ok {
+		return "priority changed"
+	}
+	if old, ok := payloadInt(e, "old_priority"); ok {
+		return fmt.Sprintf("priority %d → %d", old, newP)
+	}
+	return fmt.Sprintf("priority set to %d", newP)
+}
+
+// priorityClearedDesc renders "priority cleared (was N)" when the payload
+// carries the prior value, otherwise "priority cleared" alone.
+func priorityClearedDesc(e EventLogEntry) string {
+	if old, ok := payloadInt(e, "old_priority"); ok {
+		return fmt.Sprintf("priority cleared (was %d)", old)
+	}
+	return "priority cleared"
+}
+
+// payloadInt reads a numeric field out of the event payload. Missing keys,
+// non-numeric values, and a nil payload all return ok=false.
+func payloadInt(e EventLogEntry, key string) (int64, bool) {
+	if e.Payload == nil {
+		return 0, false
+	}
+	v, ok := e.Payload[key]
+	if !ok {
+		return 0, false
+	}
+	return numberFromAny(v)
 }
 
 // eventDescription returns the type-specific short description used in

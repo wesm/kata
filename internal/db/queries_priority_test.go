@@ -72,3 +72,118 @@ func TestIssueByNumber_SurfacesPriority(t *testing.T) {
 	require.NotNil(t, got.Priority)
 	assert.Equal(t, prio, *got.Priority)
 }
+
+func TestUpdatePriority_SetsAndEmitsPrioritySetEvent(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+	require.Nil(t, created.Priority)
+
+	newPrio := int64(1)
+	updated, evt, changed, err := d.UpdatePriority(ctx, created.ID, &newPrio, "tester")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.NotNil(t, evt)
+	assert.Equal(t, "issue.priority_set", evt.Type)
+	require.NotNil(t, updated.Priority)
+	assert.Equal(t, newPrio, *updated.Priority)
+
+	payload := unmarshalPayload[struct {
+		Priority    int64  `json:"priority"`
+		OldPriority *int64 `json:"old_priority,omitempty"`
+	}](t, evt.Payload)
+	assert.Equal(t, newPrio, payload.Priority)
+	assert.Nil(t, payload.OldPriority, "old_priority omitted when prior value was unset")
+}
+
+func TestUpdatePriority_ChangesAndEmitsOldPriorityInPayload(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	old := int64(3)
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+		Priority: &old,
+	})
+	require.NoError(t, err)
+
+	newPrio := int64(0)
+	_, evt, changed, err := d.UpdatePriority(ctx, created.ID, &newPrio, "tester")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.NotNil(t, evt)
+	assert.Equal(t, "issue.priority_set", evt.Type)
+
+	payload := unmarshalPayload[struct {
+		Priority    int64  `json:"priority"`
+		OldPriority *int64 `json:"old_priority,omitempty"`
+	}](t, evt.Payload)
+	assert.Equal(t, newPrio, payload.Priority)
+	require.NotNil(t, payload.OldPriority)
+	assert.Equal(t, old, *payload.OldPriority)
+}
+
+func TestUpdatePriority_ClearsAndEmitsPriorityClearedEvent(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	old := int64(2)
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+		Priority: &old,
+	})
+	require.NoError(t, err)
+
+	updated, evt, changed, err := d.UpdatePriority(ctx, created.ID, nil, "tester")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.NotNil(t, evt)
+	assert.Equal(t, "issue.priority_cleared", evt.Type)
+	assert.Nil(t, updated.Priority)
+
+	payload := unmarshalPayload[struct {
+		OldPriority int64 `json:"old_priority"`
+	}](t, evt.Payload)
+	assert.Equal(t, old, payload.OldPriority)
+}
+
+func TestUpdatePriority_NoOpWhenSameValue(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	prio := int64(1)
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+		Priority: &prio,
+	})
+	require.NoError(t, err)
+
+	same := int64(1)
+	_, evt, changed, err := d.UpdatePriority(ctx, created.ID, &same, "tester")
+	require.NoError(t, err)
+	assert.False(t, changed, "same priority must not record a change")
+	assert.Nil(t, evt, "no event when nothing changed")
+}
+
+func TestUpdatePriority_NoOpWhenClearingUnset(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	_, evt, changed, err := d.UpdatePriority(ctx, created.ID, nil, "tester")
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, evt)
+}
+
+func TestUpdatePriority_RejectsOutOfRange(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	for _, bad := range []int64{-1, 5, 99} {
+		bad := bad
+		_, _, _, err := d.UpdatePriority(ctx, created.ID, &bad, "tester")
+		require.Error(t, err, "priority %d should violate CHECK", bad)
+	}
+}

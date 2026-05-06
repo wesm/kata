@@ -1,0 +1,106 @@
+package db
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+)
+
+// UpdatePriority sets issues.priority to the new value and emits the matching
+// priority_set / priority_cleared event. newPriority == nil means clear. No-op
+// when the new value matches the current value (returns nil event,
+// changed=false).
+//
+// Event payloads:
+//   - issue.priority_set:     {"priority": <new>, "old_priority": <old>}
+//     where old_priority is omitted when the prior value was nil.
+//   - issue.priority_cleared: {"old_priority": <old>}
+//     emitted only when there was a prior value to clear; clearing an
+//     already-null priority is a no-op (changed=false, no event).
+func (d *DB) UpdatePriority(ctx context.Context, issueID int64, newPriority *int64, actor string) (Issue, *Event, bool, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	if priorityEqual(issue.Priority, newPriority) {
+		return issue, nil, false, tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE issues
+		 SET priority   = ?,
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE id = ?`, newPriority, issueID); err != nil {
+		return Issue{}, nil, false, fmt.Errorf("update priority: %w", err)
+	}
+
+	eventType, payload, err := priorityEventPayload(issue.Priority, newPriority)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
+		ProjectID:       issue.ProjectID,
+		ProjectIdentity: projectIdentity,
+		IssueID:         &issue.ID,
+		IssueNumber:     &issue.Number,
+		Type:            eventType,
+		Actor:           actor,
+		Payload:         payload,
+	})
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Issue{}, nil, false, err
+	}
+	updated, err := d.IssueByID(ctx, issueID)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	return updated, &evt, true, nil
+}
+
+func priorityEqual(a, b *int64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+// priorityEventPayload returns the event type and JSON payload for a
+// priority transition from old to new. old==new is rejected as a programming
+// error because UpdatePriority short-circuits no-ops before reaching here.
+func priorityEventPayload(old, newPrio *int64) (string, string, error) {
+	type setPayload struct {
+		Priority    int64  `json:"priority"`
+		OldPriority *int64 `json:"old_priority,omitempty"`
+	}
+	type clearedPayload struct {
+		OldPriority int64 `json:"old_priority"`
+	}
+	if newPrio != nil {
+		bs, err := json.Marshal(setPayload{Priority: *newPrio, OldPriority: old})
+		if err != nil {
+			return "", "", fmt.Errorf("marshal priority_set payload: %w", err)
+		}
+		return "issue.priority_set", string(bs), nil
+	}
+	// Clearing: old must be non-nil (priorityEqual short-circuits two nils).
+	if old == nil {
+		return "", "", fmt.Errorf("priorityEventPayload: cannot clear a nil priority")
+	}
+	bs, err := json.Marshal(clearedPayload{OldPriority: *old})
+	if err != nil {
+		return "", "", fmt.Errorf("marshal priority_cleared payload: %w", err)
+	}
+	return "issue.priority_cleared", string(bs), nil
+}

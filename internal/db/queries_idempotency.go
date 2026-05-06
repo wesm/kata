@@ -37,7 +37,7 @@ const sqliteTimeFormat = "2006-01-02T15:04:05.000Z"
 // `[{"type":"…","other_number":N},…]`.
 //
 // Label-charset assumption: labels are constrained at the API layer to
-// `[a-z0-9._:-]` (see the labels CHECK constraint in 0001_init.sql), so the `,`
+// `[a-z0-9._:-]` (see the labels CHECK constraint in schema.sql), so the `,`
 // separator can never collide with a label byte. Bypassing API validation
 // before calling Fingerprint may break this contract.
 func Fingerprint(title, body string, owner *string, labels []string, links []InitialLink) string {

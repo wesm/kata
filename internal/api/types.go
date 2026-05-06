@@ -221,6 +221,7 @@ type CreateIssueRequest struct {
 		Title    string                  `json:"title" required:"true"`
 		Body     string                  `json:"body,omitempty"`
 		Owner    *string                 `json:"owner,omitempty"`
+		Priority *int64                  `json:"priority,omitempty"`
 		Labels   []string                `json:"labels,omitempty"`
 		Links    []CreateInitialLinkBody `json:"links,omitempty"`
 		ForceNew bool                    `json:"force_new,omitempty"`
@@ -490,6 +491,20 @@ type AssignRequest struct {
 	}
 }
 
+// PriorityRequest is POST /api/v1/projects/{id}/issues/{number}/actions/priority.
+// Priority is the new value 0..4 (0=highest, 4=lowest); omitting the field or
+// passing null clears the issue's priority. The handler emits
+// issue.priority_set or issue.priority_cleared depending on the transition,
+// or no event when the new value matches the current one.
+type PriorityRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Number    int64 `path:"number" required:"true"`
+	Body      struct {
+		Actor    string `json:"actor" required:"true"`
+		Priority *int64 `json:"priority,omitempty"`
+	}
+}
+
 // UnassignRequest is POST /api/v1/projects/{id}/issues/{number}/actions/unassign.
 // Same shape as AssignRequest minus owner.
 type UnassignRequest struct {
@@ -577,21 +592,23 @@ type DigestProjectRequest struct {
 // digest understands. Categories that do not apply to a window are zero, not
 // omitted, so renderers can rely on the field set.
 type DigestTotals struct {
-	Created    int `json:"created"`
-	Closed     int `json:"closed"`
-	Reopened   int `json:"reopened"`
-	Commented  int `json:"commented"`
-	Edited     int `json:"edited"`
-	Assigned   int `json:"assigned"`
-	Unassigned int `json:"unassigned"`
-	Labeled    int `json:"labeled"`
-	Unlabeled  int `json:"unlabeled"`
-	Linked     int `json:"linked"`
-	Unlinked   int `json:"unlinked"`
-	Unblocked  int `json:"unblocked"`
-	Deleted    int `json:"deleted"`
-	Restored   int `json:"restored"`
-	Other      int `json:"other"`
+	Created         int `json:"created"`
+	Closed          int `json:"closed"`
+	Reopened        int `json:"reopened"`
+	Commented       int `json:"commented"`
+	Edited          int `json:"edited"`
+	Assigned        int `json:"assigned"`
+	Unassigned      int `json:"unassigned"`
+	PrioritySet     int `json:"priority_set"`
+	PriorityCleared int `json:"priority_cleared"`
+	Labeled         int `json:"labeled"`
+	Unlabeled       int `json:"unlabeled"`
+	Linked          int `json:"linked"`
+	Unlinked        int `json:"unlinked"`
+	Unblocked       int `json:"unblocked"`
+	Deleted         int `json:"deleted"`
+	Restored        int `json:"restored"`
+	Other           int `json:"other"`
 }
 
 // DigestIssueActions is the per-issue summary inside one actor's section.

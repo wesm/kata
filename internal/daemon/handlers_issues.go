@@ -54,12 +54,16 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			}
 		}
 
+		if err := validatePriorityRange(in.Body.Priority); err != nil {
+			return nil, err
+		}
 		issue, evt, err := cfg.DB.CreateIssue(ctx, db.CreateIssueParams{
 			ProjectID:              in.ProjectID,
 			Title:                  in.Body.Title,
 			Body:                   in.Body.Body,
 			Author:                 in.Body.Actor,
 			Owner:                  in.Body.Owner,
+			Priority:               in.Body.Priority,
 			Labels:                 in.Body.Labels,
 			Links:                  links,
 			IdempotencyKey:         in.IdempotencyKey,

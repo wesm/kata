@@ -37,14 +37,16 @@ type digestBody struct {
 	EventCount int   `json:"event_count"`
 	ProjectID  int64 `json:"project_id"`
 	Totals     struct {
-		Created   int `json:"created"`
-		Closed    int `json:"closed"`
-		Commented int `json:"commented"`
-		Labeled   int `json:"labeled"`
-		Assigned  int `json:"assigned"`
-		Linked    int `json:"linked"`
-		Unlinked  int `json:"unlinked"`
-		Unblocked int `json:"unblocked"`
+		Created         int `json:"created"`
+		Closed          int `json:"closed"`
+		Commented       int `json:"commented"`
+		Labeled         int `json:"labeled"`
+		Assigned        int `json:"assigned"`
+		PrioritySet     int `json:"priority_set"`
+		PriorityCleared int `json:"priority_cleared"`
+		Linked          int `json:"linked"`
+		Unlinked        int `json:"unlinked"`
+		Unblocked       int `json:"unblocked"`
 	} `json:"totals"`
 	Actors []digestActor `json:"actors"`
 }
@@ -214,6 +216,31 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 	assert.Contains(t, actions, "labeled:bug")
 	assert.Contains(t, actions, "assigned:bob")
 	assert.Contains(t, actions, "blocks:#"+strconv.FormatInt(target, 10))
+}
+
+// TestDigest_PriorityEvents exercises the priority_set / priority_cleared
+// digest pipeline end-to-end: counts, totals, and per-issue action tokens.
+// The set→clear sequence asserts both new event types are classified by
+// applyEvent rather than falling into the Other bucket.
+func TestDigest_PriorityEvents(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	n := createIssueAs(t, env, pid, "alice", "p3 issue")
+
+	prio := int64(0)
+	resp, _ := postPriority(t, env, pid, n, "alice", &prio)
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = postPriority(t, env, pid, n, "alice", nil) // clear
+	require.Equal(t, 200, resp.StatusCode)
+
+	body := fetchDigest(t, env, pid, rfc3339Offset(-time.Hour), rfc3339Offset(time.Hour))
+	assert.Equal(t, 1, body.Totals.PrioritySet, "priority_set total")
+	assert.Equal(t, 1, body.Totals.PriorityCleared, "priority_cleared total")
+
+	actions := body.actionsFor("alice", n)
+	require.NotNil(t, actions)
+	assert.Contains(t, actions, "priority:0", "set token surfaces the new priority")
+	assert.Contains(t, actions, "priority_cleared", "clear token is plain")
 }
 
 // TestDigest_RejectsBadSince validates the since parameter.
