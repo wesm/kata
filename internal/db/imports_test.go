@@ -1,0 +1,258 @@
+package db_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/db"
+)
+
+func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	t1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC)
+
+	res, events, err := d.ImportBatch(ctx, db.ImportBatchParams{
+		ProjectID: p.ID,
+		Source:    "beads",
+		Actor:     "importer",
+		Items: []db.ImportItem{
+			{ExternalID: "blocker", Title: "Blocker", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1, Labels: []string{"source:beads", "beads-id:blocker"}, Links: []db.ImportLink{{Type: "blocks", TargetExternalID: "blocked"}}},
+			{ExternalID: "blocked", Title: "Blocked", Body: "body", Author: "bob", Status: "closed", ClosedReason: strPtr("done"), CreatedAt: t1, UpdatedAt: t2, ClosedAt: &t2, Labels: []string{"source:beads", "beads-id:blocked"}, Comments: []db.ImportComment{{ExternalID: "c1", Author: "bob", Body: "note", CreatedAt: t2}}},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Created)
+	assert.Equal(t, 1, res.Comments)
+	assert.Equal(t, 1, res.Links)
+	assert.NotEmpty(t, events)
+
+	blockedMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "blocked")
+	require.NoError(t, err)
+	require.NotNil(t, blockedMap.IssueID)
+	blocked, err := d.IssueByID(ctx, *blockedMap.IssueID)
+	require.NoError(t, err)
+	assert.Equal(t, "closed", blocked.Status)
+	assert.True(t, blocked.CreatedAt.Equal(t1))
+	assert.True(t, blocked.UpdatedAt.Equal(t2))
+	require.NotNil(t, blocked.ClosedAt)
+	assert.True(t, blocked.ClosedAt.Equal(t2))
+
+	comments := commentsForIssue(t, ctx, d, blocked.ID)
+	require.Len(t, comments, 1)
+	assert.Equal(t, "note", comments[0].Body)
+	assert.True(t, comments[0].CreatedAt.Equal(t2))
+	commentMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "comment", "c1")
+	require.NoError(t, err)
+	require.NotNil(t, commentMap.CommentID)
+	assert.Equal(t, comments[0].ID, *commentMap.CommentID)
+
+	labels := labelsForIssue(t, ctx, d, blocked.ID)
+	require.Len(t, labels, 2)
+	assert.Equal(t, "beads-id:blocked", labels[0].Label)
+	assert.True(t, labels[0].CreatedAt.Equal(t1))
+	assert.Equal(t, "source:beads", labels[1].Label)
+	assert.True(t, labels[1].CreatedAt.Equal(t1))
+
+	blockerMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "blocker")
+	require.NoError(t, err)
+	require.NotNil(t, blockerMap.IssueID)
+	links := linksForIssue(t, ctx, d, *blockerMap.IssueID)
+	require.Len(t, links, 1)
+	assert.Equal(t, *blockerMap.IssueID, links[0].FromIssueID)
+	assert.Equal(t, blocked.ID, links[0].ToIssueID)
+	assert.Equal(t, "blocks", links[0].Type)
+	assert.True(t, links[0].CreatedAt.Equal(t1))
+	linkMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "link", "blocker:blocks:blocked")
+	require.NoError(t, err)
+	require.NotNil(t, linkMap.LinkID)
+	assert.Equal(t, links[0].ID, *linkMap.LinkID)
+}
+
+func TestImportBatch_ReimportSourceNewerUpdatesFieldsAndTimestamp(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	older := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "old", Body: "old body", Author: "alice", Status: "open", CreatedAt: older, UpdatedAt: older}}})
+	require.NoError(t, err)
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "new", Body: "new body", Author: "alice", Status: "closed", ClosedReason: strPtr("done"), CreatedAt: older, UpdatedAt: newer, ClosedAt: &newer}}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Updated)
+
+	m, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "a")
+	require.NoError(t, err)
+	issue, err := d.IssueByID(ctx, *m.IssueID)
+	require.NoError(t, err)
+	assert.Equal(t, "new", issue.Title)
+	assert.Equal(t, "new body", issue.Body)
+	assert.Equal(t, "closed", issue.Status)
+	require.NotNil(t, issue.ClosedAt)
+	assert.True(t, issue.ClosedAt.Equal(newer))
+	assert.True(t, issue.UpdatedAt.Equal(newer))
+}
+
+func TestImportBatch_LocalNewerIssueUnchangedButMissingCommentsMerge(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	older := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "issue", Body: "body", Author: "alice", Status: "open", CreatedAt: older, UpdatedAt: older}}})
+	require.NoError(t, err)
+	m, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "a")
+	require.NoError(t, err)
+	localTitle := "local wins"
+	_, _, _, err = d.EditIssue(ctx, db.EditIssueParams{IssueID: *m.IssueID, Title: &localTitle, Actor: "local"})
+	require.NoError(t, err)
+
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "stale", Body: "stale body", Author: "alice", Status: "open", CreatedAt: older, UpdatedAt: older, Comments: []db.ImportComment{{ExternalID: "c1", Author: "alice", Body: "missing", CreatedAt: older}}}}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Unchanged)
+	assert.Equal(t, 1, res.Comments)
+
+	after, err := d.IssueByID(ctx, *m.IssueID)
+	require.NoError(t, err)
+	assert.Equal(t, "local wins", after.Title)
+	comments := commentsForIssue(t, ctx, d, *m.IssueID)
+	require.Len(t, comments, 1)
+	assert.Equal(t, "missing", comments[0].Body)
+
+	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "stale", Body: "stale body", Author: "alice", Status: "open", CreatedAt: older, UpdatedAt: older, Comments: []db.ImportComment{{ExternalID: "c1", Author: "alice", Body: "missing", CreatedAt: older}}}}})
+	require.NoError(t, err)
+	comments = commentsForIssue(t, ctx, d, *m.IssueID)
+	assert.Len(t, comments, 1)
+}
+
+func TestImportBatch_SourceOwnedLabelsLinksReconcileLocalRemain(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	t1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "a", Title: "A", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1, Labels: []string{"source:beads", "old"}, Links: []db.ImportLink{{Type: "blocks", TargetExternalID: "b"}}},
+		{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		{ExternalID: "c", Title: "C", Body: "body", Author: "cara", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+	aMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "a")
+	require.NoError(t, err)
+	bMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "b")
+	require.NoError(t, err)
+	cMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "c")
+	require.NoError(t, err)
+	_, err = d.AddLabel(ctx, *aMap.IssueID, "local", "local")
+	require.NoError(t, err)
+	localLink := makeLink(ctx, t, d, p.ID, *aMap.IssueID, *cMap.IssueID, "related")
+
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "a", Title: "A2", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t2, Labels: []string{"source:beads", "new"}, Links: []db.ImportLink{{Type: "blocks", TargetExternalID: "c"}}},
+		{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		{ExternalID: "c", Title: "C", Body: "body", Author: "cara", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Updated)
+
+	labels := labelsForIssue(t, ctx, d, *aMap.IssueID)
+	assert.Equal(t, []string{"local", "new", "source:beads"}, labelNames(labels))
+	_, err = d.ImportMappingBySource(ctx, p.ID, "beads", "label", "a:label:old")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+
+	links := linksForIssue(t, ctx, d, *aMap.IssueID)
+	require.Len(t, links, 2)
+	assert.Contains(t, linkTargets(links), *cMap.IssueID)
+	assert.NotContains(t, linkTargets(links), *bMap.IssueID)
+	_, err = d.LinkByID(ctx, localLink.ID)
+	assert.NoError(t, err)
+	_, err = d.ImportMappingBySource(ctx, p.ID, "beads", "link", "a:blocks:b")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestImportBatch_MissingLinkTargetRejectsTransaction(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	ts := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Body: "body", Author: "alice", Status: "open", CreatedAt: ts, UpdatedAt: ts, Links: []db.ImportLink{{Type: "blocks", TargetExternalID: "missing"}}}}})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, db.ErrNotFound))
+	_, err = d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "a")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+	assertRowCount(ctx, t, d, 0, "issue insert rolled back", `SELECT COUNT(*) FROM issues WHERE project_id = ?`, p.ID)
+}
+
+func TestImportBatch_ValidationErrors(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	ts := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "", Actor: "importer"})
+	assert.ErrorIs(t, err, db.ErrImportValidation)
+	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "open", CreatedAt: ts, UpdatedAt: ts}}})
+	assert.ErrorIs(t, err, db.ErrImportValidation)
+	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "bad", CreatedAt: ts, UpdatedAt: ts}}})
+	assert.ErrorIs(t, err, db.ErrImportValidation)
+	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "open", CreatedAt: ts, UpdatedAt: ts, Links: []db.ImportLink{{Type: "bad", TargetExternalID: "b"}}}}})
+	assert.ErrorIs(t, err, db.ErrImportValidation)
+}
+
+func commentsForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) []db.Comment {
+	t.Helper()
+	rows, err := d.QueryContext(ctx, `SELECT id, issue_id, author, body, created_at FROM comments WHERE issue_id = ? ORDER BY id ASC`, issueID)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var out []db.Comment
+	for rows.Next() {
+		var c db.Comment
+		require.NoError(t, rows.Scan(&c.ID, &c.IssueID, &c.Author, &c.Body, &c.CreatedAt))
+		out = append(out, c)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+func labelsForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) []db.IssueLabel {
+	t.Helper()
+	rows, err := d.QueryContext(ctx, `SELECT issue_id, label, author, created_at FROM issue_labels WHERE issue_id = ? ORDER BY label ASC`, issueID)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var out []db.IssueLabel
+	for rows.Next() {
+		var l db.IssueLabel
+		require.NoError(t, rows.Scan(&l.IssueID, &l.Label, &l.Author, &l.CreatedAt))
+		out = append(out, l)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+func linksForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) []db.Link {
+	t.Helper()
+	rows, err := d.QueryContext(ctx, `SELECT id, project_id, from_issue_id, from_issue_uid, to_issue_id, to_issue_uid, type, author, created_at FROM links WHERE from_issue_id = ? OR to_issue_id = ? ORDER BY id ASC`, issueID, issueID)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var out []db.Link
+	for rows.Next() {
+		var l db.Link
+		require.NoError(t, rows.Scan(&l.ID, &l.ProjectID, &l.FromIssueID, &l.FromIssueUID, &l.ToIssueID, &l.ToIssueUID, &l.Type, &l.Author, &l.CreatedAt))
+		out = append(out, l)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+func labelNames(labels []db.IssueLabel) []string {
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, l.Label)
+	}
+	return out
+}
+
+func linkTargets(links []db.Link) []int64 {
+	out := make([]int64, 0, len(links))
+	for _, l := range links {
+		out = append(out, l.ToIssueID)
+	}
+	return out
+}
