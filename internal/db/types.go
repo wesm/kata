@@ -38,7 +38,8 @@ type ProjectAlias struct {
 	LastSeenAt    time.Time `json:"last_seen_at"`
 }
 
-// Issue mirrors a row in issues.
+// Issue mirrors a row in issues. Priority is 0..4 with 0 = highest priority
+// and 4 = lowest; nil means no priority is set.
 type Issue struct {
 	ID           int64      `json:"id"`
 	UID          string     `json:"uid"`
@@ -50,6 +51,7 @@ type Issue struct {
 	Status       string     `json:"status"`
 	ClosedReason *string    `json:"closed_reason,omitempty"`
 	Owner        *string    `json:"owner,omitempty"`
+	Priority     *int64     `json:"priority,omitempty"`
 	Author       string     `json:"author"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`

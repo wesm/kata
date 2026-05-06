@@ -228,6 +228,49 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 2 {
 		return exportIssuesV1(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 6 {
+		return exportIssuesV2(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID           int64   `json:"id"`
+		UID          string  `json:"uid"`
+		ProjectID    int64   `json:"project_id"`
+		Number       int64   `json:"number"`
+		Title        string  `json:"title"`
+		Body         string  `json:"body"`
+		Status       string  `json:"status"`
+		ClosedReason *string `json:"closed_reason"`
+		Owner        *string `json:"owner"`
+		Priority     *int64  `json:"priority,omitempty"`
+		Author       string  `json:"author"`
+		CreatedAt    string  `json:"created_at"`
+		UpdatedAt    string  `json:"updated_at"`
+		ClosedAt     *string `json:"closed_at"`
+		DeletedAt    *string `json:"deleted_at"`
+	}
+	query := `SELECT id, uid, project_id, number, title, body, status, closed_reason, owner, priority, author,
+	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
+	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT)
+	          FROM issues`
+	where, args := issueExportWhere("issues", opts)
+	query += where + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export issues: %w", err)
+	}
+	return scanRecords(rows, KindIssue, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.Number, &rec.Title, &rec.Body,
+			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt)
+		return rec, err
+	})
+}
+
+// exportIssuesV2 emits the schema_version 2..5 issue projection (no priority
+// column). Cutover from a pre-priority source DB lands here; targets at v6+
+// silently default priority to NULL on import.
+func exportIssuesV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID           int64   `json:"id"`
 		UID          string  `json:"uid"`

@@ -29,7 +29,7 @@ func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
 }
 
 func TestOpen_RecordsCurrentSchemaVersion(t *testing.T) {
-	assert.Equal(t, 5, db.CurrentSchemaVersion())
+	assert.Equal(t, 6, db.CurrentSchemaVersion())
 	d := openTestDB(t)
 	assertSchemaVersion(t, d, db.CurrentSchemaVersion())
 }

@@ -39,6 +39,7 @@ CREATE TABLE issues (
   status        TEXT NOT NULL CHECK(status IN ('open','closed')) DEFAULT 'open',
   closed_reason TEXT CHECK(closed_reason IN ('done','wontfix','duplicate')),
   owner         TEXT,
+  priority      INTEGER,                       -- 0 = highest, 4 = lowest; NULL = unset
   author        TEXT NOT NULL,
   created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -48,7 +49,8 @@ CREATE TABLE issues (
   CHECK (length(uid) = 26),
   CHECK (length(trim(title))  > 0),
   CHECK (length(trim(author)) > 0),
-  CHECK (status = 'closed' OR (closed_at IS NULL AND closed_reason IS NULL))
+  CHECK (status = 'closed' OR (closed_at IS NULL AND closed_reason IS NULL)),
+  CHECK (priority IS NULL OR priority BETWEEN 0 AND 4)
 );
 CREATE INDEX idx_issues_project_status_updated
   ON issues(project_id, status, updated_at DESC) WHERE deleted_at IS NULL;

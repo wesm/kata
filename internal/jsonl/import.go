@@ -172,11 +172,11 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO issues(id, uid, project_id, number, title, body, status, closed_reason, owner, author,
+			`INSERT INTO issues(id, uid, project_id, number, title, body, status, closed_reason, owner, priority, author,
 			                    created_at, updated_at, closed_at, deleted_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, rec.UID, rec.ProjectID, rec.Number, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
-			rec.Owner, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
+			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindComment:
 		var rec commentRecord
@@ -474,6 +474,7 @@ type issueRecord struct {
 	Status       string  `json:"status"`
 	ClosedReason *string `json:"closed_reason"`
 	Owner        *string `json:"owner"`
+	Priority     *int64  `json:"priority,omitempty"`
 	Author       string  `json:"author"`
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`

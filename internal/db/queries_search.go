@@ -104,7 +104,7 @@ func (d *DB) searchFTS(ctx context.Context, r searchFTSReq) ([]SearchCandidate, 
 	// title/body/comments column matches the per-column phrase, 0 otherwise.
 	query := fmt.Sprintf(`
 		SELECT i.id, i.project_id, i.number, i.title, i.body, i.status,
-		       i.closed_reason, i.owner, i.author, i.created_at, i.updated_at,
+		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at,
 		       bm25(issues_fts),
 		       (issues_fts.rowid IN (SELECT rowid FROM issues_fts WHERE title    MATCH ?)) AS in_title,
@@ -136,7 +136,7 @@ func (d *DB) searchFTS(ctx context.Context, r searchFTSReq) ([]SearchCandidate, 
 			inTitle, inBody, inComments bool
 		)
 		if err := rows.Scan(&i.ID, &i.ProjectID, &i.Number, &i.Title, &i.Body, &i.Status,
-			&i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt,
+			&i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt,
 			&i.ClosedAt, &i.DeletedAt,
 			&rawScore, &inTitle, &inBody, &inComments); err != nil {
 			return nil, fmt.Errorf("scan search row: %w", err)

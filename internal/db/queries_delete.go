@@ -389,7 +389,7 @@ func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) 
 func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64) (Issue, string, error) {
 	const q = `
 		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
-		       i.closed_reason, i.owner, i.author, i.created_at, i.updated_at,
+		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at, p.identity
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
@@ -400,7 +400,7 @@ func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64
 	)
 	err := r.QueryRowContext(ctx, q, issueID).
 		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status,
-			&i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt,
+			&i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt,
 			&i.ClosedAt, &i.DeletedAt, &identity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound

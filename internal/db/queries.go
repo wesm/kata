@@ -414,9 +414,10 @@ type CreateIssueParams struct {
 	// Optional initial state. Plan 2 fields. CreateIssue inserts label/link
 	// rows and applies the owner in the same TX, then folds them into the
 	// issue.created event payload (no separate labeled/linked/assigned events).
-	Labels []string
-	Links  []InitialLink
-	Owner  *string
+	Labels   []string
+	Links    []InitialLink
+	Owner    *string
+	Priority *int64
 
 	// Optional. When non-empty, both fields are folded into the issue.created
 	// event payload so future LookupIdempotency calls can find the row via
@@ -491,11 +492,11 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
 	}
 
-	// Insert issue + optional owner column in one statement.
+	// Insert issue + optional owner/priority columns in one statement.
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO issues(uid, project_id, number, title, body, author, owner)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, nextNum, p.Title, p.Body, p.Author, owner)
+		`INSERT INTO issues(uid, project_id, number, title, body, author, owner, priority)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		issueUID, p.ProjectID, nextNum, p.Title, p.Body, p.Author, owner, p.Priority)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -546,7 +547,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	payload := buildCreatedPayload(labels, links, owner, p.IdempotencyKey, p.IdempotencyFingerprint)
+	payload := buildCreatedPayload(labels, links, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
 
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:       p.ProjectID,
@@ -577,7 +578,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 // buildCreatedPayload returns the issue.created event payload as JSON. Empty
 // initial state → "{}". Otherwise emits keys for whichever components are set,
 // preserving determinism (sorted labels) so events are byte-stable.
-func buildCreatedPayload(labels []string, links []InitialLink, owner *string, idempotencyKey, idempotencyFingerprint string) string {
+func buildCreatedPayload(labels []string, links []InitialLink, owner *string, priority *int64, idempotencyKey, idempotencyFingerprint string) string {
 	type linkOut struct {
 		Type     string `json:"type"`
 		ToNumber int64  `json:"to_number"`
@@ -586,6 +587,7 @@ func buildCreatedPayload(labels []string, links []InitialLink, owner *string, id
 		Labels                 []string  `json:"labels,omitempty"`
 		Links                  []linkOut `json:"links,omitempty"`
 		Owner                  string    `json:"owner,omitempty"`
+		Priority               *int64    `json:"priority,omitempty"`
 		IdempotencyKey         string    `json:"idempotency_key,omitempty"`
 		IdempotencyFingerprint string    `json:"idempotency_fingerprint,omitempty"`
 	}
@@ -605,6 +607,7 @@ func buildCreatedPayload(labels []string, links []InitialLink, owner *string, id
 	if owner != nil {
 		o.Owner = *owner
 	}
+	o.Priority = priority
 	o.IdempotencyKey = idempotencyKey
 	o.IdempotencyFingerprint = idempotencyFingerprint
 	bs, err := json.Marshal(o)
@@ -1023,7 +1026,7 @@ func joinComma(parts []string) string {
 func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
 	const q = `
 		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
-		       i.closed_reason, i.owner, i.author, i.created_at, i.updated_at,
+		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at, p.identity
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
@@ -1031,7 +1034,7 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	var i Issue
 	var identity string
 	err := tx.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &identity)
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &identity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound
 	}
@@ -1041,11 +1044,11 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	return i, identity, nil
 }
 
-const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status, i.closed_reason, i.owner, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
+const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
 
 func scanIssue(r rowScanner) (Issue, error) {
 	var i Issue
-	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
+	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, ErrNotFound
 	}
