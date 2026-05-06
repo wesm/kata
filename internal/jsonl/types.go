@@ -18,6 +18,7 @@ const (
 	KindComment        Kind = "comment"
 	KindIssueLabel     Kind = "issue_label"
 	KindLink           Kind = "link"
+	KindImportMapping  Kind = "import_mapping"
 	KindEvent          Kind = "event"
 	KindPurgeLog       Kind = "purge_log"
 	KindSQLiteSequence Kind = "sqlite_sequence"
@@ -38,9 +39,10 @@ var kindOrder = map[Kind]int{
 	KindComment:        4,
 	KindIssueLabel:     5,
 	KindLink:           6,
-	KindEvent:          7,
-	KindPurgeLog:       8,
-	KindSQLiteSequence: 9,
+	KindImportMapping:  7,
+	KindEvent:          8,
+	KindPurgeLog:       9,
+	KindSQLiteSequence: 10,
 }
 
 // Envelope is one NDJSON record.

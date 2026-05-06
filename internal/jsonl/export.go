@@ -53,6 +53,11 @@ func Export(ctx context.Context, d *db.DB, w io.Writer, opts ExportOptions) erro
 	if err := exportLinks(ctx, d, enc, opts, sourceSchemaVersion); err != nil {
 		return err
 	}
+	if sourceSchemaVersion >= 5 {
+		if err := exportImportMappings(ctx, d, enc, opts); err != nil {
+			return err
+		}
+	}
 	if err := exportEvents(ctx, d, enc, opts, sourceSchemaVersion); err != nil {
 		return err
 	}
@@ -400,6 +405,41 @@ func exportLinksV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptio
 		var rec record
 		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.FromIssueID, &rec.ToIssueID,
 			&rec.Type, &rec.Author, &rec.CreatedAt)
+		return rec, err
+	})
+}
+
+func exportImportMappings(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+	type record struct {
+		ID              int64   `json:"id"`
+		Source          string  `json:"source"`
+		ExternalID      string  `json:"external_id"`
+		ObjectType      string  `json:"object_type"`
+		ProjectID       int64   `json:"project_id"`
+		IssueID         *int64  `json:"issue_id,omitempty"`
+		CommentID       *int64  `json:"comment_id,omitempty"`
+		LinkID          *int64  `json:"link_id,omitempty"`
+		Label           *string `json:"label,omitempty"`
+		SourceUpdatedAt *string `json:"source_updated_at,omitempty"`
+		ImportedAt      string  `json:"imported_at"`
+	}
+	query := `SELECT id, source, external_id, object_type, project_id, issue_id, comment_id, link_id, label,
+	                 CAST(source_updated_at AS TEXT), CAST(imported_at AS TEXT)
+	          FROM import_mappings`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE project_id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export import_mappings: %w", err)
+	}
+	return scanRecords(rows, KindImportMapping, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.Source, &rec.ExternalID, &rec.ObjectType, &rec.ProjectID,
+			&rec.IssueID, &rec.CommentID, &rec.LinkID, &rec.Label, &rec.SourceUpdatedAt, &rec.ImportedAt)
 		return rec, err
 	})
 }
