@@ -3,13 +3,83 @@ package main
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/testenv"
 )
+
+func TestImportBeadsRejectsInputAndTargetFlags(t *testing.T) {
+	setupKataEnv(t)
+
+	_, err := runCmdOutput(t, nil, "import", "--format", "beads", "--input", "beads.jsonl")
+	ce := requireCLIError(t, err, ExitValidation)
+	assert.Contains(t, ce.Message, "--input")
+
+	_, err = runCmdOutput(t, nil, "import", "--format", "beads", "--target", "target.db")
+	ce = requireCLIError(t, err, ExitValidation)
+	assert.Contains(t, ce.Message, "--target")
+}
+
+func TestImportRejectsUnsupportedFormat(t *testing.T) {
+	setupKataEnv(t)
+
+	_, err := runCmdOutput(t, nil, "import", "--format", "bogus")
+	ce := requireCLIError(t, err, ExitValidation)
+	assert.Contains(t, ce.Message, "unsupported import format")
+}
+
+func TestImportBeadsMissingProjectUnattended(t *testing.T) {
+	resetFlags(t)
+	env := testenv.New(t)
+	dir := t.TempDir()
+
+	_, err := runCLICapture(t, env, dir, "import", "--format", "beads", "--json")
+	ce := requireCLIError(t, err, ExitValidation)
+	assert.Contains(t, ce.Message, "run kata init first")
+}
+
+func TestImportBeadsFromLiveBD(t *testing.T) {
+	env, dir, _ := setupCLIWorkspace(t)
+	installFakeBD(t)
+
+	out, err := runCLICapture(t, env, dir, "import", "--format", "beads", "--as", "importer")
+	require.NoError(t, err)
+	assert.Contains(t, out, "imported beads: created 1, updated 0, unchanged 0, comments 1, links 0")
+
+	show := runCLI(t, env, dir, "show", "1")
+	assert.Contains(t, show, "Imported from Beads")
+	assert.Contains(t, show, "beads_id: b1")
+	assert.Contains(t, show, "Comment body from beads")
+}
+
+func installFakeBD(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	path := filepath.Join(bin, "bd")
+	script := `#!/bin/sh
+set -eu
+if [ "$1" = "export" ] && [ "$2" = "--no-memories" ]; then
+cat <<'JSONL'
+{"id":"b1","title":"Live bead","description":"Body from beads","status":"open","priority":1,"issue_type":"task","owner":"alice","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","labels":["Needs Review"],"comment_count":1}
+JSONL
+elif [ "$1" = "comments" ] && [ "$2" = "b1" ] && [ "$3" = "--json" ]; then
+cat <<'JSON'
+[{"id":"c1","issue_id":"b1","author":"Bob","text":"Comment body from beads","created_at":"2026-05-01T11:00:00Z"}]
+JSON
+else
+	echo "unexpected bd args: $*" >&2
+	exit 2
+fi
+`
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
 func TestParseBeadsExportAndBuildImportRequest(t *testing.T) {
 	export := strings.NewReader(`{"id":"b1","title":"Blocker","description":"blocker body","status":"open","priority":1,"issue_type":"task","owner":"alice","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","labels":["Needs Review","bad label!","` + strings.Repeat("Very Long Label ", 8) + `"],"dependency_count":0,"dependent_count":1,"comment_count":0}

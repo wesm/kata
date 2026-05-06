@@ -3,14 +3,21 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -92,6 +99,137 @@ var (
 	invalidLabelChar = regexp.MustCompile(`[^a-z0-9._:-]+`)
 	repeatedDash     = regexp.MustCompile(`-+`)
 )
+
+type beadsImportSummary struct {
+	Source    string `json:"source"`
+	Created   int    `json:"created"`
+	Updated   int    `json:"updated"`
+	Unchanged int    `json:"unchanged"`
+	Comments  int    `json:"comments"`
+	Links     int    `json:"links"`
+}
+
+func runBeadsImport(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	workspace, err := resolveStartPath(flags.Workspace)
+	if err != nil {
+		return err
+	}
+	baseURL, err := ensureDaemon(ctx)
+	if err != nil {
+		return err
+	}
+	projectID, err := resolveProjectID(ctx, baseURL, workspace)
+	if err != nil {
+		return beadsProjectResolutionError(cmd, err)
+	}
+
+	actor, _ := resolveActor(flags.As, nil)
+	req, err := collectBeadsImportRequest(ctx, workspace, actor)
+	if err != nil {
+		return err
+	}
+
+	client, err := httpClientFor(ctx, baseURL)
+	if err != nil {
+		return err
+	}
+	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/projects/%d/imports", baseURL, projectID), req)
+	if err != nil {
+		return err
+	}
+	if status >= 400 {
+		return apiErrFromBody(status, bs)
+	}
+	return printBeadsImportResult(cmd, bs)
+}
+
+func collectBeadsImportRequest(ctx context.Context, workspace, actor string) (beadsImportRequest, error) {
+	bdPath, err := exec.LookPath("bd")
+	if err != nil {
+		return beadsImportRequest{}, &cliError{
+			Message:  "beads import requires bd on PATH",
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
+	exportData, err := runBD(ctx, workspace, bdPath, "export", "--no-memories")
+	if err != nil {
+		return beadsImportRequest{}, err
+	}
+	issues, err := parseBeadsExport(bytes.NewReader(exportData))
+	if err != nil {
+		return beadsImportRequest{}, err
+	}
+	comments := make(map[string][]beadsComment, len(issues))
+	for _, issue := range issues {
+		data, err := runBD(ctx, workspace, bdPath, "comments", issue.ID, "--json")
+		if err != nil {
+			return beadsImportRequest{}, err
+		}
+		parsed, err := parseBeadsCommentsJSON(bytes.NewReader(data))
+		if err != nil {
+			return beadsImportRequest{}, err
+		}
+		comments[issue.ID] = parsed
+	}
+	return buildBeadsImportRequest(bytes.NewReader(exportData), comments, actor)
+}
+
+func runBD(ctx context.Context, workspace, bdPath string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, bdPath, args...) //nolint:gosec // bd path comes from PATH lookup and args are fixed by kata.
+	cmd.Dir = workspace
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("bd %s: %s", strings.Join(args, " "), msg)
+	}
+	return out, nil
+}
+
+func beadsProjectResolutionError(cmd *cobra.Command, err error) error {
+	var ce *cliError
+	if errors.As(err, &ce) && ce.Code == "project_not_initialized" && isBeadsImportUnattended(cmd) {
+		return &cliError{Message: "run kata init first", Kind: kindValidation, ExitCode: ExitValidation}
+	}
+	return err
+}
+
+func isBeadsImportUnattended(cmd *cobra.Command) bool {
+	if flags.JSON || flags.Quiet {
+		return true
+	}
+	in, ok := cmd.InOrStdin().(*os.File)
+	if !ok || !isTTY(in) {
+		return true
+	}
+	out, ok := cmd.OutOrStdout().(*os.File)
+	return !ok || !isTTY(out)
+}
+
+func printBeadsImportResult(cmd *cobra.Command, bs []byte) error {
+	if flags.JSON {
+		_, err := cmd.OutOrStdout().Write(bs)
+		return err
+	}
+	if flags.Quiet {
+		return nil
+	}
+	var summary beadsImportSummary
+	if err := json.Unmarshal(bs, &summary); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(cmd.OutOrStdout(),
+		"imported beads: created %d, updated %d, unchanged %d, comments %d, links %d\n",
+		summary.Created, summary.Updated, summary.Unchanged, summary.Comments, summary.Links)
+	return err
+}
 
 func parseBeadsExport(r io.Reader) ([]beadsIssue, error) {
 	scanner := bufio.NewScanner(r)
