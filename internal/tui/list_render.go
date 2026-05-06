@@ -467,16 +467,13 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 }
 
 // listTableHeaders returns the column-header label slice for the
-// list table. Wide (default) mode renders the pri + owner columns;
-// narrow (M6 split-mode list pane) drops owner. The priority header
-// reads "pri" (not "prio") so the column fits in 4 cells without
-// truncation — keeps the wide column-sum at 60, leaving room for the
-// 20-cell title floor at the 80-col supported minimum.
+// list table. Wide (default) mode renders the prio + owner columns;
+// narrow (M6 split-mode list pane) drops owner.
 func listTableHeaders(narrow bool) []string {
 	if narrow {
-		return []string{"", "", "", "#", "pri", "status", "title", "kids", "updated"}
+		return []string{"", "", "", "#", "prio", "status", "title", "kids", "updated"}
 	}
-	return []string{"", "", "", "#", "pri", "status", "title", "kids", "owner", "updated"}
+	return []string{"", "", "", "#", "prio", "status", "title", "kids", "owner", "updated"}
 }
 
 // tableHeaderRow renders just the column-header line at the given
@@ -564,15 +561,21 @@ func (c listColWidths) byIndex(col int, narrow bool) int {
 // titles readable inside the 68-cell list pane.
 func listColumnWidths(termWidth int, narrow bool) listColWidths {
 	c := listColWidths{
-		cursor:   2,  // "▶" + padding
-		context:  2,  // "~" + padding
-		tree:     4,  // disclosure + shallow indent
-		num:      6,  // "#9999"
-		prio:     4,  // "pri" header / "P0" cell + padding
-		status:   10, // "[deleted]"
-		children: 8,  // "12/100"
+		cursor:  2, // "▶" + padding
+		context: 2, // "~" + padding
+		tree:    4, // disclosure + shallow indent
+		num:     6, // "#9999"
+		prio:    5, // "prio" header / "P0" cell + padding
+		// status width fits "[deleted]" (9 chars) plus PaddingRight(1).
+		status: 10,
+		// children width fits "99/999" (6 chars) plus PaddingRight(1).
+		children: 8,
 		owner:    14,
-		updated:  10, // "12w ago"
+		// updated width fits "99w ago" (7 chars max) plus PaddingRight(1).
+		// Trimmed from 10 → 9 so the wide column-sum stays at 60 with
+		// the 5-cell prio column, leaving room for the 20-cell title
+		// floor at the 80-col supported minimum (60 + 20 = 80).
+		updated: 9,
 	}
 	fixed := c.cursor + c.context + c.tree + c.num + c.prio + c.status + c.children + c.updated
 	if !narrow {

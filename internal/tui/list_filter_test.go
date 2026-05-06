@@ -20,6 +20,7 @@ type fakeListAPI struct {
 	createCalls        int
 	closeCalls         int
 	reopenCalls        int
+	setPriorityCalls   int
 	lastListProjectID  int64
 	lastListFilter     ListFilter
 	lastCreateProject  int64
@@ -30,16 +31,22 @@ type fakeListAPI struct {
 	lastReopenProject  int64
 	lastReopenNumber   int64
 	lastReopenActor    string
+	lastPriorityPID    int64
+	lastPriorityNumber int64
+	lastPriorityValue  *int64
+	lastPriorityActor  string
 	listIssuesResult   []Issue
 	listAllResult      []Issue
 	createResult       *MutationResp
 	closeResult        *MutationResp
 	reopenResult       *MutationResp
+	setPriorityResult  *MutationResp
 	listIssuesErr      error
 	listAllErr         error
 	createErr          error
 	closeErr           error
 	reopenErr          error
+	setPriorityErr     error
 }
 
 func (f *fakeListAPI) ListIssues(
@@ -86,6 +93,17 @@ func (f *fakeListAPI) Reopen(
 	f.lastReopenNumber = number
 	f.lastReopenActor = actor
 	return f.reopenResult, f.reopenErr
+}
+
+func (f *fakeListAPI) SetPriority(
+	_ context.Context, projectID, number int64, priority *int64, actor string,
+) (*MutationResp, error) {
+	f.setPriorityCalls++
+	f.lastPriorityPID = projectID
+	f.lastPriorityNumber = number
+	f.lastPriorityValue = priority
+	f.lastPriorityActor = actor
+	return f.setPriorityResult, f.setPriorityErr
 }
 
 // runeKey synthesizes a tea.KeyMsg for a single rune so tests don't
@@ -849,6 +867,119 @@ func TestList_Reopen_DispatchesAPI(t *testing.T) {
 	if api.lastReopenNumber != 1 || api.lastReopenActor != "tester" {
 		t.Fatalf("reopen args wrong: num=%d actor=%q",
 			api.lastReopenNumber, api.lastReopenActor)
+	}
+}
+
+// TestList_SetPriority_PendingThenDigit: pressing `!` arms pending
+// mode; the next digit (0..4) dispatches SetPriority for the cursor row
+// with the corresponding *int64. The pending hint must clear after the
+// dispatch so the success status text is what the user sees.
+func TestList_SetPriority_PendingThenDigit(t *testing.T) {
+	api, km, sc := newListEnv()
+	api.setPriorityResult = &MutationResp{Issue: &Issue{Number: 1, Status: "open"}}
+	lm := listModel{
+		actor: "tester",
+		issues: []Issue{
+			{ProjectID: 7, Number: 1, Title: "issue"},
+		},
+	}
+
+	lm, cmd := lm.Update(runeKey('!'), km, api, sc)
+	if cmd != nil {
+		t.Fatalf("`!` must not return a cmd (just arms pending), got %T", cmd)
+	}
+	if !lm.pendingPriority {
+		t.Fatal("pendingPriority must be true after `!`")
+	}
+	if lm.status == "" {
+		t.Fatal("pending hint must be set so user can see what's expected")
+	}
+
+	lm, cmd = lm.Update(runeKey('2'), km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected SetPriority cmd from `2`")
+	}
+	if lm.pendingPriority {
+		t.Fatal("pendingPriority must clear once the digit is consumed")
+	}
+	_ = drainCmd(t, lm, cmd, km, api, sc)
+	if api.setPriorityCalls != 1 {
+		t.Fatalf("setPriorityCalls = %d, want 1", api.setPriorityCalls)
+	}
+	if api.lastPriorityNumber != 1 {
+		t.Fatalf("lastPriorityNumber = %d, want 1", api.lastPriorityNumber)
+	}
+	if api.lastPriorityValue == nil || *api.lastPriorityValue != 2 {
+		t.Fatalf("lastPriorityValue = %v, want *int64=2", api.lastPriorityValue)
+	}
+	if api.lastPriorityActor != "tester" {
+		t.Fatalf("lastPriorityActor = %q, want tester", api.lastPriorityActor)
+	}
+}
+
+// TestList_SetPriority_ClearWithDash: `!` followed by `-` clears the
+// priority via a nil pointer.
+func TestList_SetPriority_ClearWithDash(t *testing.T) {
+	api, km, sc := newListEnv()
+	api.setPriorityResult = &MutationResp{Issue: &Issue{Number: 1, Status: "open"}}
+	priority := int64(3)
+	lm := listModel{
+		actor: "tester",
+		issues: []Issue{
+			{ProjectID: 7, Number: 1, Title: "issue", Priority: &priority},
+		},
+	}
+
+	lm, _ = lm.Update(runeKey('!'), km, api, sc)
+	lm, cmd := lm.Update(runeKey('-'), km, api, sc)
+	if cmd == nil {
+		t.Fatal("expected SetPriority cmd from `-`")
+	}
+	_ = drainCmd(t, lm, cmd, km, api, sc)
+	if api.setPriorityCalls != 1 {
+		t.Fatalf("setPriorityCalls = %d, want 1", api.setPriorityCalls)
+	}
+	if api.lastPriorityValue != nil {
+		t.Fatalf("lastPriorityValue = %v, want nil (clear)", api.lastPriorityValue)
+	}
+}
+
+// TestList_SetPriority_EscCancels: `!` then esc cancels pending mode
+// without dispatching anything.
+func TestList_SetPriority_EscCancels(t *testing.T) {
+	api, km, sc := newListEnv()
+	lm := listModel{
+		actor: "tester",
+		issues: []Issue{
+			{ProjectID: 7, Number: 1, Title: "issue"},
+		},
+	}
+
+	lm, _ = lm.Update(runeKey('!'), km, api, sc)
+	lm, cmd := lm.Update(tea.KeyMsg{Type: tea.KeyEsc}, km, api, sc)
+	if cmd != nil {
+		t.Fatalf("esc must not produce a cmd, got %T", cmd)
+	}
+	if lm.pendingPriority {
+		t.Fatal("pendingPriority must clear on esc")
+	}
+	if api.setPriorityCalls != 0 {
+		t.Fatalf("setPriorityCalls = %d, want 0", api.setPriorityCalls)
+	}
+}
+
+// TestList_SetPriority_EmptyListNoOp: `!` on an empty list does not
+// arm pending mode (no row to act on).
+func TestList_SetPriority_EmptyListNoOp(t *testing.T) {
+	api, km, sc := newListEnv()
+	lm := listModel{actor: "tester"}
+
+	lm, cmd := lm.Update(runeKey('!'), km, api, sc)
+	if cmd != nil {
+		t.Fatalf("expected nil cmd on empty list, got %T", cmd)
+	}
+	if lm.pendingPriority {
+		t.Fatal("pendingPriority must not arm on empty list")
 	}
 }
 

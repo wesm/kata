@@ -1,8 +1,8 @@
  Project: kata                                                                                       kata カタ · v0.1.0 
  open: 4 · closed: 1 · all: 5                                                                        search:"hint bars" 
-        #     pri status    title                                                       kids    owner         updated   
-▶ ~ -   #10   —   open      professional workspace polish                               1/2     wesm          30m ago   
-     +  #11   —   open      detail hint bars incomplete                                 1/1     claude        45m ago   
+        #     prio status    title                                                       kids    owner         updated  
+▶ ~ -   #10   —    open      professional workspace polish                               1/2     wesm          30m ago  
+     +  #11   —    open      detail hint bars incomplete                                 1/1     claude        45m ago  
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -21,6 +21,9 @@ type listAPI interface {
 	) (*MutationResp, error)
 	Close(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
 	Reopen(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
+	SetPriority(
+		ctx context.Context, projectID, number int64, priority *int64, actor string,
+	) (*MutationResp, error)
 }
 
 // listModel owns list-view state: the current rows, cursor, the
@@ -53,6 +56,13 @@ type listModel struct {
 	loading           bool
 	truncated         bool
 	childSort         childSortMode
+	// pendingPriority arms the next keystroke to set/clear the priority
+	// of the highlighted row. Set when the user presses `!`; consumed
+	// when the next key is 0..4 (set) or `-` (clear); reset by any other
+	// key. The status line carries the hint while armed so the user can
+	// see what kata is waiting for. Mirrors vim's modifier-then-motion
+	// pattern but for a small finite priority space.
+	pendingPriority bool
 }
 
 const queueWorkingSetLimit = 2000
@@ -105,6 +115,16 @@ func (lm listModel) Update(
 func (lm listModel) applyNavKey(
 	msg tea.KeyMsg, km keymap, api listAPI, sc scope,
 ) (listModel, tea.Cmd) {
+	// pendingPriority is checked first so the next keystroke after `!`
+	// is consumed by the priority handler regardless of what else it
+	// might bind to (e.g. `0` won't trigger Home, `-` won't trigger
+	// RemoveLabel).
+	if lm.pendingPriority {
+		next, cmd, ok := lm.applyPendingPriorityKey(msg, api, sc)
+		if ok {
+			return next, cmd
+		}
+	}
 	if next, ok := lm.applyCursorKey(msg, km); ok {
 		return next, nil
 	}
@@ -129,9 +149,12 @@ func (lm listModel) applyNavKey(
 	return lm, nil
 }
 
-// applyMutationKey handles list-side mutation bindings: close (x) and
-// reopen (r) act on the highlighted row. Empty list is a quiet no-op
-// so a stray keystroke on the empty-state hint does nothing.
+// applyMutationKey handles list-side mutation bindings: close (x),
+// reopen (r), and set-priority (!) act on the highlighted row. Empty
+// list is a quiet no-op so a stray keystroke on the empty-state hint
+// does nothing. `!` arms pendingPriority; the next 0..4 / `-` keystroke
+// is consumed by applyPendingPriorityKey before it reaches any other
+// handler.
 func (lm listModel) applyMutationKey(
 	msg tea.KeyMsg, km keymap, api listAPI, sc scope,
 ) (listModel, tea.Cmd, bool) {
@@ -142,8 +165,67 @@ func (lm listModel) applyMutationKey(
 	case km.Reopen.matches(msg):
 		next, cmd := lm.dispatchListReopen(api, sc)
 		return next, cmd, true
+	case km.SetPriority.matches(msg):
+		next := lm.armPendingPriority()
+		return next, nil, true
 	}
 	return lm, nil, false
+}
+
+// armPendingPriority flips the listModel into priority-pending mode and
+// drops a status hint so the user can see what kata is waiting for.
+// Empty list / no target row is a quiet no-op so `!` on the empty-state
+// banner does nothing.
+func (lm listModel) armPendingPriority() listModel {
+	iss, ok := lm.targetRow()
+	if !ok {
+		return lm
+	}
+	lm.pendingPriority = true
+	lm.status = fmt.Sprintf("set priority of #%d (0-4 to set, - to clear, esc to cancel)", iss.Number)
+	return lm
+}
+
+// applyPendingPriorityKey consumes the keystroke following `!`. Digits
+// 0..4 dispatch a set; `-` clears; esc / any other key cancels (the
+// pending mode flips off and the status hint clears). ok=true means the
+// key was handled — the caller skips the rest of the dispatch chain.
+func (lm listModel) applyPendingPriorityKey(
+	msg tea.KeyMsg, api listAPI, sc scope,
+) (listModel, tea.Cmd, bool) {
+	lm.pendingPriority = false
+	s := msg.String()
+	switch s {
+	case "0", "1", "2", "3", "4":
+		n := int64(s[0] - '0')
+		next, cmd := lm.dispatchListSetPriority(api, sc, &n)
+		return next, cmd, true
+	case "-":
+		next, cmd := lm.dispatchListSetPriority(api, sc, nil)
+		return next, cmd, true
+	case "esc":
+		lm.status = ""
+		return lm, nil, true
+	}
+	// Any other key cancels the pending-priority mode but is NOT
+	// otherwise consumed — let it flow through to its normal handler so
+	// e.g. `j` after `!` still moves the cursor instead of being eaten.
+	lm.status = ""
+	return lm, nil, false
+}
+
+// dispatchListSetPriority fires SetPriority for the row under the
+// cursor. Empty list is a no-op (returns lm unchanged with a nil cmd).
+// nil priority clears; pointer to 0..4 sets.
+func (lm listModel) dispatchListSetPriority(
+	api listAPI, sc scope, priority *int64,
+) (listModel, tea.Cmd) {
+	iss, ok := lm.targetRow()
+	if !ok {
+		return lm, nil
+	}
+	lm.status = ""
+	return lm, setPriorityListCmd(api, projectIDForRow(iss, sc), iss.Number, priority, lm.actor)
 }
 
 // dispatchListClose closes the issue under the cursor. Empty list is a
@@ -227,6 +309,24 @@ func reopenIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
 		defer cancel()
 		resp, err := api.Reopen(ctx, pid, num, actor)
 		return mutationDoneMsg{origin: "list", kind: "reopen", resp: resp, err: err}
+	}
+}
+
+// setPriorityListCmd wraps SetPriority into a mutationDoneMsg-emitting
+// tea.Cmd. nil priority clears; non-nil sets to *priority. The
+// mutation-kind discriminator ("priority.set" vs "priority.clear")
+// drives the success-status template the same way the detail-side
+// dispatch does.
+func setPriorityListCmd(api listAPI, pid, num int64, priority *int64, actor string) tea.Cmd {
+	kind := "priority.set"
+	if priority == nil {
+		kind = "priority.clear"
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := api.SetPriority(ctx, pid, num, priority, actor)
+		return mutationDoneMsg{origin: "list", kind: kind, resp: resp, err: err}
 	}
 }
 
@@ -648,6 +748,10 @@ func listMutationSuccessText(m mutationDoneMsg) string {
 		return fmt.Sprintf("closed #%d", num)
 	case "reopen":
 		return fmt.Sprintf("reopened #%d", num)
+	case "priority.set":
+		return fmt.Sprintf("set priority of #%d", num)
+	case "priority.clear":
+		return fmt.Sprintf("cleared priority of #%d", num)
 	}
 	return ""
 }
