@@ -39,7 +39,8 @@ A              clear owner
 
 Children
 N      new child
-↑↓     move child cursor
+j/k    move child cursor
+↑↓     scroll detail viewport
 enter  open child
 
 Forms

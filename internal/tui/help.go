@@ -33,7 +33,8 @@ func helpSections(km keymap) []helpSection {
 		}},
 		{"Children", []helpItem{
 			r(km.NewChild),
-			{key: "↑↓", desc: "move child cursor"},
+			{key: "j/k", desc: "move child cursor"},
+			{key: "↑↓", desc: "scroll detail viewport"},
 			{key: "enter", desc: "open child"},
 		}},
 		{"Forms", []helpItem{

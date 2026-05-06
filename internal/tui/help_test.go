@@ -40,6 +40,21 @@ func TestHelpSections_AllBindingsCovered(t *testing.T) {
 	}
 }
 
+// TestRenderHelp_ChildrenSectionMatchesKeymap pins the Children
+// section of the help overlay against the actual j/k vs ↑↓ split:
+// j/k moves the child cursor, ↑↓ scrolls the detail viewport. The
+// help text used to claim "↑↓ move child cursor" which became stale
+// when the document-viewport keymap split landed.
+func TestRenderHelp_ChildrenSectionMatchesKeymap(t *testing.T) {
+	out := stripANSI(renderHelp(newKeymap(), 80, ListFilter{}))
+	if !strings.Contains(out, "j/k") || !strings.Contains(out, "move child cursor") {
+		t.Errorf("help overlay should describe j/k as the child-cursor key; got:\n%s", out)
+	}
+	if !strings.Contains(out, "↑↓") || !strings.Contains(out, "scroll detail viewport") {
+		t.Errorf("help overlay should describe ↑↓ as the viewport scroll key; got:\n%s", out)
+	}
+}
+
 // TestRenderHelp_NarrowWidth: width 40 picks a 1-column layout. We
 // assert each section title appears on its own line so a future
 // regression that drops Detail (or any other section) is caught.

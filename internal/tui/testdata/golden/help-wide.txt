@@ -17,9 +17,9 @@ g       first                 A              clear owner
 G       last                                                                                         
 enter   open detail           Children                                                               
 space   expand/collapse       N      new child                                                       
-n       new issue (form)      ↑↓     move child cursor                                               
-o       toggle graph order    enter  open child                                                      
-x       close                                                                                        
+n       new issue (form)      j/k    move child cursor                                               
+o       toggle graph order    ↑↓     scroll detail viewport                                          
+x       close                 enter  open child                                                      
 r       reopen                                                                                       
 
 press ? to return
