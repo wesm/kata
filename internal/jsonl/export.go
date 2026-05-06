@@ -426,12 +426,27 @@ func exportImportMappings(ctx context.Context, d *db.DB, enc *Encoder, opts Expo
 	query := `SELECT id, source, external_id, object_type, project_id, issue_id, comment_id, link_id, label,
 	                 CAST(source_updated_at AS TEXT), CAST(imported_at AS TEXT)
 	          FROM import_mappings`
+	clauses := []string{}
 	args := []any{}
 	if opts.ProjectID > 0 {
-		query += ` WHERE project_id = ?`
+		clauses = append(clauses, `project_id = ?`)
 		args = append(args, opts.ProjectID)
 	}
-	query += ` ORDER BY id ASC`
+	if !opts.IncludeDeleted {
+		clauses = append(clauses,
+			`(object_type NOT IN ('issue', 'comment', 'label') OR EXISTS (SELECT 1 FROM issues WHERE issues.id = import_mappings.issue_id AND issues.deleted_at IS NULL))`,
+			`(object_type != 'link' OR EXISTS (
+				SELECT 1
+				FROM links
+				JOIN issues AS from_issues ON from_issues.id = links.from_issue_id
+				JOIN issues AS to_issues ON to_issues.id = links.to_issue_id
+				WHERE links.id = import_mappings.link_id
+				  AND from_issues.deleted_at IS NULL
+				  AND to_issues.deleted_at IS NULL
+			))`,
+		)
+	}
+	query += whereClause(clauses) + ` ORDER BY id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export import_mappings: %w", err)
