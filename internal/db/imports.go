@@ -176,6 +176,9 @@ func validateImportBatch(p ImportBatchParams) error {
 		if item.CreatedAt.IsZero() || item.UpdatedAt.IsZero() {
 			return fmt.Errorf("%w: created_at and updated_at are required", ErrImportValidation)
 		}
+		if item.UpdatedAt.Before(item.CreatedAt) {
+			return fmt.Errorf("%w: updated_at cannot be before created_at", ErrImportValidation)
+		}
 		if _, ok := seenItems[item.ExternalID]; ok {
 			return fmt.Errorf("%w: duplicate item external_id %q", ErrImportValidation, item.ExternalID)
 		}
@@ -183,8 +186,19 @@ func validateImportBatch(p ImportBatchParams) error {
 		if item.Status != "open" && item.Status != "closed" {
 			return fmt.Errorf("%w: status must be open or closed", ErrImportValidation)
 		}
+		if item.ClosedAt != nil && item.ClosedAt.Before(item.CreatedAt) {
+			return fmt.Errorf("%w: closed_at cannot be before created_at", ErrImportValidation)
+		}
 		if item.Status == "open" && (item.ClosedReason != nil || item.ClosedAt != nil) {
 			return fmt.Errorf("%w: open issues cannot have closed fields", ErrImportValidation)
+		}
+		if item.Status == "closed" && item.ClosedAt == nil {
+			return fmt.Errorf("%w: closed issues require closed_at", ErrImportValidation)
+		}
+		for _, label := range item.Labels {
+			if !validImportLabel(label) {
+				return fmt.Errorf("%w: invalid label %q", ErrImportValidation, label)
+			}
 		}
 		for _, c := range item.Comments {
 			if strings.TrimSpace(c.ExternalID) == "" || strings.TrimSpace(c.Author) == "" || strings.TrimSpace(c.Body) == "" || c.CreatedAt.IsZero() {
@@ -441,23 +455,48 @@ func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatch
 	if err != nil {
 		return nil, 0, fmt.Errorf("list source links: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	mappedLinks := map[string]int64{}
+	type sourceLinkMapping struct {
+		id         int64
+		externalID string
+		linkID     sql.NullInt64
+	}
+	var sourceMappings []sourceLinkMapping
 	for rows.Next() {
-		var id int64
-		var externalID string
-		var linkID sql.NullInt64
-		if err := rows.Scan(&id, &externalID, &linkID); err != nil {
+		var m sourceLinkMapping
+		if err := rows.Scan(&m.id, &m.externalID, &m.linkID); err != nil {
+			_ = rows.Close()
 			return nil, 0, fmt.Errorf("scan source link mapping: %w", err)
 		}
-		if _, keep := desired[externalID]; keep {
-			if linkID.Valid {
-				mappedLinks[externalID] = linkID.Int64
+		sourceMappings = append(sourceMappings, m)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	mappedLinks := map[string]int64{}
+	for _, m := range sourceMappings {
+		if importLink, keep := desired[m.externalID]; keep {
+			if m.linkID.Valid {
+				matches, err := importLinkMappingMatches(ctx, tx, p, issue, importLink, states, m.linkID.Int64)
+				if err != nil {
+					return nil, 0, err
+				}
+				if matches {
+					mappedLinks[m.externalID] = m.linkID.Int64
+					continue
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM import_mappings WHERE id = ?`, m.id); err != nil {
+				return nil, 0, fmt.Errorf("delete stale source link mapping: %w", err)
 			}
 			continue
 		}
-		if linkID.Valid {
-			link, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE id = ?`, linkID.Int64))
+		if m.linkID.Valid {
+			link, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE id = ?`, m.linkID.Int64))
 			if err == nil {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, link.ID); err != nil {
 					return nil, 0, fmt.Errorf("delete source link: %w", err)
@@ -471,28 +510,25 @@ func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatch
 				return nil, 0, err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM import_mappings WHERE id = ?`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM import_mappings WHERE id = ?`, m.id); err != nil {
 			return nil, 0, fmt.Errorf("delete source link mapping: %w", err)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
 	}
 
 	for externalID, importLink := range desired {
 		if _, ok := mappedLinks[externalID]; ok {
 			continue
 		}
-		targetIssue, err := resolveImportLinkTarget(ctx, tx, p, states, importLink.TargetExternalID)
+		fromID, toID, err := importLinkEndpoints(ctx, tx, p, issue, importLink, states)
 		if err != nil {
 			return nil, 0, err
 		}
-		fromID, toID := issue.ID, targetIssue.ID
-		if importLink.Type == "related" && fromID > toID {
-			fromID, toID = toID, fromID
-		}
 		if existing, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE from_issue_id = ? AND to_issue_id = ? AND type = ?`, fromID, toID, importLink.Type)); err == nil {
-			_ = existing
+			linkID := existing.ID
+			_, err = upsertImportMapping(ctx, tx, ImportMappingParams{Source: p.Source, ExternalID: externalID, ObjectType: "link", ProjectID: p.ProjectID, IssueID: &issue.ID, LinkID: &linkID, SourceUpdatedAt: &item.UpdatedAt})
+			if err != nil {
+				return nil, 0, err
+			}
 			continue
 		} else if !errors.Is(err, ErrNotFound) {
 			return nil, 0, err
@@ -549,6 +585,22 @@ func importEventPayload(source, externalID string) (string, error) {
 	return string(payload), nil
 }
 
+func validImportLabel(label string) bool {
+	if len(label) < 1 || len(label) > 64 {
+		return false
+	}
+	for _, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == ':' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func importLabelExternalID(issueExternalID, label string) string {
 	return issueExternalID + ":label:" + label
 }
@@ -562,6 +614,33 @@ func normalizeOwner(owner *string) *string {
 		return nil
 	}
 	return owner
+}
+
+func importLinkMappingMatches(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, importLink ImportLink, states map[string]*importIssueState, linkID int64) (bool, error) {
+	fromID, toID, err := importLinkEndpoints(ctx, tx, p, issue, importLink, states)
+	if err != nil {
+		return false, err
+	}
+	link, err := scanLink(tx.QueryRowContext(ctx, linkSelect+` WHERE id = ?`, linkID))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return link.FromIssueID == fromID && link.ToIssueID == toID && link.Type == importLink.Type, nil
+}
+
+func importLinkEndpoints(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, importLink ImportLink, states map[string]*importIssueState) (int64, int64, error) {
+	targetIssue, err := resolveImportLinkTarget(ctx, tx, p, states, importLink.TargetExternalID)
+	if err != nil {
+		return 0, 0, err
+	}
+	fromID, toID := issue.ID, targetIssue.ID
+	if importLink.Type == "related" && fromID > toID {
+		fromID, toID = toID, fromID
+	}
+	return fromID, toID, nil
 }
 
 func resolveImportLinkTarget(ctx context.Context, tx *sql.Tx, p ImportBatchParams, states map[string]*importIssueState, externalID string) (Issue, error) {

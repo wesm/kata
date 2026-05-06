@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,6 +171,54 @@ func TestImportBatch_SourceOwnedLabelsLinksReconcileLocalRemain(t *testing.T) {
 	assert.ErrorIs(t, err, db.ErrNotFound)
 }
 
+func TestImportBatch_ReimportRecreatesLinkWhenMappingReferencesStaleLink(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	t1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "a", Title: "A", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t1, Links: []db.ImportLink{{Type: "blocks", TargetExternalID: "b"}}},
+		{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		{ExternalID: "c", Title: "C", Body: "body", Author: "cara", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+	aMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "a")
+	require.NoError(t, err)
+	bMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "b")
+	require.NoError(t, err)
+	cMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "issue", "c")
+	require.NoError(t, err)
+	linkMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "link", "a:blocks:b")
+	require.NoError(t, err)
+	require.NotNil(t, linkMap.LinkID)
+	oldLinkID := *linkMap.LinkID
+
+	localLink := makeLink(ctx, t, d, p.ID, *aMap.IssueID, *cMap.IssueID, "related")
+	_, err = d.ExecContext(ctx, `UPDATE import_mappings SET link_id = ? WHERE id = ?`, localLink.ID, linkMap.ID)
+	require.NoError(t, err)
+	require.NoError(t, d.DeleteLinkByID(ctx, oldLinkID))
+
+	res, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{
+		{ExternalID: "a", Title: "A2", Body: "body", Author: "alice", Status: "open", CreatedAt: t1, UpdatedAt: t2, Links: []db.ImportLink{{Type: "blocks", TargetExternalID: "b"}}},
+		{ExternalID: "b", Title: "B", Body: "body", Author: "bob", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+		{ExternalID: "c", Title: "C", Body: "body", Author: "cara", Status: "open", CreatedAt: t1, UpdatedAt: t1},
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Updated)
+	assert.Equal(t, 1, res.Links)
+
+	recreated, err := d.LinkByEndpoints(ctx, *aMap.IssueID, *bMap.IssueID, "blocks")
+	require.NoError(t, err)
+	assert.NotEqual(t, oldLinkID, recreated.ID)
+	assert.NotEqual(t, localLink.ID, recreated.ID)
+	updatedMap, err := d.ImportMappingBySource(ctx, p.ID, "beads", "link", "a:blocks:b")
+	require.NoError(t, err)
+	require.NotNil(t, updatedMap.LinkID)
+	assert.Equal(t, recreated.ID, *updatedMap.LinkID)
+	_, err = d.LinkByID(ctx, localLink.ID)
+	assert.NoError(t, err)
+}
+
 func TestImportBatch_MissingLinkTargetRejectsTransaction(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	ts := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
@@ -194,6 +243,39 @@ func TestImportBatch_ValidationErrors(t *testing.T) {
 	assert.ErrorIs(t, err, db.ErrImportValidation)
 	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "open", CreatedAt: ts, UpdatedAt: ts, Links: []db.ImportLink{{Type: "bad", TargetExternalID: "b"}}}}})
 	assert.ErrorIs(t, err, db.ErrImportValidation)
+	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "open", CreatedAt: ts, UpdatedAt: ts, Labels: []string{"UPPER"}}}})
+	assert.ErrorIs(t, err, db.ErrImportValidation)
+	_, _, err = d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "open", CreatedAt: ts, UpdatedAt: ts, Labels: []string{strings.Repeat("a", 65)}}}})
+	assert.ErrorIs(t, err, db.ErrImportValidation)
+}
+
+func TestImportBatch_TimestampValidationErrors(t *testing.T) {
+	t.Run("updated before created", func(t *testing.T) {
+		d, ctx, p := setupTestProject(t)
+		createdAt := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+		updatedAt := createdAt.Add(-time.Second)
+		_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "open", CreatedAt: createdAt, UpdatedAt: updatedAt}}})
+		assert.ErrorIs(t, err, db.ErrImportValidation)
+	})
+	t.Run("closed before created", func(t *testing.T) {
+		d, ctx, p := setupTestProject(t)
+		createdAt := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+		closedAt := createdAt.Add(-time.Second)
+		_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "closed", CreatedAt: createdAt, UpdatedAt: createdAt, ClosedAt: &closedAt}}})
+		assert.ErrorIs(t, err, db.ErrImportValidation)
+	})
+	t.Run("closed at on open", func(t *testing.T) {
+		d, ctx, p := setupTestProject(t)
+		createdAt := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+		_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "open", CreatedAt: createdAt, UpdatedAt: createdAt, ClosedAt: &createdAt}}})
+		assert.ErrorIs(t, err, db.ErrImportValidation)
+	})
+	t.Run("closed missing closed at", func(t *testing.T) {
+		d, ctx, p := setupTestProject(t)
+		createdAt := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+		_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{ProjectID: p.ID, Source: "beads", Actor: "importer", Items: []db.ImportItem{{ExternalID: "a", Title: "A", Author: "alice", Status: "closed", CreatedAt: createdAt, UpdatedAt: createdAt}}})
+		assert.ErrorIs(t, err, db.ErrImportValidation)
+	})
 }
 
 func commentsForIssue(t *testing.T, ctx context.Context, d *db.DB, issueID int64) []db.Comment {
