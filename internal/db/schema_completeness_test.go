@@ -20,7 +20,7 @@ func TestAllSchemaTablesExist(t *testing.T) {
 	wanted := []string{
 		"projects", "project_aliases", "issues", "comments",
 		"links", "issue_labels", "events", "purge_log",
-		"meta", "issues_fts",
+		"meta", "issues_fts", "import_mappings",
 	}
 	for _, name := range wanted {
 		assertSchemaObject(t, d, name)
@@ -51,6 +51,9 @@ func TestSchemaUIDColumnsIndexesAndTriggers(t *testing.T) {
 		"idx_purge_log_issue_uid",
 		"idx_purge_log_project_uid",
 		"idx_purge_log_origin_instance",
+		"idx_import_mappings_issue",
+		"idx_import_mappings_comment",
+		"idx_import_mappings_link",
 		"trg_links_uid_consistency_insert",
 		"trg_links_uid_consistency_update",
 		"trg_projects_uid_immutable",
