@@ -10,6 +10,7 @@ type keymap struct {
 	Projects                                       key
 	ToggleLayout                                   key
 	Up, Down, PageUp, PageDown, Home, End          key
+	ScrollUp, ScrollDown                           key
 	Open, NewIssue, NewChild, Search               key
 	ExpandCollapse                                 key
 	SortChildren                                   key
@@ -31,12 +32,20 @@ type key struct {
 // newKeymap returns the spec §7.3 bindings.
 func newKeymap() keymap {
 	return keymap{
-		Help:           key{Keys: []string{"?"}, Help: "help"},
-		Quit:           key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
-		Projects:       key{Keys: []string{"P"}, Help: "projects"},
-		ToggleLayout:   key{Keys: []string{"L"}, Help: "toggle layout"},
-		Up:             key{Keys: []string{"k", "up"}, Help: "up"},
-		Down:           key{Keys: []string{"j", "down"}, Help: "down"},
+		Help:         key{Keys: []string{"?"}, Help: "help"},
+		Quit:         key{Keys: []string{"q", "ctrl+c"}, Help: "quit"},
+		Projects:     key{Keys: []string{"P"}, Help: "projects"},
+		ToggleLayout: key{Keys: []string{"L"}, Help: "toggle layout"},
+		// Up/Down are the section-cursor bindings: in the detail view
+		// they move the activity tab cursor or the children cursor.
+		// ScrollUp/ScrollDown are the document-viewport scroll bindings:
+		// in the detail view they slide the whole detail document one
+		// line at a time. The list view binds both pairs to the same
+		// cursor handler so existing j/k + arrow ergonomics survive.
+		Up:             key{Keys: []string{"k"}, Help: "up"},
+		Down:           key{Keys: []string{"j"}, Help: "down"},
+		ScrollUp:       key{Keys: []string{"up"}, Help: "scroll up"},
+		ScrollDown:     key{Keys: []string{"down"}, Help: "scroll down"},
 		PageUp:         key{Keys: []string{"pgup"}, Help: "page up"},
 		PageDown:       key{Keys: []string{"pgdown"}, Help: "page down"},
 		Home:           key{Keys: []string{"g"}, Help: "first"},

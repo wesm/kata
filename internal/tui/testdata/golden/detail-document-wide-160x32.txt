@@ -1,5 +1,5 @@
  Project: kata                                                                                                                                  kata カタ · dev 
-                                                                                                                                                                
+
   #1  fix the tui to be less shitty                                                         [open]                                                              
   authored by anonymous · created May 2 19:15 · updated 21h ago                                                                                                 
   owner: none   parent: none                                                                                                                                    
@@ -28,5 +28,5 @@
                                                                                                                                                                 
                                                                                                                                                                 
                                                                                                                                                                 
- ↑↓ move▕ ↹ section▕ ↵ open  ▕ pgup/pgdn scroll body▕ e edit▕ c comment▕ + label▕ - unlabel▕ a owner▕ A unassign▕ x close▕ r reopen▕ p parent▕ b block▕ l link  
- N child▕ L layout ▕ esc back▕ ? help               ▕ q quit                                                                                                    
+ ↑↓ scroll▕ j/k row▕ ↹ section▕ ↵ open  ▕ pgup/pgdn page▕ e edit▕ c comment▕ + label▕ - unlabel▕ a owner▕ A unassign▕ x close▕ r reopen▕ p parent▕ b block      
+ l link   ▕ N child▕ L layout ▕ esc back▕ ? help        ▕ q quit                                                                                                

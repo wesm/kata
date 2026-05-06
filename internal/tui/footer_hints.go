@@ -173,18 +173,20 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 	}
 	if dm.detailFocus == focusChildren && len(dm.children) > 0 {
 		nav := []helpItem{
-			{key: "↑↓", desc: "child"},
+			{key: "↑↓", desc: "scroll"},
+			{key: "j/k", desc: "child"},
 			{key: "↵", desc: "open child"},
 			{key: "↹", desc: "section"},
-			{key: "pgup/pgdn", desc: "scroll body"},
+			{key: "pgup/pgdn", desc: "page"},
 		}
 		return [][]helpItem{append(nav, actions...)}
 	}
 	nav := []helpItem{
-		{key: "↑↓", desc: "move"},
+		{key: "↑↓", desc: "scroll"},
+		{key: "j/k", desc: "row"},
 		{key: "↹", desc: "section"},
 		{key: "↵", desc: "open"},
-		{key: "pgup/pgdn", desc: "scroll body"},
+		{key: "pgup/pgdn", desc: "page"},
 	}
 	return [][]helpItem{append(nav, actions...)}
 }

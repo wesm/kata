@@ -10,22 +10,25 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// View renders the stacked detail view as a document page. The page
-// reads top-to-bottom:
+// View renders the stacked detail view as a single scrolling document.
+// The layout is:
 //
-//   - line 1: full-width project/title bar (kept in sync with the
-//     list view so the global chrome reads as a single window)
-//   - line 2: blank breather under the chrome
-//   - sheet: issue lead + body + (optional children) + (optional
-//     activity), each row prefixed with documentGutter cells of
-//     space and capped at documentSheetWidth(width) cells of content
-//   - line H-1: info line (chrome row)
+//   - line 1: full-width project/title bar (chrome, never scrolls)
+//   - line 2: blank breather under the chrome (chrome, never scrolls)
+//   - lines 3..H-2: detail document — issue header + body + (optional
+//     children) + (optional activity), windowed by dm.scroll
+//   - line H-1: info line (chrome row, viewport indicator + status)
 //   - line H:   footer help table (chrome row)
 //
-// Content lives inside a 96-cell maximum measure. Spare terminal
-// width to the right is left blank — the redesign avoids stretching
-// section bands across wide terminals so the page reads as a focused
-// document, not a half-empty workspace.
+// Body, children, and activity render in full inside the document; the
+// per-section row budgets that used to split the available height are
+// gone. ↑/↓ scrolls the document one line; PgUp/PgDn pages by the
+// visible window.
+//
+// Content lives inside a 96-cell maximum measure. Spare terminal width
+// to the right is left blank — the redesign avoids stretching section
+// bands across wide terminals so the page reads as a focused document,
+// not a half-empty workspace.
 func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	if dm.loading {
 		return statusStyle.Render("loading…")
@@ -36,67 +39,70 @@ func (dm detailModel) View(width, height int, chrome viewChrome) string {
 	if width <= 0 || height < listMinHeight {
 		return dm.renderTinyFallback(width)
 	}
-	sheetWidth := documentSheetWidth(width)
 	helpRows := detailHelpRows(dm, chrome)
 	footerLines := helpLines(helpRows, width)
 	footer := renderFooterHelpTable(helpRows, width)
 	titleBar := renderTitleBar(width, chrome.scope, chrome.version)
-	header := append([]string{titleBar, ""}, dm.documentHeader(sheetWidth, chrome)...)
-	hasChildren := len(dm.children) > 0
-	hasActivity := dm.hasActivity()
-	fixed := len(header) + 1 /* body label */ + 1 /* blank gap before activity */ +
-		1 /* info */ + footerLines
-	if hasChildren {
-		fixed += 2 /* children label + blank gap */
+	// Top chrome (title + blank) + bottom chrome (info + footer) frame
+	// the viewport. Whatever rows are left belong to the document.
+	visible := height - 2 - 1 - footerLines
+	if visible < 1 {
+		visible = 1
 	}
-	if hasActivity {
-		fixed += 2 /* activity header + blank gap */
-	}
-	bodyA, childA, tabA := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
-	bodyArea := withGutter(dm.renderBody(sheetWidth, bodyA))
-	childrenArea := ""
-	if hasChildren {
-		childrenArea = withGutter(dm.renderChildrenSection(sheetWidth, childA))
-	}
-	tabArea := ""
-	if hasActivity {
-		tabArea = withGutter(dm.renderActiveTab(sheetWidth, tabA))
-	}
-	infoLine := dm.renderInfoLine(width, chrome, tabA)
-	parts := append([]string{}, header...)
-	parts = append(parts, "", renderDocumentSectionHeader("Body"), bodyArea)
-	if hasChildren {
-		parts = append(parts, "", renderDocumentSectionHeader("Children"), childrenArea)
-	}
-	if hasActivity {
-		parts = append(parts, "", dm.renderActivityHeader(sheetWidth), tabArea)
-	}
-	content := padDocumentContent(parts, height-1-footerLines, width)
-	return strings.Join([]string{content, infoLine, footer}, "\n")
+	docLines, _ := dm.detailDocumentLines(width, chrome)
+	scroll := clampScroll(dm.scroll, len(docLines), visible)
+	windowed := windowDocLines(docLines, scroll, visible, width)
+	infoLine := dm.renderInfoLine(width, chrome, len(docLines), scroll, visible)
+	parts := append([]string{titleBar, ""}, windowed...)
+	parts = append(parts, infoLine, footer)
+	return strings.Join(parts, "\n")
 }
 
 // renderTinyFallback is the degraded render for terminals below the
-// minimum height. Just dump body content so the user sees something.
+// minimum height. Window the document with whatever space is left so
+// the user still sees something instead of an error or blank screen.
 func (dm detailModel) renderTinyFallback(width int) string {
-	return dm.renderBody(width, detailMinBodyRows)
+	if width <= 0 {
+		width = 1
+	}
+	docLines, _ := dm.detailDocumentLines(width, viewChrome{})
+	scroll := clampScroll(dm.scroll, len(docLines), detailMinBodyRows)
+	return strings.Join(windowDocLines(docLines, scroll, detailMinBodyRows, width), "\n")
 }
 
-func padDocumentContent(parts []string, rows, terminalWidth int) string {
-	if rows < 1 {
-		rows = 1
+// clampScroll keeps dm.scroll within [0, viewportMaxStart) for the
+// given document length and viewport size. View / ViewSplit always
+// pass the user's intended scroll through this so an off-the-end
+// dm.scroll (e.g. after a tab switch trims the document) doesn't
+// produce a window of blanks.
+func clampScroll(scroll, total, visible int) int {
+	if scroll < 0 {
+		return 0
 	}
-	content := strings.Join(parts, "\n")
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		lines[i] = padToWidth(line, terminalWidth)
+	maxStart := viewportMaxStart(total, visible)
+	if scroll > maxStart {
+		return maxStart
 	}
-	for len(lines) < rows {
-		lines = append(lines, blankLine(terminalWidth))
+	return scroll
+}
+
+// windowDocLines slices [scroll, scroll+visible) of the document and
+// pads with blank rows when the document is shorter than the viewport
+// so the chrome below stays anchored on the same screen line. Lines
+// are emitted as-is (already gutter-prefixed during assembly).
+func windowDocLines(lines []string, scroll, visible, width int) []string {
+	out := make([]string, 0, visible)
+	end := scroll + visible
+	if end > len(lines) {
+		end = len(lines)
 	}
-	if len(lines) > rows {
-		lines = lines[:rows]
+	for i := scroll; i < end; i++ {
+		out = append(out, padToWidth(lines[i], width))
 	}
-	return strings.Join(lines, "\n")
+	for len(out) < visible {
+		out = append(out, blankLine(width))
+	}
+	return out
 }
 
 // documentHeader builds the issue-lead block: title row, byline,
@@ -362,41 +368,15 @@ func blankLine(width int) string {
 	return normalRowStyle.Render(strings.Repeat(" ", max(0, width)))
 }
 
-func detailDocumentBudgets(avail, childCount int, hasActivity bool) (
-	bodyRows, childRows, tabRows int,
-) {
-	if avail < 1 {
-		return 1, 0, 0
-	}
-	if childCount > 0 && avail > 1 {
-		childRows = min(childCount, max(1, avail/5))
-		avail -= childRows
-	}
-	if hasActivity && avail >= 6 {
-		tabRows = max(detailMinTabRows, avail/3)
-		if tabRows > avail-1 {
-			tabRows = avail - 1
-		}
-		avail -= tabRows
-	}
-	bodyRows = avail
-	if bodyRows < 1 {
-		bodyRows = 1
-	}
-	return bodyRows, childRows, tabRows
-}
-
 // renderInfoLine renders the info line just above the footer for the
-// detail view. Same priority order as the list view: active panel
-// prompt > flash > SSE-degraded > toast > scroll indicator. Always
-// rendered inside statsLineStyle so the row reads as chrome even
-// when blank.
+// detail view. Priority order: active panel prompt > flash >
+// SSE-degraded > toast > viewport scroll indicator. Always rendered
+// inside statsLineStyle so the row reads as chrome even when blank.
 //
-// tabBudget is the actual tab-content row budget (computed in View
-// from height). When 0 the scroll indicator is suppressed — used by
-// the early View call before bodyA/tabA are resolved; View calls
-// this again with the real budget once it knows tabA.
-func (dm detailModel) renderInfoLine(width int, chrome viewChrome, tabBudget int) string {
+// total is the document line count and scroll/visible are the current
+// window. When the document fits the viewport, the indicator is
+// suppressed.
+func (dm detailModel) renderInfoLine(width int, chrome viewChrome, total, scroll, visible int) string {
 	body := ""
 	switch {
 	case chrome.input.kind.isPanelPrompt():
@@ -408,28 +388,26 @@ func (dm detailModel) renderInfoLine(width int, chrome viewChrome, tabBudget int
 	case chrome.toast != nil:
 		body = chrome.toast.text
 	default:
-		// Compute the visible-entry window from the same chunk-
-		// windowing logic the per-tab renderer uses, so multi-line
-		// chunks (comments) report the right [start-end] range and
-		// don't suppress the indicator when entry count <= line
-		// budget but total wrapped lines exceed it (#119 finding 2).
-		n := dm.activeRowCount()
-		if n > 0 && tabBudget > 0 {
-			// Chunk math uses the same content-width as the per-tab
-			// renderer (sheet, not terminal) so wrapped comment line
-			// counts match what's actually drawn — see roborev #17140
-			// finding 2.
-			chunks := dm.activeChunks(documentSheetWidth(width))
-			start, end := windowChunkBounds(chunks, dm.tabCursor, tabBudget)
-			if end-start < n {
-				body = rightAlignInside(
-					fmt.Sprintf("[%d-%d of %d %s]",
-						start+1, end, n, dm.activeTabLabel()),
-					titleBarInnerWidth(width))
-			}
+		if indicator := documentScrollIndicator(total, scroll, visible); indicator != "" {
+			body = rightAlignInside(indicator, titleBarInnerWidth(width))
 		}
 	}
 	return statsLineStyle.Render(padToWidth(body, titleBarInnerWidth(width)))
+}
+
+// documentScrollIndicator returns the "[lines X-Y of Z]" hint for the
+// detail viewport, or empty string when the document fits the viewport.
+// Lines are 1-indexed for display.
+func documentScrollIndicator(total, scroll, visible int) string {
+	if total <= visible || visible <= 0 || total <= 0 {
+		return ""
+	}
+	start := scroll + 1
+	end := scroll + visible
+	if end > total {
+		end = total
+	}
+	return fmt.Sprintf("[lines %d-%d of %d]", start, end, total)
 }
 
 // renderInfoPrompt renders an active panel-local prompt as a single
@@ -454,6 +432,119 @@ const (
 	detailMinBodyRows = 4
 	detailMinTabRows  = 3
 )
+
+// detailAnchors records the document row index where each section
+// begins, plus the document row of the section cursor. Tab and j/k
+// use these to scroll the unified viewport so the focused section /
+// selected row is visible. -1 means the section or cursor is absent.
+type detailAnchors struct {
+	body        int
+	children    int
+	activity    int
+	childCursor int
+	tabCursor   int
+	total       int
+}
+
+// emptyAnchors returns a detailAnchors with all section / cursor rows
+// marked absent. Callers fill in only the rows that actually exist
+// for the current detail model.
+func emptyAnchors() detailAnchors {
+	return detailAnchors{
+		body:        -1,
+		children:    -1,
+		activity:    -1,
+		childCursor: -1,
+		tabCursor:   -1,
+	}
+}
+
+// detailDocumentLines flattens the entire detail content (issue header,
+// body, children, activity) into one slice of rendered rows. The slice
+// excludes the global title bar and the bottom info+footer chrome —
+// those are owned by the caller (View / ViewSplit) and stay pinned.
+//
+// anchors reports where each section starts in the slice (and where
+// the section cursor sits), so handleNavKey can scroll the viewport
+// to bring focus into view when Tab cycles or j/k advances.
+func (dm detailModel) detailDocumentLines(width int, chrome viewChrome) ([]string, detailAnchors) {
+	sheetWidth := documentSheetWidth(width)
+	lines := make([]string, 0, 32)
+	anchors := emptyAnchors()
+	addBlock := func(block string) {
+		lines = append(lines, strings.Split(block, "\n")...)
+	}
+
+	for _, hdr := range dm.documentHeader(sheetWidth, chrome) {
+		addBlock(hdr)
+	}
+
+	lines = append(lines, "", renderDocumentSectionHeader("Body"))
+	anchors.body = len(lines)
+	addBlock(withGutter(dm.renderBodyFull(sheetWidth)))
+
+	if len(dm.children) > 0 {
+		lines = append(lines, "", renderDocumentSectionHeader("Children"))
+		anchors.children = len(lines)
+		cursor := clampInt(dm.childCursor, 0, len(dm.children)-1)
+		anchors.childCursor = anchors.children + cursor
+		addBlock(withGutter(dm.renderChildrenFull(sheetWidth)))
+	}
+
+	if dm.hasActivity() {
+		lines = append(lines, "", dm.renderActivityHeader(sheetWidth))
+		anchors.activity = len(lines)
+		if chunks := dm.activeChunks(sheetWidth); len(chunks) > 0 {
+			cursor := clampInt(dm.tabCursor, 0, len(chunks)-1)
+			offset := 0
+			for i := 0; i < cursor; i++ {
+				offset += len(chunks[i].lines)
+			}
+			anchors.tabCursor = anchors.activity + offset
+		}
+		addBlock(withGutter(dm.renderActiveTabFull(sheetWidth)))
+	}
+
+	anchors.total = len(lines)
+	return lines, anchors
+}
+
+// viewportMaxStart returns the largest dm.scroll value that still
+// produces a fully-utilized viewport for a document of `total` rows
+// with `visible` rendered rows. When the document fits the viewport,
+// returns 0. Callers clamp dm.scroll against this.
+func viewportMaxStart(total, visible int) int {
+	if total <= visible || visible <= 0 {
+		return 0
+	}
+	return total - visible
+}
+
+// scrollToReveal returns the new scroll offset that keeps `row` inside
+// a `visible`-row window starting at `scroll`. If the row is above the
+// window, the window slides up to land the row at the top; below the
+// window, it slides down so the row is the last visible line.
+//
+// total bounds the result so an off-the-end anchor never lets scroll
+// run past viewportMaxStart.
+func scrollToReveal(scroll, row, visible, total int) int {
+	if row < 0 || visible <= 0 {
+		return scroll
+	}
+	maxStart := viewportMaxStart(total, visible)
+	if row < scroll {
+		scroll = row
+	} else if row >= scroll+visible {
+		scroll = row - visible + 1
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	if scroll > maxStart {
+		scroll = maxStart
+	}
+	return scroll
+}
 
 func renderHierarchySummary(width int, parent *IssueRef, children []Issue) string {
 	left := "Parent: -"
@@ -480,64 +571,55 @@ func childrenCountSummary(children []Issue) string {
 	return fmt.Sprintf("%d open / %d total", open, len(children))
 }
 
-// activeTabLabel returns the singular noun for the active tab so the
-// scroll indicator reads naturally ("[1-9 of 12 events]" not
-// "[1-9 of 12]").
-func (dm detailModel) activeTabLabel() string {
-	switch dm.activeTab {
-	case tabComments:
-		return "comments"
-	case tabEvents:
-		return "events"
-	case tabLinks:
-		return "links"
-	}
-	return ""
-}
-
-// renderBody splits the issue body on newlines, hard-wraps each line,
-// and returns the dm.scroll-windowed slice. Hard-wrap (truncate) keeps
-// v1 simple; soft word-wrap is deferred. Body is sanitized before
-// wrapping so agent-authored ANSI / control sequences cannot reach
-// the terminal.
-func (dm detailModel) renderBody(width, lines int) string {
+// renderBodyFull returns every wrapped body line as one joined string.
+// Hard-wrap (truncate) keeps v1 simple; soft word-wrap is deferred.
+// Body is sanitized before wrapping so agent-authored ANSI / control
+// sequences cannot reach the terminal. The unified detail-document
+// scroll (dm.scroll) windows this at the document level — the per-
+// section windowing that used to live here was removed when the body /
+// children / activity sections were merged into one scrollable column.
+func (dm detailModel) renderBodyFull(width int) string {
 	wrapped := renderMarkdownLines(dm.issue.Body, width)
 	if len(wrapped) == 0 {
 		return statusStyle.Render("(no description)")
 	}
-	start := dm.scroll
-	if maxStart := len(wrapped) - lines; start > maxStart {
-		if maxStart < 0 {
-			maxStart = 0
-		}
-		start = maxStart
-	}
-	end := start + lines
-	if end > len(wrapped) {
-		end = len(wrapped)
-	}
-	return strings.Join(wrapped[start:end], "\n")
+	return strings.Join(wrapped, "\n")
 }
 
-func (dm detailModel) renderChildrenSection(width, rows int) string {
-	if rows <= 0 || len(dm.children) == 0 {
+// renderChildrenFull returns every child row as one joined string with
+// the cursor highlight applied to the selected child when focus is on
+// the children section. Document-level scroll (dm.scroll) handles
+// visibility — there is no per-section row budget anymore.
+func (dm detailModel) renderChildrenFull(width int) string {
+	if len(dm.children) == 0 {
 		return ""
 	}
 	cursor := clampInt(dm.childCursor, 0, len(dm.children)-1)
-	visible, vCursor := windowChildIssues(dm.children, cursor, rows)
-	lines := []string{}
-	for i, child := range visible {
-		line := renderChildIssueRow(child, i == vCursor && dm.detailFocus == focusChildren, width)
-		if i == vCursor && dm.detailFocus == focusChildren {
+	lines := make([]string, 0, len(dm.children))
+	for i, child := range dm.children {
+		selected := i == cursor && dm.detailFocus == focusChildren
+		line := renderChildIssueRow(child, selected, width)
+		switch {
+		case selected:
 			line = selectedStyle.Render(padToWidth(line, width))
-		} else if i%2 == 1 {
+		case i%2 == 1:
 			line = altRowStyle.Render(padToWidth(line, width))
-		} else {
+		default:
 			line = normalRowStyle.Render(padToWidth(line, width))
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderActiveTabFull returns the active tab's full content with no
+// per-tab windowing. Effectively-infinite height defeats assembleTab's
+// window+clip step; line-wise width truncation still applies. Used by
+// the unified document renderer where dm.scroll handles visibility at
+// the document level.
+func (dm detailModel) renderActiveTabFull(width int) string {
+	const noLimit = 1 << 30
+	return dm.renderActiveTab(width, noLimit)
 }
 
 func renderChildIssueRow(child Issue, selected bool, width int) string {
@@ -565,15 +647,6 @@ func renderChildIssueRow(child Issue, selected bool, width int) string {
 		padToWidth(humanizeRelative(child.UpdatedAt), updateW),
 	}
 	return strings.Join(parts, "")
-}
-
-func windowChildIssues(issues []Issue, cursor, budget int) ([]Issue, int) {
-	n := len(issues)
-	if n == 0 {
-		return issues, 0
-	}
-	start, end := windowBounds(n, cursor, budget)
-	return issues[start:end], cursor - start
 }
 
 // wrapBody splits s on newlines, then hard-wraps each segment to width.

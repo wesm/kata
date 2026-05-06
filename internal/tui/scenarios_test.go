@@ -177,6 +177,21 @@ func TestScenario_ReadAnIssue_PageUpClampsAtTop(t *testing.T) {
 	}
 }
 
+// TestScenario_ReadAnIssue_ArrowKeysScrollOnShortTerminal pins the
+// fix for the original "↑↓ scrolling doesn't work on short terminals"
+// bug: every issue has a synthetic issue.created event, so the legacy
+// handleUp/handleDown logic kept ↑/↓ on the activity-tab cursor and
+// never reached the body. With the unified-viewport refactor, ↑/↓ is
+// always document scroll — on a short terminal full of body the user
+// can read past the visible window without learning PgUp/PgDn.
+func TestScenario_ReadAnIssue_ArrowKeysScrollOnShortTerminal(t *testing.T) {
+	body := strings.Repeat("scrollable line\n", 80) + "ARROW_TAIL_MARKER"
+	m := setupDetailScenario(t, 120, 24, body)
+	assertViewMissing(t, m, "ARROW_TAIL_MARKER")
+	m = pressN(t, m, tea.KeyMsg{Type: tea.KeyDown}, 80)
+	assertViewContains(t, m, "ARROW_TAIL_MARKER")
+}
+
 // TestScenario_NavigateTabs_TabAdvancesActiveSection drives Tab and
 // asserts the active-tab bracket follows. Catches a class of bug
 // where Tab gets silently swallowed (e.g. eaten by an open modal,

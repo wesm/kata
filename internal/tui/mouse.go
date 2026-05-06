@@ -55,13 +55,11 @@ func (m Model) mouseWheelAt(delta, x int) (Model, tea.Cmd) {
 }
 
 func (m Model) mouseDetailWheel(delta int) Model {
-	for i := 0; i < mouseWheelScrollLines; i++ {
-		if delta < 0 {
-			m.detail = m.detail.scrollBodyUp()
-		} else {
-			m.detail = m.detail.scrollBodyDown()
-		}
+	step := mouseWheelScrollLines
+	if delta < 0 {
+		step = -step
 	}
+	m.detail = m.detail.scrollViewportBy(step)
 	return m
 }
 

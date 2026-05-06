@@ -201,7 +201,7 @@ func TestDetailRedesign_FooterHintsAreComprehensive(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"↑↓ move", "↹ section", "↵ open",
+		"↑↓ scroll", "j/k row", "↹ section", "↵ open", "pgup/pgdn page",
 		"e edit", "c comment", "+ label", "- unlabel",
 		"a owner", "A unassign",
 		"x close", "r reopen",

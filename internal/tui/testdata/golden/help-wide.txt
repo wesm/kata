@@ -7,17 +7,19 @@ P         projects            enter          jump to referenced issue    tab/shi
 L         toggle layout       esc/backspace  back                        ctrl+e         open editor  
                               e              edit body                   ctrl+u         clear prompt 
 Graph                         c              new comment                                             
-k/up    up                    p              set parent                  Filters                     
-j/down  down                  b              add blocker                 /       search              
-pgup    page up               l              add link                    s       cycle status filter 
-pgdown  page down             +              add label                   f       filter (form)       
-g       first                 -              remove label                c       clear filters       
-G       last                  a              assign owner                ctrl+r  reset filter form   
-enter   open detail           A              clear owner                                             
-space   expand/collapse                                                                              
-n       new issue (form)      Children                                                               
-o       toggle graph order    N      new child                                                       
-x       close                 ↑↓     move child cursor                                               
-r       reopen                enter  open child                                                      
+k       up                    p              set parent                  Filters                     
+j       down                  b              add blocker                 /       search              
+up      scroll up             l              add link                    s       cycle status filter 
+down    scroll down           +              add label                   f       filter (form)       
+pgup    page up               -              remove label                c       clear filters       
+pgdown  page down             a              assign owner                ctrl+r  reset filter form   
+g       first                 A              clear owner                                             
+G       last                                                                                         
+enter   open detail           Children                                                               
+space   expand/collapse       N      new child                                                       
+n       new issue (form)      ↑↓     move child cursor                                               
+o       toggle graph order    enter  open child                                                      
+x       close                                                                                        
+r       reopen                                                                                       
 
 press ? to return

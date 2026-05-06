@@ -174,7 +174,12 @@ func TestDetail_RenderHierarchySections(t *testing.T) {
 		{Number: 43, Title: "detail hint bars incomplete", Status: "open", Owner: ptrString("alice")},
 		{Number: 44, Title: "new issue form parent field", Status: "closed"},
 	}
-	out := stripANSI(dm.View(100, 28, viewChrome{}))
+	// In the unified-viewport layout the children section sits below the
+	// body in document order. Assert against the assembled document
+	// rather than the viewport so we don't have to size the terminal
+	// large enough to fit everything (or scroll programmatically).
+	docLines, _ := dm.detailDocumentLines(100, viewChrome{})
+	out := stripANSI(strings.Join(docLines, "\n"))
 	assertContainsAll(t, out,
 		"parent: #12 workspace polish parent",
 		"children: 1 open / 2 total",
@@ -212,24 +217,27 @@ func TestDetail_TabCycle_NextPrev(t *testing.T) {
 	}
 }
 
-// TestDetail_TabRender_ActiveContent: after a tab press the events
-// header text appears in the rendered output.
+// TestDetail_TabRender_ActiveContent: after a tab press the active-tab
+// chip changes in the activity strip. Assert against the assembled
+// document rather than the viewport so the activity strip is in scope
+// regardless of body length.
 func TestDetail_TabRender_ActiveContent(t *testing.T) {
 	dm := detailFixture()
 	km := newKeymap()
-	out := dm.View(80, 24, viewChrome{})
-	if !strings.Contains(out, "Comments (2)") {
-		t.Fatalf("comments header missing:\n%s", out)
+	docOut := func(d detailModel) string {
+		lines, _ := d.detailDocumentLines(80, viewChrome{})
+		return stripANSI(strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(docOut(dm), "Comments (2)") {
+		t.Fatalf("comments header missing:\n%s", docOut(dm))
 	}
 	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
-	out = dm.View(80, 24, viewChrome{})
-	if !strings.Contains(out, "Events (2)") {
-		t.Fatalf("events header missing after tab:\n%s", out)
+	if !strings.Contains(docOut(dm), "Events (2)") {
+		t.Fatalf("events header missing after tab:\n%s", docOut(dm))
 	}
 	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyTab}, km, nil)
-	out = dm.View(80, 24, viewChrome{})
-	if !strings.Contains(out, "Links (1)") {
-		t.Fatalf("links header missing after second tab:\n%s", out)
+	if !strings.Contains(docOut(dm), "Links (1)") {
+		t.Fatalf("links header missing after second tab:\n%s", docOut(dm))
 	}
 }
 
@@ -336,53 +344,58 @@ func TestDetail_Scroll_PageDownClampsPastEOFAndPageUpResponds(t *testing.T) {
 	}
 }
 
-func TestDetail_Scroll_BodyMaxStartEstimateDoesNotExceedRenderedMax(t *testing.T) {
+// TestDetail_Scroll_PageDownClampsToDocument: a long body + some
+// activity rows yields a document strictly taller than a 30-row
+// terminal. Aggressive PgDn must clamp dm.scroll at the document's
+// max-start so the renderer never windows past EOF — and so a single
+// PgUp produces visible movement, not a no-op while an inflated
+// offset unwinds (regression for roborev #17184, retargeted at the
+// unified viewport).
+func TestDetail_Scroll_PageDownClampsToDocument(t *testing.T) {
 	dm := detailFixture()
-	dm.comments = nil
-	dm.events = nil
-	dm.links = nil
 	dm.issue.Body = strings.Repeat("line\n", 39) + "tail"
 	width, height := 120, 30
 	dm.lastTermWidth, dm.lastTermHeight = width, height
+	docLines, _ := dm.detailDocumentLines(width, dm.scrollChrome())
+	_, visible, _ := dm.viewportDims()
+	maxStart := viewportMaxStart(len(docLines), visible)
 
-	sheetWidth := documentSheetWidth(width)
-	chrome := viewChrome{}
-	helpRows := detailHelpRows(dm, chrome)
-	footerLines := helpLines(helpRows, width)
-	header := append([]string{renderTitleBar(width, chrome.scope, chrome.version), ""}, dm.documentHeader(sheetWidth, chrome)...)
-	fixed := len(header) + 1 /* body label */ + 1 /* blank gap before activity */ +
-		1 /* info */ + footerLines
-	bodyRows, _, _ := detailDocumentBudgets(height-fixed, 0, false)
-	renderedMaxStart := len(renderMarkdownLines(dm.issue.Body, sheetWidth)) - bodyRows
-	if renderedMaxStart < 0 {
-		renderedMaxStart = 0
+	km := newKeymap()
+	for i := 0; i < 12; i++ {
+		dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgDown}, km, nil)
 	}
-
-	if got := dm.bodyMaxStartEstimate(); got > renderedMaxStart {
-		t.Fatalf("bodyMaxStartEstimate=%d exceeds rendered maxStart=%d", got, renderedMaxStart)
+	if dm.scroll > maxStart {
+		t.Fatalf("PgDn past EOF: scroll=%d > maxStart=%d", dm.scroll, maxStart)
+	}
+	prev := dm.scroll
+	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgUp}, km, nil)
+	if prev > 0 && dm.scroll >= prev {
+		t.Fatalf("PgUp after overscroll did not respond: scroll=%d, prev=%d",
+			dm.scroll, prev)
 	}
 }
 
-func TestDetail_Scroll_SplitBodyMaxStartUsesSplitViewport(t *testing.T) {
+// TestDetail_Scroll_SplitViewportClamp: in split-pane mode the cached
+// lastDetailWidth/Height is the inner pane size. Aggressive PgDn must
+// clamp scroll using that pane height, not the full terminal — split
+// panes are typically much shorter and would otherwise let dm.scroll
+// run far past the rendered EOF.
+func TestDetail_Scroll_SplitViewportClamp(t *testing.T) {
 	dm := detailFixture()
-	dm.comments = nil
-	dm.events = nil
-	dm.links = nil
 	dm.issue.Body = strings.Repeat("line\n", 59) + "tail"
 	width, height := 72, 24
 	dm.lastDetailWidth, dm.lastDetailHeight = width, height
 	dm.lastDetailSplit = true
+	docLines, _ := dm.detailDocumentLines(width, dm.scrollChrome())
+	maxStart := viewportMaxStart(len(docLines), height)
 
-	sheetWidth := documentSheetWidth(width)
-	header := dm.documentHeader(sheetWidth, viewChrome{})
-	bodyRows, _, _ := detailDocumentBudgets(height-(len(header)+1), 0, false)
-	renderedMaxStart := len(renderMarkdownLines(dm.issue.Body, sheetWidth)) - bodyRows
-	if renderedMaxStart < 0 {
-		renderedMaxStart = 0
+	km := newKeymap()
+	for i := 0; i < 30; i++ {
+		dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgDown}, km, nil)
 	}
-
-	if got := dm.bodyMaxStartEstimate(); got != renderedMaxStart {
-		t.Fatalf("split bodyMaxStartEstimate=%d, want rendered maxStart=%d", got, renderedMaxStart)
+	if dm.scroll != maxStart {
+		t.Fatalf("PgDn in split overflowed: scroll=%d, want maxStart=%d",
+			dm.scroll, maxStart)
 	}
 }
 
@@ -520,7 +533,8 @@ func TestDetail_FetchedMsgs_ErrorRecorded(t *testing.T) {
 func TestDetail_TabPlaceholder_LoadingRendered(t *testing.T) {
 	dm := detailFixture()
 	dm.commentsLoading = true
-	out := dm.View(80, 30, viewChrome{})
+	lines, _ := dm.detailDocumentLines(80, viewChrome{})
+	out := stripANSI(strings.Join(lines, "\n"))
 	if !strings.Contains(out, "loading") {
 		t.Fatalf("expected loading placeholder on comments tab, got:\n%s", out)
 	}
@@ -533,7 +547,8 @@ func TestDetail_TabPlaceholder_ErrorRendered(t *testing.T) {
 	dm := detailFixture()
 	dm.commentsLoading = false
 	dm.commentsErr = errors.New("server down")
-	out := dm.View(80, 30, viewChrome{})
+	lines, _ := dm.detailDocumentLines(80, viewChrome{})
+	out := stripANSI(strings.Join(lines, "\n"))
 	if !strings.Contains(out, "comments: server down") {
 		t.Fatalf("expected per-tab error hint, got:\n%s", out)
 	}
@@ -859,33 +874,37 @@ func TestDetail_FetchCommands_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestDetail_BodyScroll_RenderWindow: with scroll=N the rendered body
-// starts at line N+header so the user sees later body content.
-func TestDetail_BodyScroll_RenderWindow(t *testing.T) {
+// TestDetail_Viewport_ScrollAdvancesWindow: with dm.scroll = N the
+// viewport's first visible row is documentLines[N], so the user reads
+// later content as the offset grows.
+func TestDetail_Viewport_ScrollAdvancesWindow(t *testing.T) {
 	dm := detailFixture()
+	docLines, _ := dm.detailDocumentLines(120, viewChrome{})
+	want := stripANSI(docLines[5])
+	dm.lastTermWidth, dm.lastTermHeight = 120, 30
 	dm.scroll = 5
-	out := dm.renderBody(80, 5)
-	lines := strings.Split(out, "\n")
-	if len(lines) != 5 {
-		t.Fatalf("got %d body lines, want 5", len(lines))
+	out := stripANSI(dm.View(120, 30, viewChrome{}))
+	// Title bar + blank are pinned chrome (lines 0-1); the first
+	// document row sits on line 2.
+	rows := strings.Split(out, "\n")
+	if len(rows) < 3 {
+		t.Fatalf("view too short:\n%s", out)
 	}
-	if lines[0] != "line" {
-		t.Fatalf("body[0] = %q, want line", lines[0])
+	if !strings.Contains(rows[2], strings.TrimSpace(want)) {
+		t.Fatalf("first visible row mismatch:\n want %q\n  got %q", want, rows[2])
 	}
 }
 
-// TestDetail_ScrollClampsAtEOF: if scroll is set beyond the body length
-// the renderer clamps at the last line so the window still fills.
-func TestDetail_ScrollClampsAtEOF(t *testing.T) {
+// TestDetail_Viewport_ScrollClampsAtEOF: an out-of-range dm.scroll is
+// clamped against viewportMaxStart so the renderer never produces a
+// window of blanks past the last line.
+func TestDetail_Viewport_ScrollClampsAtEOF(t *testing.T) {
 	dm := detailFixture()
 	dm.scroll = 10000
-	out := dm.renderBody(80, 5)
-	lines := strings.Split(out, "\n")
-	if len(lines) == 0 {
-		t.Fatalf("expected clamped window, got empty output")
-	}
+	dm.lastTermWidth, dm.lastTermHeight = 120, 30
+	out := stripANSI(dm.View(120, 30, viewChrome{}))
 	if !strings.Contains(out, "tail") {
-		t.Fatalf("expected tail near EOF, got:\n%s", out)
+		t.Fatalf("expected tail of body near EOF, got:\n%s", out)
 	}
 }
 

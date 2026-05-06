@@ -161,7 +161,50 @@ func splitInfoBody(m Model) string {
 			titleBarInnerWidth(m.width),
 		)
 	}
+	if m.focus == focusDetail {
+		return rightAlignInside(
+			splitDetailScrollIndicator(m), titleBarInnerWidth(m.width),
+		)
+	}
 	return ""
+}
+
+// splitDetailScrollIndicator returns the viewport position hint for
+// the detail pane in split mode. The pane's inner height (after the
+// 2-cell border) is the visible window; the document's total line
+// count is computed against the same width the pane renders at.
+func splitDetailScrollIndicator(m Model) string {
+	if m.detail.issue == nil {
+		return ""
+	}
+	bodyHeight := splitBodyHeight(m)
+	listW := splitListPaneWidth(m.width)
+	detailW := m.width - listW
+	if detailW < 20 {
+		detailW = 20
+	}
+	innerW := detailW - 2
+	innerH := bodyHeight - 2
+	if innerW < 10 {
+		innerW = 10
+	}
+	if innerH < 2 {
+		innerH = 2
+	}
+	docLines, _ := m.detail.detailDocumentLines(innerW, m.chrome())
+	scroll := clampScroll(m.detail.scroll, len(docLines), innerH)
+	return documentScrollIndicator(len(docLines), scroll, innerH)
+}
+
+// splitBodyHeight mirrors the body-height calculation in renderSplit
+// so the indicator math matches what's actually drawn.
+func splitBodyHeight(m Model) int {
+	footerLines := helpLines(m.splitHelpRows(), m.width)
+	bodyHeight := m.height - 2 - footerLines // title + info + footer
+	if bodyHeight < 4 {
+		bodyHeight = 4
+	}
+	return bodyHeight
 }
 
 // renderSplitFooter renders the shared footer help table for the split
@@ -178,6 +221,10 @@ func renderSplitFooter(width int, m Model) string {
 // 1-cell border on every side (lipgloss border), so the content
 // already sits indented from the surrounding chrome — the gutter
 // just adds breathing room inside the panel.
+//
+// Like the stacked View, the pane is one continuous scrolling
+// document: dm.scroll windows the assembled lines and ↑/↓ slide the
+// viewport.
 func (dm detailModel) ViewSplit(width, height int, chrome viewChrome) string {
 	if dm.loading {
 		return statusStyle.Render("loading…")
@@ -188,36 +235,10 @@ func (dm detailModel) ViewSplit(width, height int, chrome viewChrome) string {
 	if width <= 0 || height < 6 {
 		return dm.renderTinyFallback(width)
 	}
-	sheetWidth := documentSheetWidth(width)
-	header := dm.documentHeader(sheetWidth, chrome)
-	hasChildren := len(dm.children) > 0
-	hasActivity := dm.hasActivity()
-	fixed := len(header) + 1 /* body label */
-	if hasChildren {
-		fixed += 2 /* children label + gap */
-	}
-	if hasActivity {
-		fixed += 2 /* activity header + gap */
-	}
-	bodyA, childA, tabA := detailDocumentBudgets(height-fixed, len(dm.children), hasActivity)
-	bodyArea := withGutter(dm.renderBody(sheetWidth, bodyA))
-	childrenArea := ""
-	if hasChildren {
-		childrenArea = withGutter(dm.renderChildrenSection(sheetWidth, childA))
-	}
-	tabArea := ""
-	if hasActivity {
-		tabArea = withGutter(dm.renderActiveTab(sheetWidth, tabA))
-	}
-	parts := append([]string{}, header...)
-	parts = append(parts, renderDocumentSectionHeader("Body"), bodyArea)
-	if hasChildren {
-		parts = append(parts, "", renderDocumentSectionHeader("Children"), childrenArea)
-	}
-	if hasActivity {
-		parts = append(parts, "", dm.renderActivityHeader(sheetWidth), tabArea)
-	}
-	return padDocumentContent(parts, height, width)
+	docLines, _ := dm.detailDocumentLines(width, chrome)
+	scroll := clampScroll(dm.scroll, len(docLines), height)
+	windowed := windowDocLines(docLines, scroll, height, width)
+	return strings.Join(windowed, "\n")
 }
 
 // pickHighlightedIssue returns a copy of the issue currently under

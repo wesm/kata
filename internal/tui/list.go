@@ -266,11 +266,11 @@ func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) 
 	rows := lm.visibleRows()
 	n := len(rows)
 	switch {
-	case km.Up.matches(msg):
+	case km.Up.matches(msg), km.ScrollUp.matches(msg):
 		if lm.cursor > 0 {
 			lm.cursor--
 		}
-	case km.Down.matches(msg):
+	case km.Down.matches(msg), km.ScrollDown.matches(msg):
 		if lm.cursor < n-1 {
 			lm.cursor++
 		}

@@ -1,5 +1,5 @@
  Project: —                                                                                                   kata カタ 
-                                                                                                                        
+
   #42  fix login bug on Safari                                                              [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: #12 workspace polish parent                                                                     
@@ -17,6 +17,8 @@
   > alice  Apr 30 10:00                                                                                                 
     I can repro on macOS.                                                                                               
                                                                                                                         
+    bob    Apr 30 11:00                                                                                                 
+    Looks like a race in oauth.                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -26,7 +28,5 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                    [1-1 of 2 comments] 
- ↑↓ move▕ ↹ section▕ ↵ open  ▕ pgup/pgdn scroll body▕ e edit▕ c comment▕ + label ▕ - unlabel▕ a owner▕ A unassign       
- x close▕ r reopen ▕ p parent▕ b block              ▕ l link▕ N child  ▕ L layout▕ esc back ▕ ? help ▕ q quit           
+ ↑↓ scroll▕ j/k row ▕ ↹ section▕ ↵ open ▕ pgup/pgdn page▕ e edit ▕ c comment▕ + label ▕ - unlabel▕ a owner▕ A unassign  
+ x close  ▕ r reopen▕ p parent ▕ b block▕ l link        ▕ N child▕ L layout ▕ esc back▕ ? help   ▕ q quit               

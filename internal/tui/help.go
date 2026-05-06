@@ -20,7 +20,8 @@ func helpSections(km keymap) []helpSection {
 	return []helpSection{
 		{"Global", []helpItem{r(km.Help), r(km.Quit), r(km.Projects), r(km.ToggleLayout)}},
 		{"Graph", []helpItem{
-			r(km.Up), r(km.Down), r(km.PageUp), r(km.PageDown), r(km.Home),
+			r(km.Up), r(km.Down), r(km.ScrollUp), r(km.ScrollDown),
+			r(km.PageUp), r(km.PageDown), r(km.Home),
 			r(km.End), r(km.Open), r(km.ExpandCollapse), r(km.NewIssue),
 			r(km.SortChildren), r(km.Close), r(km.Reopen),
 		}},

@@ -3,7 +3,8 @@
 │        #     status    title                   kids    updated   ││  #42  fix login bug on Safari                                                      [open]│
 │        #1    open      fix login bug on Safari         3h ago    ││  authored by wesm                                                                        │
 │▶       #2    closed    rebuild search index            1h ago    ││  owner: none   parent: none                                                              │
-│        #3    [deleted] purge stale tokens              2h ago    ││  Body                                                                                    │
+│        #3    [deleted] purge stale tokens              2h ago    ││                                                                                          │
+│                                                                  ││  Body                                                                                    │
 │                                                                  ││  Reproduces in Safari 17 only.                                                           │
 │                                                                  ││  Click the login button twice.                                                           │
 │                                                                  ││                                                                                          │
@@ -13,7 +14,6 @@
 │                                                                  ││                                                                                          │
 │                                                                  ││    bob    Apr 30 11:00                                                                   │
 │                                                                  ││    Looks like a race in oauth.                                                           │
-│                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │
 │                                                                  ││                                                                                          │

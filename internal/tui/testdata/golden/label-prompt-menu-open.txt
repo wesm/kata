@@ -1,5 +1,5 @@
  Project: kata                                                                                          kata カタ · dev 
-                                                                                                                        
+
   #42  fix login bug on Safari                                                              [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: none                                                                                            

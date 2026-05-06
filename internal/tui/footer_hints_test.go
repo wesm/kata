@@ -41,9 +41,11 @@ func TestDetailHelpRows_Contexts(t *testing.T) {
 		activeTab:   tabComments,
 	}}
 	assertHelpItemsPresent(t, activity.detailHelpRows(),
-		helpItem{key: "↑↓", desc: "move"},
+		helpItem{key: "↑↓", desc: "scroll"},
+		helpItem{key: "j/k", desc: "row"},
 		helpItem{key: "↹", desc: "section"},
 		helpItem{key: "↵", desc: "open"},
+		helpItem{key: "pgup/pgdn", desc: "page"},
 		helpItem{key: "e", desc: "edit"},
 		helpItem{key: "c", desc: "comment"},
 		helpItem{key: "+", desc: "label"},
@@ -60,7 +62,8 @@ func TestDetailHelpRows_Contexts(t *testing.T) {
 
 	children := Model{detail: hierarchyDetailModel(focusChildren)}
 	assertHelpItemsPresent(t, children.detailHelpRows(),
-		helpItem{key: "↑↓", desc: "child"},
+		helpItem{key: "↑↓", desc: "scroll"},
+		helpItem{key: "j/k", desc: "child"},
 		helpItem{key: "↵", desc: "open child"},
 		helpItem{key: "N", desc: "child"},
 		helpItem{key: "e", desc: "edit"},
@@ -109,16 +112,19 @@ func TestHelpRows_InputAndModalContexts(t *testing.T) {
 	}
 }
 
+// TestPersistentHelpRowsPreferArrowNotation guards the queue (list)
+// footer's arrow-first convention. The detail footer additionally
+// surfaces j/k as the section-cursor binding, since the unified
+// document refactor split arrows (viewport scroll) from j/k (row
+// cursor) — both must be discoverable from the persistent help row.
 func TestPersistentHelpRowsPreferArrowNotation(t *testing.T) {
 	m := Model{
 		list:   listModel{issues: hierarchyIssues()},
 		detail: hierarchyDetailModel(focusActivity),
 	}
-	for _, rows := range [][][]helpItem{m.queueHelpRows(), m.detailHelpRows()} {
-		for _, item := range flattenHelpRows(rows) {
-			if strings.Contains(item.key, "j/k") {
-				t.Fatalf("persistent footer keys should use arrows, got %+v", item)
-			}
+	for _, item := range flattenHelpRows(m.queueHelpRows()) {
+		if strings.Contains(item.key, "j/k") {
+			t.Fatalf("queue footer keys should use arrows, got %+v", item)
 		}
 	}
 }

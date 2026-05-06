@@ -7,8 +7,10 @@ P         projects
 L         toggle layout
 
 Graph
-k/up    up
-j/down  down
+k       up
+j       down
+up      scroll up
+down    scroll down
 pgup    page up
 pgdown  page down
 g       first

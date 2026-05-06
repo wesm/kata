@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -676,35 +677,37 @@ func TestOverlayModal_PadsShortBackground(t *testing.T) {
 	}
 }
 
-// TestDetail_ScrollIndicator_AccountsForMultiLineComments: when
-// comment entries wrap to multiple lines, the per-tab scroll
-// indicator must compute the visible window in entry units using
-// the renderer's actual chunk shape, not by comparing entry
-// count to a line budget. With 6 comments in an 8-line pane and
-// each comment contributing ~4 lines (header + body + blank), only
-// 2 entries fit, so the indicator must fire and report a window
-// shorter than 6. Regression for roborev #119 finding 2.
-func TestDetail_ScrollIndicator_AccountsForMultiLineComments(t *testing.T) {
+// TestDetail_ScrollIndicator_ViewportCoversWholeDocument: the info
+// indicator reports the unified viewport position. With 6 multi-line
+// comments plus body and headers, the document is well over a 16-row
+// terminal, so the indicator must surface and read in document-line
+// units (not per-tab entry units, which the legacy detail view used
+// before the unified-viewport refactor).
+func TestDetail_ScrollIndicator_ViewportCoversWholeDocument(t *testing.T) {
 	cs := make([]CommentEntry, 6)
 	body := "wrapped body content that takes a few lines"
 	for i := range cs {
 		cs[i] = CommentEntry{Author: "actor", Body: body}
 	}
 	dm := detailModel{
-		issue:     &Issue{Number: 1, Title: "x", Status: "open"},
+		issue: &Issue{
+			Number: 1, Title: "x", Status: "open",
+			Body: strings.Repeat("body line\n", 12),
+		},
 		comments:  cs,
 		activeTab: tabComments,
 		tabCursor: 0,
 	}
-	// 8-line tab budget. With multi-line chunks at ~3-4 lines each,
-	// only 2-3 entries fit; the indicator must report fewer than 6.
-	info := dm.renderInfoLine(120, viewChrome{sseStatus: sseConnected}, 8)
-	if !strings.Contains(info, "of 6 comments") {
-		t.Fatalf("indicator missing or wrong total; info = %q", info)
+	docLines, _ := dm.detailDocumentLines(120, viewChrome{})
+	const visible = 16
+	info := dm.renderInfoLine(120,
+		viewChrome{sseStatus: sseConnected}, len(docLines), 0, visible)
+	wantSuffix := fmt.Sprintf("of %d]", len(docLines))
+	if !strings.Contains(info, wantSuffix) {
+		t.Fatalf("indicator missing total; want suffix %q, got info = %q",
+			wantSuffix, info)
 	}
-	// The visible range must be smaller than [1-6] (the bug was that
-	// n=6 <= budget=8 suppressed the indicator entirely).
-	if strings.Contains(info, "[1-6 ") {
-		t.Fatalf("indicator claims all 6 comments fit; info = %q", info)
+	if !strings.Contains(info, "lines 1-16 ") {
+		t.Fatalf("indicator missing visible range; got info = %q", info)
 	}
 }
