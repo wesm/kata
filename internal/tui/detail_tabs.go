@@ -15,20 +15,16 @@ type tabState struct {
 	err     error
 }
 
-// renderCommentsTab formats the comments tab as document activity:
-// cursor marker + bold author + dim timestamp, followed by indented
-// Markdown comment text and a blank separator.
-// The cursor highlights the row under dm.tabCursor; rendered lines
-// are windowed so the cursor entry is always visible even when the
-// entries don't all fit in height.
-//
-// The "Comments (N)" label is shown by renderTabStrip above; this
-// renderer no longer repeats it. Empty / loading / error placeholders
-// still render in place of the entries via tabPlaceholder.
-func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState) string {
-	placeholder := tabPlaceholder(ts, "comments", "(no comments)", len(cs))
-	if placeholder != nil {
-		return assembleTab(nil, []entryChunk{*placeholder}, width, height, -1)
+// commentChunks builds the chunk slice for the comments tab. Each
+// non-placeholder chunk is one comment: cursor marker + author + dim
+// timestamp, followed by indented Markdown comment body and a blank
+// separator. Empty / loading / errored states return a single
+// placeholder chunk via tabPlaceholder. The chunks ARE the rendered
+// content — detailDocumentLines emits them directly without a second
+// markdown pass.
+func commentChunks(cs []CommentEntry, width, cursor int, ts tabState) []entryChunk {
+	if placeholder := tabPlaceholder(ts, "comments", "(no comments)", len(cs)); placeholder != nil {
+		return []entryChunk{*placeholder}
 	}
 	chunks := make([]entryChunk, 0, len(cs))
 	authorW := commentAuthorWidth(cs)
@@ -42,18 +38,16 @@ func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState
 		lines = append(lines, "")
 		chunks = append(chunks, entryChunk{lines: lines})
 	}
-	return assembleTab(nil, chunks, width, height, cursor)
+	return chunks
 }
 
-// renderEventsTab formats one line per event:
+// eventChunks builds one single-line chunk per event:
 // "[type] timestamp actor — description". The description is type-
-// specific (e.g., "labeled bug", "linked #7"). Cursor highlights the
-// row under dm.tabCursor; the rendered lines are windowed around the
-// cursor so a tabCursor past the visible height still has its row on
-// screen.
-func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState) string {
+// specific (e.g., "labeled bug", "linked #7").
+func eventChunks(es []EventLogEntry, width, cursor int, ts tabState) []entryChunk {
+	_ = width // single-line entries; width clipping happens at render time
 	if placeholder := tabPlaceholder(ts, "events", "(no events yet)", len(es)); placeholder != nil {
-		return assembleTab(nil, []entryChunk{*placeholder}, width, height, -1)
+		return []entryChunk{*placeholder}
 	}
 	chunks := make([]entryChunk, 0, len(es))
 	for i, e := range es {
@@ -68,20 +62,18 @@ func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState)
 			applyActivityCursor(line, i == cursor),
 		}})
 	}
-	return assembleTab(nil, chunks, width, height, cursor)
+	return chunks
 }
 
-// renderLinksTab formats one line per link:
+// linkChunks builds one single-line chunk per link:
 // "[type] → #ToN ← #FromN  by author @ timestamp". The "(open|closed)"
-// status is not on the LinkEntry projection; pressing Enter on a link
-// jumps to the target so the user can see the title and status there.
-// Lines are windowed around the cursor for the same reason.
-//
-// Type is daemon-defined but Author is agent-supplied; sanitize the
-// latter so a malicious link author can't push the terminal around.
-func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) string {
+// status isn't on the LinkEntry projection; pressing Enter jumps to the
+// target. Type is daemon-defined; Author is agent-supplied and is
+// sanitized so a malicious link author can't push the terminal around.
+func linkChunks(ls []LinkEntry, width, cursor int, ts tabState) []entryChunk {
+	_ = width
 	if placeholder := tabPlaceholder(ts, "links", "(no links)", len(ls)); placeholder != nil {
-		return assembleTab(nil, []entryChunk{*placeholder}, width, height, -1)
+		return []entryChunk{*placeholder}
 	}
 	chunks := make([]entryChunk, 0, len(ls))
 	for i, l := range ls {
@@ -92,7 +84,56 @@ func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) stri
 			applyActivityCursor(line, i == cursor),
 		}})
 	}
+	return chunks
+}
+
+// renderCommentsTab / renderEventsTab / renderLinksTab assemble the
+// chunks into a windowed, height-bounded view. The chunk-builders
+// above are also reachable via detailModel.activeChunks for the
+// unified detail document; the per-tab renderers stay for tests that
+// need windowing behaviour at a fixed height.
+func renderCommentsTab(cs []CommentEntry, width, height, cursor int, ts tabState) string {
+	chunks := commentChunks(cs, width, cursor, ts)
+	if len(chunks) == 0 {
+		return ""
+	}
+	if isPlaceholderChunks(chunks, ts, len(cs)) {
+		return assembleTab(nil, chunks, width, height, -1)
+	}
 	return assembleTab(nil, chunks, width, height, cursor)
+}
+
+func renderEventsTab(es []EventLogEntry, width, height, cursor int, ts tabState) string {
+	chunks := eventChunks(es, width, cursor, ts)
+	if len(chunks) == 0 {
+		return ""
+	}
+	if isPlaceholderChunks(chunks, ts, len(es)) {
+		return assembleTab(nil, chunks, width, height, -1)
+	}
+	return assembleTab(nil, chunks, width, height, cursor)
+}
+
+func renderLinksTab(ls []LinkEntry, width, height, cursor int, ts tabState) string {
+	chunks := linkChunks(ls, width, cursor, ts)
+	if len(chunks) == 0 {
+		return ""
+	}
+	if isPlaceholderChunks(chunks, ts, len(ls)) {
+		return assembleTab(nil, chunks, width, height, -1)
+	}
+	return assembleTab(nil, chunks, width, height, cursor)
+}
+
+// isPlaceholderChunks reports whether the chunks slice represents a
+// loading / errored / empty placeholder rather than rendered entries.
+// The per-tab renderers pass cursor=-1 to assembleTab in that case so
+// windowChunkBounds doesn't try to anchor on a fake "row 0".
+func isPlaceholderChunks(chunks []entryChunk, ts tabState, n int) bool {
+	if len(chunks) != 1 {
+		return false
+	}
+	return ts.err != nil || ts.loading || n == 0
 }
 
 // tabPlaceholder returns the chunk to render in lieu of the entry list

@@ -494,7 +494,11 @@ func (dm detailModel) detailDocumentLines(width int, chrome viewChrome) ([]strin
 	if dm.hasActivity() {
 		lines = append(lines, "", dm.renderActivityHeader(sheetWidth))
 		anchors.activity = len(lines)
-		if chunks := dm.activeChunks(sheetWidth); len(chunks) > 0 {
+		chunks := dm.activeChunks(sheetWidth)
+		// tabCursor anchor only makes sense when the chunks map to real
+		// rows; loading / errored / empty placeholders return a single
+		// pseudo-chunk with no cursor target.
+		if dm.activeRowCount() > 0 && len(chunks) > 0 {
 			cursor := clampInt(dm.tabCursor, 0, len(chunks)-1)
 			offset := 0
 			for i := 0; i < cursor; i++ {
@@ -502,7 +506,11 @@ func (dm detailModel) detailDocumentLines(width int, chrome viewChrome) ([]strin
 			}
 			anchors.tabCursor = anchors.activity + offset
 		}
-		addBlock(withGutter(dm.renderActiveTabFull(sheetWidth)))
+		for _, ch := range chunks {
+			for _, line := range ch.lines {
+				lines = append(lines, withGutter(truncate(line, sheetWidth)))
+			}
+		}
 	}
 
 	anchors.total = len(lines)
@@ -612,16 +620,6 @@ func (dm detailModel) renderChildrenFull(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderActiveTabFull returns the active tab's full content with no
-// per-tab windowing. Effectively-infinite height defeats assembleTab's
-// window+clip step; line-wise width truncation still applies. Used by
-// the unified document renderer where dm.scroll handles visibility at
-// the document level.
-func (dm detailModel) renderActiveTabFull(width int) string {
-	const noLimit = 1 << 30
-	return dm.renderActiveTab(width, noLimit)
-}
-
 func renderChildIssueRow(child Issue, selected bool, width int) string {
 	const (
 		markerW = 2
@@ -686,27 +684,6 @@ func hardWrap(s string, width int) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-// renderActiveTab dispatches to the per-tab renderer. The header line
-// "Comments (N)" / "Events (N)" / "Links (N)" sits above the entries
-// and is always rendered (even on empty data) so the tab strip + count
-// stays consistent across tab switches. The per-tab loading/err state
-// is forwarded so the renderer can substitute "(loading...)" or an
-// error chip for the entry list.
-func (dm detailModel) renderActiveTab(width, height int) string {
-	switch dm.activeTab {
-	case tabComments:
-		return renderCommentsTab(dm.comments, width, height, dm.tabCursor,
-			tabState{loading: dm.commentsLoading, err: dm.commentsErr})
-	case tabEvents:
-		return renderEventsTab(dm.events, width, height, dm.tabCursor,
-			tabState{loading: dm.eventsLoading, err: dm.eventsErr})
-	case tabLinks:
-		return renderLinksTab(dm.links, width, height, dm.tabCursor,
-			tabState{loading: dm.linksLoading, err: dm.linksErr})
-	}
-	return ""
 }
 
 func (dm detailModel) hasActivity() bool {

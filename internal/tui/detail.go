@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -296,9 +295,17 @@ func (dm detailModel) handleNavKey(
 	case km.ScrollDown.matches(msg):
 		return dm.scrollViewportBy(1), nil, true
 	case km.Up.matches(msg):
-		return dm.handleUp().revealCursor(), nil, true
+		next, moved := dm.handleUp()
+		if moved {
+			next = next.revealCursor()
+		}
+		return next, nil, true
 	case km.Down.matches(msg):
-		return dm.handleDown().revealCursor(), nil, true
+		next, moved := dm.handleDown()
+		if moved {
+			next = next.revealCursor()
+		}
+		return next, nil, true
 	case km.Open.matches(msg):
 		next, cmd := dm.handleEnter(api)
 		return next, cmd, true
@@ -423,40 +430,45 @@ func (dm detailModel) revealCursor() detailModel {
 // handleUp moves the section cursor (children or active activity tab)
 // up by one. When there is no section cursor — no children and no
 // activity rows — j/k spills to viewport scroll so the binding never
-// feels dead. ↑/↓ have their own scroll handlers wired in handleNavKey.
-func (dm detailModel) handleUp() detailModel {
+// feels dead. The bool return reports whether a section cursor moved
+// (or stayed put on a populated section); false means the call
+// scrolled the viewport instead. handleNavKey uses that signal to
+// skip revealCursor on the scroll path — otherwise revealCursor would
+// pin the activity header back into view and undo the scroll.
+// ↑/↓ have their own scroll handlers wired in handleNavKey.
+func (dm detailModel) handleUp() (detailModel, bool) {
 	if dm.detailFocus == focusChildren {
 		if dm.childCursor > 0 {
 			dm.childCursor--
 		}
-		return dm
+		return dm, true
 	}
 	if dm.activeRowCount() > 0 {
 		if dm.tabCursor > 0 {
 			dm.tabCursor--
 		}
-		return dm
+		return dm, true
 	}
-	return dm.scrollViewportBy(-1)
+	return dm.scrollViewportBy(-1), false
 }
 
 // handleDown moves the section cursor down by one. Clamps at the last
 // row; spills to viewport scroll when there is no section cursor —
-// see handleUp for the rationale.
-func (dm detailModel) handleDown() detailModel {
+// see handleUp for the rationale and the bool return contract.
+func (dm detailModel) handleDown() (detailModel, bool) {
 	if dm.detailFocus == focusChildren {
 		if dm.childCursor < len(dm.children)-1 {
 			dm.childCursor++
 		}
-		return dm
+		return dm, true
 	}
 	if n := dm.activeRowCount(); n > 0 {
 		if dm.tabCursor < n-1 {
 			dm.tabCursor++
 		}
-		return dm
+		return dm, true
 	}
-	return dm.scrollViewportBy(1)
+	return dm.scrollViewportBy(1), false
 }
 
 // handleBack pops one level off the nav stack if non-empty, otherwise
@@ -617,50 +629,26 @@ func (dm detailModel) activeRowCount() int {
 	return 0
 }
 
-// activeChunks builds the entryChunk slice for the active tab using
-// the same per-entry layout the per-tab renderer produces (header +
-// wrapped body + separator for comments; one line for events / links).
-// Used by the detail scroll indicator so the visible-entry window is
-// computed against the renderer's actual chunk shape rather than
-// comparing entry count to a line budget — fixes the multi-line
-// comment indicator gap from roborev #119 finding 2.
+// activeChunks returns the chunk list for the current active tab,
+// dispatching to the per-tab chunk builders so the chunks ARE the
+// renderable content (cursor markers and styled headers included).
+// detailDocumentLines uses these directly — eliminating the second
+// markdown pass that the previous implementation paid via
+// renderActiveTabFull on top of activeChunks.
 //
 // width is the rendered width of the tab pane (the same width passed
-// to the tab renderers from renderActiveTab).
-//
-// The comments path uses renderMarkdownLines with the same width-2
-// budget renderCommentsTab uses (detail_tabs.go:39) so the indicator
-// math matches what's actually drawn — wrapBody used to under-count
-// Markdown-formatted comments and could suppress the indicator when
-// wrapped lines exceeded the visible budget (roborev #17131 finding 3).
+// to the per-tab renderers).
 func (dm detailModel) activeChunks(width int) []entryChunk {
 	switch dm.activeTab {
 	case tabComments:
-		out := make([]entryChunk, 0, len(dm.comments))
-		for _, c := range dm.comments {
-			lines := []string{
-				fmt.Sprintf("[%s] %s",
-					sanitizeForDisplay(c.Author), fmtTime(c.CreatedAt)),
-			}
-			for _, ln := range renderMarkdownLines(c.Body, max(1, width-2)) {
-				lines = append(lines, "  "+ln)
-			}
-			lines = append(lines, "")
-			out = append(out, entryChunk{lines: lines})
-		}
-		return out
+		return commentChunks(dm.comments, width, dm.tabCursor,
+			tabState{loading: dm.commentsLoading, err: dm.commentsErr})
 	case tabEvents:
-		out := make([]entryChunk, 0, len(dm.events))
-		for range dm.events {
-			out = append(out, entryChunk{lines: []string{""}})
-		}
-		return out
+		return eventChunks(dm.events, width, dm.tabCursor,
+			tabState{loading: dm.eventsLoading, err: dm.eventsErr})
 	case tabLinks:
-		out := make([]entryChunk, 0, len(dm.links))
-		for range dm.links {
-			out = append(out, entryChunk{lines: []string{""}})
-		}
-		return out
+		return linkChunks(dm.links, width, dm.tabCursor,
+			tabState{loading: dm.linksLoading, err: dm.linksErr})
 	}
 	return nil
 }

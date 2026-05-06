@@ -399,6 +399,47 @@ func TestDetail_Scroll_SplitViewportClamp(t *testing.T) {
 	}
 }
 
+// TestDetail_JK_OnEmptyActivityTab_ScrollsViewport pins the regression
+// in handleNavKey: when the focused activity tab has no rows
+// (placeholder loading / error / empty), j/k must spill to viewport
+// scroll without revealCursor immediately pinning the activity header
+// back into view. Without this, scrolling near the bottom of a long
+// body with focusActivity on an empty tab would snap the viewport
+// back to the activity header on every press.
+func TestDetail_JK_OnEmptyActivityTab_ScrollsViewport(t *testing.T) {
+	dm := detailFixture()
+	dm.issue.Body = strings.Repeat("body line\n", 60) + "tail"
+	dm.links = nil // empty links tab; comments+events keep hasActivity true
+	dm.activeTab = tabLinks
+	dm.detailFocus = focusActivity
+	dm.tabExplicit = true
+	dm.lastTermWidth, dm.lastTermHeight = 100, 24
+
+	// Scroll into the body so the activity header is well above the
+	// viewport. Without the fix, revealCursor will pull scroll back to
+	// the activity header on every j/k press.
+	dm.scroll = 30
+	docTotal, _ := dm.detailDocumentLines(dm.lastTermWidth, dm.scrollChrome())
+	_, visible, ok := dm.viewportDims()
+	if !ok || dm.scroll+visible >= len(docTotal) {
+		t.Fatalf("setup: scroll=%d not deep into the document (visible=%d total=%d)",
+			dm.scroll, visible, len(docTotal))
+	}
+
+	km := newKeymap()
+	before := dm.scroll
+	next, _ := dm.Update(runeKey('j'), km, nil)
+	if next.scroll != before+1 {
+		t.Fatalf("j on empty activity tab: scroll = %d, want %d — revealCursor likely pulled scroll back to the activity header",
+			next.scroll, before+1)
+	}
+	next, _ = next.Update(runeKey('k'), km, nil)
+	if next.scroll != before {
+		t.Fatalf("k on empty activity tab: scroll = %d, want %d (before-1)",
+			next.scroll, before)
+	}
+}
+
 // TestDetail_OpenFromList_SeedsViewportCache pins the regression:
 // the freshly-installed detail model in handleOpenDetail must inherit
 // the terminal dimensions, not start from zero. Without the seed,
