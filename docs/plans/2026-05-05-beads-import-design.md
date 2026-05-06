@@ -7,6 +7,7 @@ GitHub issue #16 requests a Beads import command. Goal: help Beads users exit by
 ## Decisions
 
 - CLI shape: `kata import --format beads`.
+- Existing kata JSONL import remains default: `kata import --input PATH --target PATH [--force]` behaves as it does today. `--format kata` is equivalent to the default if added.
 - Beads import requires a live Beads workspace. It does not accept `--input`, `--target`, `--force`, or `--new-instance`.
 - CLI shells out to `bd export --no-memories` and `bd comments <id> --json`.
 - Import destination is the current kata project/daemon DB, not an offline target DB.
@@ -75,7 +76,7 @@ For `kata import --format beads`:
 7. For each exported issue, run `bd comments <id> --json` in the workspace.
 8. Convert Beads records to the normalized import request.
 9. POST to the daemon import endpoint.
-10. Human output: `imported beads: created N, skipped M, comments C, links L`.
+10. Human output: `imported beads: created N, updated M, unchanged K, comments C, links L`.
 11. JSON output: emit daemon response body.
 
 If `bd` is missing, return a validation error telling the user to install Beads or add `bd` to `PATH`. If Beads commands fail, surface their stderr in a concise import error.
@@ -97,21 +98,23 @@ For each Beads issue record:
 | `updated_at` | `updated_at` |
 | `closed_at` | `closed_at` |
 | `labels[]` | normalized labels |
-| `dependencies[].depends_on_id` | `blocks` link target |
+| `dependencies[].depends_on_id` | `blocks` link source |
 | `comment_count` | metadata/footer only |
 | `priority` | metadata/footer only |
 | `issue_type` | metadata/footer only |
 
-A Beads dependency where issue `A` depends on `B` maps to kata link `A --blocks--> B`, matching existing `kata create --blocks` semantics.
+A Beads dependency where issue `A` depends on `B` maps to kata link `B --blocks--> A`. Kata `blocks` links are directed from blocker to blocked; `kata block <blocker> <blocked>` and ready-issue filtering both use that direction.
 
-## Metadata Labels and Footer
+## Metadata Labels, Close Reasons, and Footer
 
 Each imported issue gets labels:
 
 - `source:beads`
 - `beads-id:<normalized-or-hash>`
 
-Beads labels are normalized to kata's label constraints: lowercase, spaces to `-`, invalid characters stripped or replaced, and long labels truncated with a stable hash. Original labels are preserved in the footer.
+Beads labels are normalized to kata's label constraints: lowercase, whitespace to `-`, characters outside `[a-z0-9._:-]` replaced or stripped, repeated separators collapsed, and long labels truncated with a stable hash. `-` is allowed by kata's current label constraint. Original labels are preserved in the footer.
+
+Kata close reasons are limited to `done`, `wontfix`, and `duplicate`. Beads close reasons map directly when they match. Unsupported or empty Beads close reasons on closed issues map to `done`, with the original reason preserved in the footer.
 
 The body footer is stable and parseable:
 
@@ -125,6 +128,7 @@ beads_original_labels: ["label one", "Label Two"]
 beads_created_at: <timestamp>
 beads_updated_at: <timestamp>
 beads_closed_at: <timestamp>
+beads_close_reason: <original reason>
 beads_comment_count: <n>
 ```
 
@@ -139,11 +143,12 @@ import_mappings
   id
   source                  -- e.g. beads
   external_id             -- source object id
-  object_type             -- issue|comment|link (issue/comment required now)
+  object_type             -- issue|comment|label|link
   project_id
-  issue_id                -- owning kata issue for issue/comment/link mappings
+  issue_id                -- owning kata issue for issue/comment/label/link mappings
   comment_id              -- set for imported comments
-  link_id                 -- optional/future
+  link_id                 -- set for imported links
+  label                   -- set for imported labels
   source_updated_at       -- source-side updated timestamp when available
   imported_at
   UNIQUE(source, external_id, object_type, project_id)
@@ -160,9 +165,22 @@ Reimport behavior:
 - Comments merge independently by Beads comment ID using `import_mappings`.
   - Missing comment mapping: create comment with Beads `created_at` and mapping.
   - Existing comment mapping: keep existing kata comment unless a future source exposes comment update timestamps.
-- Links and labels merge by identity. When Beads is newer for the issue, imported Beads labels/links are reconciled to the Beads set while leaving non-Beads/local labels and links untouched.
+- Labels and links use mapping rows too.
+  - Label external IDs are deterministic: `<issue_external_id>:label:<normalized_label>`.
+  - Link external IDs are deterministic: `<from_external_id>:<type>:<to_external_id>` after kata direction mapping.
+  - When Beads is newer for the issue, source-owned labels/links are reconciled to the Beads set.
+  - Non-Beads/local labels and links are untouched.
 
 Footer parsing is fallback only for older imports created before `import_mappings` exists.
+
+## Schema and JSONL Compatibility
+
+Adding `import_mappings` is a schema change:
+
+- Add a normal migration and bump the schema/export version.
+- Existing DBs get the table through the same daemon startup cutover path used by other schema changes.
+- Kata JSONL export/import must preserve `import_mappings`, so backup/restore keeps authoritative source identity.
+- Older JSONL imports without mappings remain valid; footer fallback can recover Beads issue identity where possible, but not comment identity.
 
 ## Timestamp Fidelity
 
@@ -188,7 +206,7 @@ The endpoint performs all import writes for a request transactionally enough to 
 6. Insert missing comments by comment mapping, preserving comment timestamps.
 7. Resolve links after all issues have either been created or matched through mappings.
 8. Insert or reconcile source-owned links for created/source-newer issues.
-9. Emit events and broadcast/hooks for created, updated, commented, and linked state.
+9. Emit events and broadcast/hooks for created, updated, commented, labeled/unlabeled, linked/unlinked state.
 10. Return summary plus per-item created/updated/unchanged info.
 
 Bad source data should fail with validation errors where the caller can fix input. Missing link targets should reject the request so a migration does not silently lose dependency information.
@@ -222,7 +240,7 @@ Adapter unit tests:
 - parse `bd comments --json`;
 - normalize labels, including invalid and overlong labels;
 - build footer;
-- map dependencies to `blocks` links;
+- map dependencies to `blocks` links with kata blocker-to-blocked direction;
 - reject unsupported Beads status values.
 
 Daemon import endpoint tests:
@@ -230,7 +248,8 @@ Daemon import endpoint tests:
 - creates issues with exact `created_at`, `updated_at`, `closed_at`;
 - imports labels, comments, and links;
 - preserves comment timestamps;
-- creates `import_mappings` for issues and comments;
+- creates `import_mappings` for issues, comments, labels, and links;
+- exports/imports `import_mappings` through kata JSONL;
 - reimport upserts source-newer issues;
 - reimport leaves local-newer issues unchanged while adding missing comments;
 - rejects invalid source, blank actor, invalid status, and bad link target;
@@ -241,7 +260,8 @@ CLI tests:
 - `kata import --format beads --input file` is rejected;
 - missing kata project in unattended mode errors with `run kata init first`;
 - fake `bd` in `PATH` supplies export/comments fixtures and import succeeds;
-- human summary and JSON summary are stable.
+- human summary and JSON summary are stable;
+- existing kata JSONL import remains compatible when no `--format` is supplied.
 
 Existing DB behavior tests:
 
@@ -251,7 +271,7 @@ Existing DB behavior tests:
 ## Non-goals
 
 - Pure JSONL Beads import through `--input`.
-- Pure JSONL upsert without live Beads.
+- Pure JSONL Beads upsert without live Beads.
 - Full Beads Dolt history import.
 - First-class kata fields for Beads priority/type.
 - Importing Beads memories or infrastructure records.
