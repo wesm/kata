@@ -30,7 +30,7 @@ func TestEdge_WindowResize_NoPanic(t *testing.T) {
 	m.list.issues = snapListFixture()
 	m.list.issues[0].Title = "fix login bug on Safari with an unusually long regression title"
 
-	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 120, Height: 30})
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 140, Height: 30})
 	wide := m.View()
 	if !strings.Contains(wide, "fix login bug on Safari with an unusually long regression title") {
 		t.Fatalf("wide render missing full title:\n%s", wide)

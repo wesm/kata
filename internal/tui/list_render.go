@@ -467,13 +467,13 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 }
 
 // listTableHeaders returns the column-header label slice for the
-// list table. Wide (default) mode renders six columns including
-// owner; narrow (M6 split-mode list pane) drops owner.
+// list table. Wide (default) mode renders the prio + owner columns;
+// narrow (M6 split-mode list pane) drops owner.
 func listTableHeaders(narrow bool) []string {
 	if narrow {
-		return []string{"", "", "", "#", "status", "title", "kids", "updated"}
+		return []string{"", "", "", "#", "prio", "status", "title", "kids", "updated"}
 	}
-	return []string{"", "", "", "#", "status", "title", "kids", "owner", "updated"}
+	return []string{"", "", "", "#", "prio", "status", "title", "kids", "owner", "updated"}
 }
 
 // tableHeaderRow renders just the column-header line at the given
@@ -492,17 +492,17 @@ func tableHeaderRow(width int, narrow bool) string {
 }
 
 // listColWidths holds the per-column cell widths the list table renders
-// at. Fixed columns (cursor / # / status / owner / updated) take what
-// they need; the title column flexes to fill the rest of the terminal
-// with a 20-cell floor so titles stay readable on narrow terminals.
+// at. Fixed columns (cursor / # / prio / status / owner / updated) take
+// what they need; the title column flexes to fill the rest of the
+// terminal with a 20-cell floor so titles stay readable on narrow
+// terminals.
 type listColWidths struct {
-	cursor, context, tree, num, status, title, children, owner, updated int
+	cursor, context, tree, num, prio, status, title, children, owner, updated int
 }
 
 // byIndex maps a table column index to its width. The narrow flag
-// shifts the updated column from index 5 (wide) to index 4 (narrow,
-// owner dropped) so the table's per-column StyleFunc still picks
-// the right width.
+// shifts the updated column down by one (owner dropped) so the table's
+// per-column StyleFunc still picks the right width.
 func (c listColWidths) byIndex(col int, narrow bool) int {
 	if narrow {
 		switch col {
@@ -515,12 +515,14 @@ func (c listColWidths) byIndex(col int, narrow bool) int {
 		case 3:
 			return c.num
 		case 4:
-			return c.status
+			return c.prio
 		case 5:
-			return c.title
+			return c.status
 		case 6:
-			return c.children
+			return c.title
 		case 7:
+			return c.children
+		case 8:
 			return c.updated
 		}
 		return 0
@@ -535,14 +537,16 @@ func (c listColWidths) byIndex(col int, narrow bool) int {
 	case 3:
 		return c.num
 	case 4:
-		return c.status
+		return c.prio
 	case 5:
-		return c.title
+		return c.status
 	case 6:
-		return c.children
+		return c.title
 	case 7:
-		return c.owner
+		return c.children
 	case 8:
+		return c.owner
+	case 9:
 		return c.updated
 	}
 	return 0
@@ -561,12 +565,13 @@ func listColumnWidths(termWidth int, narrow bool) listColWidths {
 		context:  2,  // "~" + padding
 		tree:     4,  // disclosure + shallow indent
 		num:      6,  // "#9999"
+		prio:     5,  // "prio" header / "P0" cell + padding
 		status:   10, // "[deleted]"
 		children: 8,  // "12/100"
 		owner:    14,
 		updated:  10, // "12w ago"
 	}
-	fixed := c.cursor + c.context + c.tree + c.num + c.status + c.children + c.updated
+	fixed := c.cursor + c.context + c.tree + c.num + c.prio + c.status + c.children + c.updated
 	if !narrow {
 		fixed += c.owner
 	}
@@ -825,6 +830,7 @@ func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool, chrome vie
 			contextMarker(qr.context),
 			treeCell(qr),
 			fmt.Sprintf("#%d", iss.Number),
+			priorityCell(iss.Priority),
 			statusChip(iss),
 			title,
 			childCountCell(iss.ChildCounts),
@@ -912,6 +918,16 @@ func selMarker(selected bool) string {
 		return "▶"
 	}
 	return " "
+}
+
+// priorityCell renders the priority column for the list table. Renders
+// "P0".."P4" when set, em dash when nil. Kept short (≤2 cells of text)
+// so the 4-cell column never overflows.
+func priorityCell(p *int64) string {
+	if p == nil {
+		return subtleStyle.Render("—")
+	}
+	return fmt.Sprintf("P%d", *p)
 }
 
 // statusChip picks the right colored chip text for the issue.

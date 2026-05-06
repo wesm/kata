@@ -267,6 +267,59 @@ func TestDetail_AddLink_Other(t *testing.T) {
 	}
 }
 
+// TestDetail_SetPriority_OpensPromptAndDispatches: '!' opens an
+// inputPriorityPrompt; commit of "1" calls api.SetPriority(*int64=1).
+func TestDetail_SetPriority_OpensPromptAndDispatches(t *testing.T) {
+	api, dm, km := setupMutationTest(t)
+
+	_, cmd := dm.Update(runeKey('!'), km, api)
+	requireInputPrompt(t, cmd, inputPriorityPrompt)
+	_ = executePromptCommit(t, dm, api, km, inputPriorityPrompt, "1")
+	if api.setPriorityCalls != 1 {
+		t.Fatalf("setPriorityCalls = %d, want 1", api.setPriorityCalls)
+	}
+	if api.lastPriority == nil || *api.lastPriority != 1 {
+		t.Fatalf("lastPriority = %v, want *int64=1", api.lastPriority)
+	}
+	if api.lastActor != "tester" {
+		t.Fatalf("lastActor = %q, want tester", api.lastActor)
+	}
+}
+
+// TestDetail_SetPriority_ClearWithDash: commit of "-" clears via a nil
+// priority pointer, mirroring CLI's `--priority -`.
+func TestDetail_SetPriority_ClearWithDash(t *testing.T) {
+	api, dm, km := setupMutationTest(t)
+
+	_ = executePromptCommit(t, dm, api, km, inputPriorityPrompt, "-")
+	if api.setPriorityCalls != 1 {
+		t.Fatalf("setPriorityCalls = %d, want 1", api.setPriorityCalls)
+	}
+	if api.lastPriority != nil {
+		t.Fatalf("lastPriority = %v, want nil (clear)", api.lastPriority)
+	}
+}
+
+// TestDetail_SetPriority_ParseFailure: out-of-range or non-numeric
+// input does not reach the API; the status surfaces a parse error.
+func TestDetail_SetPriority_ParseFailure(t *testing.T) {
+	for _, bad := range []string{"5", "abc", "-1"} {
+		api := &fakeDetailAPI{}
+		km := newKeymap()
+		dm := dmFixture()
+
+		out := executePromptCommit(t, dm, api, km, inputPriorityPrompt, bad)
+		if api.setPriorityCalls != 0 {
+			t.Fatalf("input %q: setPriorityCalls = %d, want 0",
+				bad, api.setPriorityCalls)
+		}
+		if !strings.Contains(out.status, "failed") {
+			t.Fatalf("input %q: status = %q, want failure hint",
+				bad, out.status)
+		}
+	}
+}
+
 // TestDetail_AddLink_OtherParseFailure: a single-token buffer "noop"
 // should not call api.AddLink — dispatchAddLinkSyntax surfaces a
 // parse-failed status via the synthetic mutationDoneMsg path.

@@ -33,6 +33,7 @@ type Issue struct {
 	ParentNumber *int64       `json:"parent_number,omitempty"`
 	ChildCounts  *ChildCounts `json:"child_counts,omitempty"`
 	Blocks       []int64      `json:"blocks,omitempty"`
+	Priority     *int64       `json:"priority,omitempty"`
 }
 
 // ChildCounts is the direct-child aggregate attached to queue/detail rows.

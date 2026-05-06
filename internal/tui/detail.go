@@ -56,6 +56,9 @@ type detailAPI interface {
 	Assign(
 		ctx context.Context, projectID, number int64, owner, actor string,
 	) (*MutationResp, error)
+	SetPriority(
+		ctx context.Context, projectID, number int64, priority *int64, actor string,
+	) (*MutationResp, error)
 	AddLink(
 		ctx context.Context, projectID, number int64, body LinkBody, actor string,
 	) (*MutationResp, error)

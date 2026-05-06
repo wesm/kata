@@ -3,6 +3,7 @@
   #42  fix login bug on Safari                                                              [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: #12 workspace polish parent                                                                     
+  priority: none                                                                                                        
   children: 1 open / 2 total                                                                                            
                                                                                                                         
   Body                                                                                                                  
@@ -19,7 +20,6 @@
                                                                                                                         
     bob    Apr 30 11:00                                                                                                 
     Looks like a race in oauth.                                                                                         
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

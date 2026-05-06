@@ -34,6 +34,7 @@ func TestDetailDocumentPage80x50LayoutSignals(t *testing.T) {
 		"owner: alice",
 		"labels: [bug] [needs-design] [prio-1]",
 		"parent: #12 workspace polish parent",
+		"priority: none",
 		"children: 1 open / 2 total",
 		"Body",
 		"Children",

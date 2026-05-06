@@ -28,6 +28,7 @@ const (
 	inputParentPrompt      // detail `p` — set parent
 	inputBlockerPrompt     // detail `b` — add blocker
 	inputLinkPrompt        // detail `L` — add link "kind number"
+	inputPriorityPrompt    // detail `!` — set priority (0..4 or '-' to clear)
 	inputNewIssueForm      // list `n` — multi-field modal: Title/Body/Labels/Owner
 	inputBodyEditForm      // detail `e` — centered multi-line body editor
 	inputCommentForm       // detail `c` — centered multi-line comment editor
@@ -39,7 +40,8 @@ const (
 func (k inputKind) isPanelPrompt() bool {
 	switch k {
 	case inputLabelPrompt, inputRemoveLabelPrompt, inputOwnerPrompt,
-		inputParentPrompt, inputBlockerPrompt, inputLinkPrompt:
+		inputParentPrompt, inputBlockerPrompt, inputLinkPrompt,
+		inputPriorityPrompt:
 		return true
 	}
 	return false
@@ -626,6 +628,8 @@ func panelPromptTitle(kind inputKind, n int64) string {
 		return fmt.Sprintf("add blocker to #%d", n)
 	case inputLinkPrompt:
 		return fmt.Sprintf("add link to #%d (kind number)", n)
+	case inputPriorityPrompt:
+		return fmt.Sprintf("set priority of #%d (0..4 or '-')", n)
 	}
 	return ""
 }

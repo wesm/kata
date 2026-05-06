@@ -136,6 +136,21 @@ func (c *Client) Assign(
 		map[string]string{"owner": owner, "actor": actor})
 }
 
+// SetPriority sends the issue's priority through /actions/priority. A
+// nil priority clears the field. Mirrors Assign's pattern of routing
+// the optional/clear case through the same endpoint with a nil body
+// field; the daemon distinguishes set-vs-clear from the JSON shape.
+func (c *Client) SetPriority(
+	ctx context.Context, projectID, number int64, priority *int64, actor string,
+) (*MutationResp, error) {
+	body := map[string]any{"actor": actor}
+	if priority != nil {
+		body["priority"] = *priority
+	}
+	return c.mutate(ctx, http.MethodPost,
+		issuePath(projectID, number)+"/actions/priority", body)
+}
+
 // AddLink creates a typed link from this issue to body.ToNumber.
 func (c *Client) AddLink(
 	ctx context.Context, projectID, number int64, body LinkBody, actor string,

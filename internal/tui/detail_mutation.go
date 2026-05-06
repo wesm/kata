@@ -73,6 +73,8 @@ func (dm detailModel) handleModalOpenKey(
 		kind = inputBlockerPrompt
 	case km.AddLink.matches(msg):
 		kind = inputLinkPrompt
+	case km.SetPriority.matches(msg):
+		kind = inputPriorityPrompt
 	default:
 		return dm, nil, false
 	}
@@ -105,6 +107,8 @@ func (dm detailModel) dispatchPanelPromptCommit(
 		return dm, dm.dispatchLink(api, "blocks", buf)
 	case inputLinkPrompt:
 		return dm, dm.dispatchAddLinkSyntax(api, buf)
+	case inputPriorityPrompt:
+		return dm, dm.dispatchSetPriority(api, buf)
 	}
 	return dm, nil
 }
@@ -139,17 +143,19 @@ func (dm detailModel) applyMutation(
 // mutationSuccessText. Keeping the dispatch table-driven keeps the
 // formatter at cyclomatic ≤8 and makes adding kinds (Task 11+) trivial.
 var successTemplates = map[string]string{
-	"close":        "closed #%d",
-	"reopen":       "reopened #%d",
-	"label.add":    "added label to #%d",
-	"label.remove": "removed label from #%d",
-	"owner.assign": "assigned #%d",
-	"owner.clear":  "unassigned #%d",
-	"link.parent":  "linked #%d",
-	"link.blocks":  "linked #%d",
-	"link.relates": "linked #%d",
-	"body.edit":    "updated body of #%d",
-	"comment.add":  "added comment to #%d",
+	"close":          "closed #%d",
+	"reopen":         "reopened #%d",
+	"label.add":      "added label to #%d",
+	"label.remove":   "removed label from #%d",
+	"owner.assign":   "assigned #%d",
+	"owner.clear":    "unassigned #%d",
+	"link.parent":    "linked #%d",
+	"link.blocks":    "linked #%d",
+	"link.relates":   "linked #%d",
+	"body.edit":      "updated body of #%d",
+	"comment.add":    "added comment to #%d",
+	"priority.set":   "set priority of #%d",
+	"priority.clear": "cleared priority of #%d",
 }
 
 // mutationSuccessText is the per-kind toast for a successful mutation.
@@ -300,6 +306,55 @@ func (dm detailModel) dispatchLink(
 		resp, err := api.AddLink(ctx, pid, num, body, actor)
 		return mutationDoneMsg{
 			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
+		}
+	}
+}
+
+// dispatchSetPriority parses the priority prompt buffer. "-" clears,
+// "0".."4" sets. Mirrors the CLI's parseEditPriority shape so the two
+// surfaces accept the same input. Bad input surfaces as a parse error
+// via the same parseFailedCmd path the link prompt uses.
+func (dm detailModel) dispatchSetPriority(
+	api detailAPI, buf string,
+) tea.Cmd {
+	if dm.issue == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(buf)
+	var (
+		priority *int64
+		kind     = "priority.set"
+	)
+	if trimmed == "-" {
+		kind = "priority.clear"
+	} else {
+		n, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil || n < 0 || n > 4 {
+			return parsePriorityFailedCmd(buf, dm.gen)
+		}
+		priority = &n
+	}
+	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := api.SetPriority(ctx, pid, num, priority, actor)
+		return mutationDoneMsg{
+			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
+		}
+	}
+}
+
+// parsePriorityFailedCmd is the priority-prompt analog of parseFailedCmd:
+// surfaces a parse error through the standard mutationDoneMsg path so
+// the detail status line picks it up.
+func parsePriorityFailedCmd(input string, gen int64) tea.Cmd {
+	return func() tea.Msg {
+		return mutationDoneMsg{
+			origin: "detail",
+			gen:    gen,
+			kind:   "priority.set",
+			err:    fmt.Errorf("parse %q failed: expected 0..4 or '-' to clear", input),
 		}
 	}
 }

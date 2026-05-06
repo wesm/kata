@@ -3,6 +3,7 @@
   #42  fix login bug on Safari                                                              [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: none                                                                                            
+  priority: none                                                                                                        
                                                                                                                         
   Body                                                                                                                  
   Reproduces in Safari 17 only.                                                                                         
@@ -24,7 +25,6 @@
     actor-5   Apr 30 10:04                                                                                              
     comment body 5                                                                                                      
                                                                                                                         
-    actor-6   Apr 30 10:05                                                                                              
-                                                                                                     [lines 1-25 of 99] 
+                                                                                                    [lines 1-25 of 100] 
  ↑↓ scroll▕ j/k row ▕ ↹ section▕ ↵ open ▕ pgup/pgdn page▕ e edit ▕ c comment▕ + label ▕ - unlabel▕ a owner▕ A unassign  
  x close  ▕ r reopen▕ p parent ▕ b block▕ l link        ▕ N child▕ L layout ▕ esc back▕ ? help   ▕ q quit               

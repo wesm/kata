@@ -17,6 +17,9 @@ func ptrString(s string) *string { return &s }
 // ptrTime is the time.Time companion to ptrString.
 func ptrTime(t time.Time) *time.Time { return &t }
 
+// ptrInt64 is the *int64 companion used by Priority fixtures.
+func ptrInt64(n int64) *int64 { return &n }
+
 // listFixture is the on-screen seed for the list tests. Three rows cover
 // the open, closed, and soft-deleted statusChip branches without booting
 // a real daemon. The deleted row keeps statusChip's DeletedAt branch
@@ -69,6 +72,29 @@ func TestList_Render_Fixture(t *testing.T) {
 		return strings.Contains(s, "fix login bug on Safari") &&
 			strings.Contains(s, "[deleted]")
 	}, teatest.WithDuration(2*time.Second))
+}
+
+// TestList_Render_PriorityColumn drives the priority cell through both
+// the set ("P1") and unset ("—") branches at the column level so a
+// regression in priorityCell or buildRows doesn't have to wait for a
+// snapshot file to flag it.
+func TestList_Render_PriorityColumn(t *testing.T) {
+	lm := newListModel()
+	lm.loading = false
+	lm.issues = []Issue{
+		{Number: 1, Title: "with priority", Status: "open", Priority: ptrInt64(1)},
+		{Number: 2, Title: "without priority", Status: "open"},
+	}
+	out := lm.View(140, 30, viewChrome{})
+	if !strings.Contains(out, "P1") {
+		t.Fatalf("rendered list missing P1 priority cell:\n%s", out)
+	}
+	// The em dash is the unset placeholder; rendered with subtle style
+	// so we strip ANSI before checking presence.
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "—") {
+		t.Fatalf("rendered list missing — for unset priority:\n%s", plain)
+	}
 }
 
 // TestList_Cursor_DownAndUp drives j/j/k against the three-row fixture

@@ -3,13 +3,13 @@
   #1  fix the tui to be less shitty                                                         [open]                                                              
   authored by anonymous · created May 2 19:15 · updated 21h ago                                                                                                 
   owner: none   parent: none                                                                                                                                    
+  priority: none                                                                                                                                                
                                                                                                                                                                 
   Body                                                                                                                                                          
   enter some stuff here                                                                                                                                         
                                                                                                                                                                 
   Activity   Comments (0)   [ Events (1) ]   Links (0)                                                                                                          
   > [issue.created] 2026-05-02 19:16 anonymous — created                                                                                                        
-                                                                                                                                                                
                                                                                                                                                                 
                                                                                                                                                                 
                                                                                                                                                                 

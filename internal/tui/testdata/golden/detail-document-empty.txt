@@ -2,10 +2,10 @@
 
   #99  empty issue                                                        [open]
   owner: none   parent: none                                                    
+  priority: none                                                                
                                                                                 
   Body                                                                          
   (no description)                                                              
-                                                                                
                                                                                 
                                                                                 
                                                                                 

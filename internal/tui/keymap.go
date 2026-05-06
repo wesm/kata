@@ -20,6 +20,7 @@ type keymap struct {
 	EditBody, NewComment                           key
 	SetParent, AddBlocker, AddLink                 key
 	AddLabel, RemoveLabel, AssignOwner, ClearOwner key
+	SetPriority                                    key
 }
 
 // key is a binding plus its human label. matches() compares against the
@@ -82,6 +83,7 @@ func newKeymap() keymap {
 		RemoveLabel:  key{Keys: []string{"-"}, Help: "remove label"},
 		AssignOwner:  key{Keys: []string{"a"}, Help: "assign owner"},
 		ClearOwner:   key{Keys: []string{"A"}, Help: "clear owner"},
+		SetPriority:  key{Keys: []string{"!"}, Help: "set priority"},
 	}
 }
 

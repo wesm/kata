@@ -36,6 +36,7 @@ l              add link
 -              remove label
 a              assign owner
 A              clear owner
+!              set priority
 
 Children
 N      new child

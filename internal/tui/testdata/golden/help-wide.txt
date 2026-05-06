@@ -14,12 +14,12 @@ down    scroll down           +              add label                   f      
 pgup    page up               -              remove label                c       clear filters       
 pgdown  page down             a              assign owner                ctrl+r  reset filter form   
 g       first                 A              clear owner                                             
-G       last                                                                                         
-enter   open detail           Children                                                               
-space   expand/collapse       N      new child                                                       
-n       new issue (form)      j/k    move child cursor                                               
-o       toggle graph order    ↑↓     scroll detail viewport                                          
-x       close                 enter  open child                                                      
-r       reopen                                                                                       
+G       last                  !              set priority                                            
+enter   open detail                                                                                  
+space   expand/collapse       Children                                                               
+n       new issue (form)      N      new child                                                       
+o       toggle graph order    j/k    move child cursor                                               
+x       close                 ↑↓     scroll detail viewport                                          
+r       reopen                enter  open child                                                      
 
 press ? to return

@@ -208,6 +208,8 @@ func renderDocumentMetadata(
 	owner := metadataLabel("owner:") + " " + ownerDocumentText(iss.Owner)
 	parentText := metadataLabel("parent:") + " " + parentDocumentText(parent)
 	rows = append(rows, joinMetadataRow(owner, parentText, width)...)
+	priorityText := metadataLabel("priority:") + " " + priorityDocumentText(iss.Priority)
+	rows = append(rows, truncate(priorityText, width))
 	if len(iss.Labels) > 0 {
 		labelsBudget := width - runewidth.StringWidth("labels: ")
 		labels := metadataLabel("labels:") + " " + labelsDocumentText(iss.Labels, labelsBudget)
@@ -291,6 +293,16 @@ func parentDocumentText(parent *IssueRef) string {
 		return "none"
 	}
 	return fmt.Sprintf("#%d %s", parent.Number, sanitizeForDisplay(parent.Title))
+}
+
+// priorityDocumentText renders the priority value for the detail
+// metadata row. Pn for a set value (n in 0..4, where 0 is highest
+// priority); "none" when unset.
+func priorityDocumentText(p *int64) string {
+	if p == nil {
+		return "none"
+	}
+	return fmt.Sprintf("P%d", *p)
 }
 
 // renderDocumentSectionHeader renders a section label (Body /

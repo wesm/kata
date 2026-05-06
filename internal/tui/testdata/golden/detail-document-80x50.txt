@@ -3,6 +3,7 @@
   #42  fix login bug on Safari                                            [open]
   authored by wesm · created Apr 30 10:00 · updated 3h ago                      
   owner: alice   parent: #12 workspace polish parent                            
+  priority: none                                                                
   labels: [bug] [needs-design] [prio-1]                                         
   children: 1 open / 2 total                                                    
                                                                                 
@@ -20,7 +21,6 @@
                                                                                 
     bob    Apr 30 11:00                                                         
     Looks like a race in oauth.                                                 
-                                                                                
                                                                                 
                                                                                 
                                                                                 

@@ -813,6 +813,7 @@ type fakeDetailAPI struct {
 	addLinkCalls     int
 	editBodyCalls    int
 	addCommentCalls  int
+	setPriorityCalls int
 
 	lastProjectID int64
 	lastNumber    int64
@@ -821,6 +822,7 @@ type fakeDetailAPI struct {
 	lastOwner     string
 	lastBody      string
 	lastLinkBody  LinkBody
+	lastPriority  *int64
 
 	mutationResult *MutationResp
 	mutationErr    error
@@ -903,6 +905,17 @@ func (f *fakeDetailAPI) Assign(
 	f.lastProjectID = projectID
 	f.lastNumber = number
 	f.lastOwner = owner
+	f.lastActor = actor
+	return f.mutationResult, f.mutationErr
+}
+
+func (f *fakeDetailAPI) SetPriority(
+	_ context.Context, projectID, number int64, priority *int64, actor string,
+) (*MutationResp, error) {
+	f.setPriorityCalls++
+	f.lastProjectID = projectID
+	f.lastNumber = number
+	f.lastPriority = priority
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }

@@ -30,6 +30,7 @@ func helpSections(km keymap) []helpSection {
 			r(km.EditBody), r(km.NewComment), r(km.SetParent),
 			r(km.AddBlocker), r(km.AddLink), r(km.AddLabel),
 			r(km.RemoveLabel), r(km.AssignOwner), r(km.ClearOwner),
+			r(km.SetPriority),
 		}},
 		{"Children", []helpItem{
 			r(km.NewChild),

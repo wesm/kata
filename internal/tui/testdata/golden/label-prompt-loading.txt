@@ -3,6 +3,7 @@
   #42  fix login bug on Safari                                                              [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: none                                                                                            
+  priority: none                                                                                                        
                                                                                                                         
   Body                                                                                                                  
   Reproduces in Safari 17 only.                                                                                         
@@ -14,7 +15,6 @@
                                                                                                                         
     bob    Apr 30 11:00                                                                                                 
     Looks like a race in oauth.                                                                                         
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

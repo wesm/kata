@@ -113,6 +113,7 @@ func snapListFixture() []Issue {
 		{
 			Number: 1, Title: "fix login bug on Safari",
 			Status: "open", Owner: ptrString("claude-4.7"),
+			Priority:  ptrInt64(1),
 			UpdatedAt: snapshotFixedNow.Add(-3 * time.Hour),
 		},
 		{
