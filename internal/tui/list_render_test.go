@@ -336,6 +336,22 @@ func TestRenderListBody_HeaderBackgroundReplacesSeparatorRule(t *testing.T) {
 	}
 }
 
+func TestListView_BodyBudgetCountsOnlyTableHeader(t *testing.T) {
+	useNoColor(t)
+	lm := listModel{issues: []Issue{
+		{Number: 1, Title: "one", Status: "open"},
+		{Number: 2, Title: "two", Status: "open"},
+		{Number: 3, Title: "three", Status: "open"},
+		{Number: 4, Title: "four", Status: "open"},
+	}}
+
+	got := stripANSI(lm.View(100, 10, viewChrome{scope: scope{projectName: "kata"}}))
+	assertContainsAll(t, got, "one", "two", "three", "four", "[1/4]")
+	if strings.Contains(got, "[1-3 of 4]") {
+		t.Fatalf("scroll indicator used stale header+separator budget:\n%s", got)
+	}
+}
+
 func TestRenderListBody_EmptyStateDoesNotRenderSeparatorRule(t *testing.T) {
 	applyColorMode(colorDark, io.Discard)
 	lm := listModel{}

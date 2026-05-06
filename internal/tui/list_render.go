@@ -45,7 +45,7 @@ type viewChrome struct {
 //
 //   - line 1: title bar (brand · project · version)
 //   - line 2: stats line (counts + filter chips)
-//   - lines 3..H-N: table (header + separator + windowed rows, padded
+//   - lines 3..H-N: table (header + windowed rows, padded
 //     so the adaptive footer pins to the bottom of the terminal
 //     regardless of row count)
 //   - line H-1: info line (active input bar OR scroll/flash text)
@@ -74,13 +74,13 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 	// Body area: everything between header (lines 1-2) and the
 	// info+adaptive footer. bodyRows is computed first so the
 	// info-line scroll indicator uses the actual budget. The
-	// table-overhead cost (header + separator) is baked into
-	// renderBodyArea, so bodyRows here is the full body region.
+	// table-overhead cost (header row) is baked into renderBodyArea,
+	// so bodyRows here is the full body region.
 	bodyRows := height - 2 /* header */ - 1 /* info */ - footerLines
 	if bodyRows < listBodyFloor {
 		bodyRows = listBodyFloor
 	}
-	dataBudget := bodyRows - 2 /* table header + separator */
+	dataBudget := bodyRows - 1 /* table header */
 	if dataBudget < 1 {
 		dataBudget = 1
 	}
@@ -91,7 +91,7 @@ func (lm listModel) View(width, height int, chrome viewChrome) string {
 }
 
 // ViewBody returns the body region for an M6 split-mode list pane:
-// table header + separator + windowed rows + fillScreen padding so
+// table header + windowed rows + fillScreen padding so
 // the pane reaches `bodyRows` lines tall. Pulls the narrow flag off
 // chrome so renderBody knows to drop the owner column. The chrome /
 // title-bar / info-line / footer are composed by renderSplit, not
@@ -132,7 +132,7 @@ func (lm listModel) renderTinyFallback(width int) string {
 // in M6 split-mode. The narrow flag stays scoped to renderBody +
 // helpers — chrome boilerplate (title/footer) is unaffected.
 func (lm listModel) renderBodyArea(width, bodyRows int, chrome viewChrome) string {
-	body := lm.renderBody(width, bodyRows-2 /* header + sep */, chrome)
+	body := lm.renderBody(width, bodyRows-1 /* header */, chrome)
 	rendered := strings.Split(body, "\n")
 	for len(rendered) < bodyRows {
 		rendered = append(rendered, normalRowStyle.Render(strings.Repeat(" ", width)))
