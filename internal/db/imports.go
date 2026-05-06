@@ -55,6 +55,7 @@ type ImportBatchResult struct {
 	Comments  int                `json:"comments"`
 	Links     int                `json:"links"`
 	Items     []ImportItemResult `json:"items"`
+	Errors    []string           `json:"errors"`
 }
 
 type ImportItemResult struct {
@@ -98,7 +99,7 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 		return ImportBatchResult{}, nil, fmt.Errorf("lookup import project: %w", err)
 	}
 
-	result := ImportBatchResult{Source: p.Source, Items: make([]ImportItemResult, 0, len(p.Items))}
+	result := ImportBatchResult{Source: p.Source, Items: make([]ImportItemResult, 0, len(p.Items)), Errors: []string{}}
 	events := []Event{}
 	states := make(map[string]*importIssueState, len(p.Items))
 

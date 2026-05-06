@@ -47,6 +47,12 @@ func withHooksSink(sink hooks.Sink) serverOption {
 	return func(c *daemon.ServerConfig) { c.Hooks = sink }
 }
 
+// withBroadcaster installs b as the daemon's EventBroadcaster so tests can
+// subscribe before invoking handlers that should broadcast mutation events.
+func withBroadcaster(b *daemon.EventBroadcaster) serverOption {
+	return func(c *daemon.ServerConfig) { c.Broadcaster = b }
+}
+
 // issuesURL returns the issues collection URL for the given project rowid.
 func issuesURL(projectID int64) string {
 	return fmt.Sprintf("/api/v1/projects/%d/issues", projectID)

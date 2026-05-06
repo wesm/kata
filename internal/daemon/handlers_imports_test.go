@@ -3,11 +3,14 @@ package daemon_test
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/testenv"
 )
@@ -36,9 +39,10 @@ func TestImportEndpoint_CreatesAndReimports(t *testing.T) {
 		}},
 	}
 	var out struct {
-		Source   string `json:"source"`
-		Created  int    `json:"created"`
-		Comments int    `json:"comments"`
+		Source   string   `json:"source"`
+		Created  int      `json:"created"`
+		Comments int      `json:"comments"`
+		Errors   []string `json:"errors"`
 		Items    []struct {
 			IssueNumber int64 `json:"issue_number"`
 		} `json:"items"`
@@ -47,6 +51,8 @@ func TestImportEndpoint_CreatesAndReimports(t *testing.T) {
 	assert.Equal(t, "beads", out.Source)
 	assert.Equal(t, 1, out.Created)
 	assert.Equal(t, 1, out.Comments)
+	assert.NotNil(t, out.Errors, "success response should emit errors: []")
+	assert.Empty(t, out.Errors)
 	require.Len(t, out.Items, 1)
 
 	var second struct {
@@ -65,6 +71,49 @@ func TestImportEndpoint_CreatesAndReimports(t *testing.T) {
 	err = env.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM comments WHERE issue_id = ?`, issue.ID).Scan(&commentCount)
 	require.NoError(t, err)
 	assert.Equal(t, 1, commentCount, "reimport should not duplicate mapped comments")
+}
+
+func TestImportEndpoint_BroadcastsAndEnqueuesHookEvents(t *testing.T) {
+	sink := &recordingSink{}
+	bcast := daemon.NewEventBroadcaster()
+	h, pid := bootstrapProject(t, withHooksSink(sink), withBroadcaster(bcast))
+	ts := h.ts.(*httptest.Server)
+	sub := bcast.Subscribe(daemon.SubFilter{ProjectID: pid})
+	defer sub.Unsub()
+
+	body := map[string]any{
+		"actor":  "importer",
+		"source": "beads",
+		"items": []map[string]any{{
+			"external_id": "beads-1",
+			"title":       "Imported",
+			"body":        "body",
+			"author":      "alice",
+			"status":      "open",
+			"created_at":  "2026-05-01T10:00:00Z",
+			"updated_at":  "2026-05-01T10:00:00Z",
+			"comments": []map[string]any{{
+				"external_id": "c1",
+				"author":      "alice",
+				"body":        "comment",
+				"created_at":  "2026-05-01T10:01:00Z",
+			}},
+		}},
+	}
+
+	resp, bs := postJSON(t, ts, importEndpointPath(pid), body)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "import status: %s", string(bs))
+
+	broadcastTypes := []string{
+		receiveMsg(t, sub.Ch, time.Second, "issue created broadcast").Event.Type,
+		receiveMsg(t, sub.Ch, time.Second, "comment broadcast").Event.Type,
+	}
+	assert.Equal(t, []string{"issue.created", "issue.commented"}, broadcastTypes)
+
+	captured := sink.snapshot()
+	require.Len(t, captured, 2)
+	hookTypes := []string{captured[0].Type, captured[1].Type}
+	assert.Equal(t, broadcastTypes, hookTypes)
 }
 
 func TestImportEndpoint_SourceNewerUpdatesIssue(t *testing.T) {
