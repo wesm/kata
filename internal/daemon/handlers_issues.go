@@ -107,10 +107,20 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
 			return nil, err
 		}
+		priority, err := parsePriorityQuery(in.Priority, "priority")
+		if err != nil {
+			return nil, err
+		}
+		maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
+		if err != nil {
+			return nil, err
+		}
 		issues, err := cfg.DB.ListIssues(ctx, db.ListIssuesParams{
-			ProjectID: in.ProjectID,
-			Status:    in.Status,
-			Limit:     in.Limit,
+			ProjectID:   in.ProjectID,
+			Status:      in.Status,
+			Priority:    priority,
+			MaxPriority: maxPriority,
+			Limit:       in.Limit,
 		})
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
@@ -138,10 +148,20 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 				return nil, err
 			}
 		}
+		priority, err := parsePriorityQuery(in.Priority, "priority")
+		if err != nil {
+			return nil, err
+		}
+		maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
+		if err != nil {
+			return nil, err
+		}
 		issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
-			ProjectID: in.ProjectID,
-			Status:    in.Status,
-			Limit:     in.Limit,
+			ProjectID:   in.ProjectID,
+			Status:      in.Status,
+			Priority:    priority,
+			MaxPriority: maxPriority,
+			Limit:       in.Limit,
 		})
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)

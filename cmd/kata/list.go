@@ -13,12 +13,20 @@ import (
 func newListCmd() *cobra.Command {
 	var status string
 	var limit int
+	var priority int
+	var maxPriority int
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "list issues in this project",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if limit <= 0 {
 				return &cliError{Message: "--limit must be a positive integer", Kind: kindValidation, ExitCode: ExitValidation}
+			}
+			if cmd.Flags().Changed("priority") && (priority < 0 || priority > 4) {
+				return &cliError{Message: "--priority must be between 0 and 4", Kind: kindValidation, ExitCode: ExitValidation}
+			}
+			if cmd.Flags().Changed("max-priority") && (maxPriority < 0 || maxPriority > 4) {
+				return &cliError{Message: "--max-priority must be between 0 and 4", Kind: kindValidation, ExitCode: ExitValidation}
 			}
 			ctx := cmd.Context()
 			start, err := resolveStartPath(flags.Workspace)
@@ -44,6 +52,12 @@ func newListCmd() *cobra.Command {
 				apiStatus = ""
 			}
 			url := fmt.Sprintf("%s/api/v1/projects/%d/issues?status=%s&limit=%d", baseURL, pid, apiStatus, limit)
+			if cmd.Flags().Changed("priority") {
+				url += fmt.Sprintf("&priority=%d", priority)
+			}
+			if cmd.Flags().Changed("max-priority") {
+				url += fmt.Sprintf("&max_priority=%d", maxPriority)
+			}
 			httpStatus, bs, err := httpDoJSON(ctx, client, http.MethodGet, url, nil)
 			if err != nil {
 				return err
@@ -92,5 +106,7 @@ func newListCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&status, "status", "open", "filter by status: open|closed|all")
 	cmd.Flags().IntVar(&limit, "limit", 50, "max rows")
+	cmd.Flags().IntVar(&priority, "priority", 0, "exact priority filter (0..4); 0 = highest")
+	cmd.Flags().IntVar(&maxPriority, "max-priority", 0, "include only priority <= this value (0..4)")
 	return cmd
 }

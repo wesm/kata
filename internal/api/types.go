@@ -247,20 +247,28 @@ type MutationResponse struct {
 	}
 }
 
-// ListIssuesRequest is GET /api/v1/projects/{id}/issues.
+// ListIssuesRequest is GET /api/v1/projects/{id}/issues. Priority and
+// MaxPriority are decoded as strings so the absent-vs-zero distinction
+// survives Huma's query parsing (which forbids pointer query types). Empty
+// string means no filter; otherwise parsed as 0..4.
 type ListIssuesRequest struct {
-	ProjectID int64  `path:"project_id" required:"true"`
-	Status    string `query:"status,omitempty" enum:"open,closed,"`
-	Limit     int    `query:"limit,omitempty"`
+	ProjectID   int64  `path:"project_id" required:"true"`
+	Status      string `query:"status,omitempty" enum:"open,closed,"`
+	Priority    string `query:"priority,omitempty" doc:"exact priority filter (0..4); empty = no filter"`
+	MaxPriority string `query:"max_priority,omitempty" doc:"include only priority <= this value (0..4); empty = no filter"`
+	Limit       int    `query:"limit,omitempty"`
 }
 
 // ListAllIssuesRequest is GET /api/v1/issues — the cross-project list. The
 // optional project_id query param narrows to a single project for callers
 // that want one trip through this surface; omit it for the all-projects feed.
+// Priority/MaxPriority are encoded the same way as ListIssuesRequest.
 type ListAllIssuesRequest struct {
-	ProjectID int64  `query:"project_id,omitempty"`
-	Status    string `query:"status,omitempty" enum:"open,closed,"`
-	Limit     int    `query:"limit,omitempty"`
+	ProjectID   int64  `query:"project_id,omitempty"`
+	Status      string `query:"status,omitempty" enum:"open,closed,"`
+	Priority    string `query:"priority,omitempty" doc:"exact priority filter (0..4); empty = no filter"`
+	MaxPriority string `query:"max_priority,omitempty" doc:"include only priority <= this value (0..4); empty = no filter"`
+	Limit       int    `query:"limit,omitempty"`
 }
 
 // IssueOut is the wire projection of one row in ListIssuesResponse.

@@ -702,10 +702,16 @@ func (d *DB) IssueUIDPrefixMatch(ctx context.Context, prefix string, limit int) 
 }
 
 // ListIssuesParams filters list output. Status="" → all. Empty struct → all.
+// Priority and MaxPriority are inclusive: Priority=*1 narrows to exactly P1;
+// MaxPriority=*1 narrows to P0 and P1 (i.e. priority <= MaxPriority). Issues
+// with NULL priority match neither filter — they only surface when both are
+// nil.
 type ListIssuesParams struct {
-	ProjectID int64
-	Status    string // "open" | "closed" | "" (any)
-	Limit     int    // 0 = no limit
+	ProjectID   int64
+	Status      string // "open" | "closed" | "" (any)
+	Priority    *int64 // nil = no filter; non-nil = exactly this value
+	MaxPriority *int64 // nil = no filter; non-nil = priority <= MaxPriority
+	Limit       int    // 0 = no limit
 }
 
 // ListIssues returns issues in the given project, excluding soft-deleted rows.
@@ -715,6 +721,14 @@ func (d *DB) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, error
 	if p.Status != "" {
 		q += ` AND i.status = ?`
 		args = append(args, p.Status)
+	}
+	if p.Priority != nil {
+		q += ` AND i.priority = ?`
+		args = append(args, *p.Priority)
+	}
+	if p.MaxPriority != nil {
+		q += ` AND i.priority IS NOT NULL AND i.priority <= ?`
+		args = append(args, *p.MaxPriority)
 	}
 	q += ` ORDER BY i.updated_at DESC, i.id DESC`
 	if p.Limit > 0 {
@@ -738,10 +752,13 @@ func (d *DB) ListIssues(ctx context.Context, p ListIssuesParams) ([]Issue, error
 
 // ListAllIssuesParams filters cross-project list output. ProjectID==0 means
 // "every project"; >0 narrows to a single project. Status="" → all statuses.
+// Priority and MaxPriority work the same as ListIssuesParams.
 type ListAllIssuesParams struct {
-	ProjectID int64
-	Status    string
-	Limit     int
+	ProjectID   int64
+	Status      string
+	Priority    *int64
+	MaxPriority *int64
+	Limit       int
 }
 
 // ListAllIssues returns issues across one or every project, excluding
@@ -758,6 +775,14 @@ func (d *DB) ListAllIssues(ctx context.Context, p ListAllIssuesParams) ([]Issue,
 	if p.Status != "" {
 		q += ` AND i.status = ?`
 		args = append(args, p.Status)
+	}
+	if p.Priority != nil {
+		q += ` AND i.priority = ?`
+		args = append(args, *p.Priority)
+	}
+	if p.MaxPriority != nil {
+		q += ` AND i.priority IS NOT NULL AND i.priority <= ?`
+		args = append(args, *p.MaxPriority)
 	}
 	q += ` ORDER BY i.created_at DESC, i.id DESC`
 	if p.Limit > 0 {

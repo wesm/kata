@@ -423,8 +423,9 @@ func requireCLIError(t *testing.T, err error, expectedCode int) *cliError {
 
 type IssueResponse struct {
 	Issue struct {
-		Number int64   `json:"number"`
-		Owner  *string `json:"owner"`
+		Number   int64   `json:"number"`
+		Owner    *string `json:"owner"`
+		Priority *int64  `json:"priority"`
 	} `json:"issue"`
 	Labels []struct {
 		Label string `json:"label"`

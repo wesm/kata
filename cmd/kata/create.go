@@ -17,10 +17,11 @@ import (
 func newCreateCmd() *cobra.Command {
 	var src BodySources
 	var (
-		labels []string
-		parent int64
-		blocks []int64
-		owner  string
+		labels   []string
+		parent   int64
+		blocks   []int64
+		owner    string
+		priority int
 	)
 	cmd := &cobra.Command{
 		Use:   "create <title>",
@@ -36,6 +37,7 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().Int64Var(&parent, "parent", 0, "initial parent link target (issue number)")
 	cmd.Flags().Int64SliceVar(&blocks, "blocks", nil, "initial blocks link target (issue number, repeatable)")
 	cmd.Flags().StringVar(&owner, "owner", "", "initial owner")
+	cmd.Flags().IntVar(&priority, "priority", 0, "initial priority (0..4; 0 = highest)")
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "send Idempotency-Key header for safe retry")
 	cmd.Flags().BoolVar(&forceNew, "force-new", false, "bypass look-alike soft-block (idempotency still wins)")
 
@@ -50,6 +52,13 @@ func newCreateCmd() *cobra.Command {
 		}
 		if err := validateCreateLabels(labels); err != nil {
 			return err
+		}
+		if cmd.Flags().Changed("priority") && (priority < 0 || priority > 4) {
+			return &cliError{
+				Message:  "--priority must be between 0 and 4",
+				Kind:     kindValidation,
+				ExitCode: ExitValidation,
+			}
 		}
 
 		ctx := cmd.Context()
@@ -82,6 +91,9 @@ func newCreateCmd() *cobra.Command {
 		req := map[string]any{"actor": actor, "title": title, "body": body}
 		if cmd.Flags().Changed("owner") {
 			req["owner"] = owner
+		}
+		if cmd.Flags().Changed("priority") {
+			req["priority"] = priority
 		}
 		if len(labels) > 0 {
 			req["labels"] = labels
