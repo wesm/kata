@@ -121,7 +121,10 @@ func runBeadsImport(cmd *cobra.Command) error {
 	}
 	projectID, err := resolveProjectID(ctx, baseURL, workspace)
 	if err != nil {
-		return beadsProjectResolutionError(cmd, err)
+		projectID, err = resolveBeadsProjectOrInit(cmd, baseURL, workspace, err)
+		if err != nil {
+			return err
+		}
 	}
 
 	actor, _ := resolveActor(flags.As, nil)
@@ -193,12 +196,47 @@ func runBD(ctx context.Context, workspace, bdPath string, args ...string) ([]byt
 	return out, nil
 }
 
-func beadsProjectResolutionError(cmd *cobra.Command, err error) error {
+func resolveBeadsProjectOrInit(cmd *cobra.Command, baseURL, start string, err error) (int64, error) {
 	var ce *cliError
-	if errors.As(err, &ce) && ce.Code == "project_not_initialized" && isBeadsImportUnattended(cmd) {
-		return &cliError{Message: "run kata init first", Kind: kindValidation, ExitCode: ExitValidation}
+	if !errors.As(err, &ce) || ce.Code != "project_not_initialized" {
+		return 0, err
 	}
-	return err
+	if isBeadsImportUnattended(cmd) {
+		return 0, beadsInitRequiredError()
+	}
+	ok, promptErr := confirmBeadsInit(cmd)
+	if promptErr != nil {
+		return 0, promptErr
+	}
+	if !ok {
+		return 0, beadsInitRequiredError()
+	}
+	out, initErr := callInit(cmd.Context(), baseURL, start, callInitOpts{})
+	if initErr != nil {
+		return 0, initErr
+	}
+	if !flags.Quiet {
+		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), out); writeErr != nil {
+			return 0, writeErr
+		}
+	}
+	return resolveProjectID(cmd.Context(), baseURL, start)
+}
+
+func confirmBeadsInit(cmd *cobra.Command) (bool, error) {
+	if _, err := fmt.Fprint(cmd.OutOrStdout(), "No kata project found. Run kata init now? [y/N] "); err != nil {
+		return false, err
+	}
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
+}
+
+func beadsInitRequiredError() error {
+	return &cliError{Message: "run kata init first", Kind: kindValidation, ExitCode: ExitValidation}
 }
 
 func isBeadsImportUnattended(cmd *cobra.Command) bool {

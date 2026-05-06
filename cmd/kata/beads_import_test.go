@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -56,6 +58,87 @@ func TestImportBeadsFromLiveBD(t *testing.T) {
 	assert.Contains(t, show, "Imported from Beads")
 	assert.Contains(t, show, "beads_id: b1")
 	assert.Contains(t, show, "Comment body from beads")
+}
+
+func TestImportBeadsJSONSummaryFromLiveBD(t *testing.T) {
+	env, dir, _ := setupCLIWorkspace(t)
+	installFakeBD(t)
+
+	out, err := runCLICapture(t, env, dir, "import", "--format", "beads", "--json", "--as", "importer")
+	require.NoError(t, err)
+
+	var summary struct {
+		Source    string   `json:"source"`
+		Created   int      `json:"created"`
+		Updated   int      `json:"updated"`
+		Unchanged int      `json:"unchanged"`
+		Comments  int      `json:"comments"`
+		Links     int      `json:"links"`
+		Errors    []string `json:"errors"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &summary), "json output: %s", out)
+	assert.Equal(t, "beads", summary.Source)
+	assert.Equal(t, 1, summary.Created)
+	assert.Equal(t, 0, summary.Updated)
+	assert.Equal(t, 0, summary.Unchanged)
+	assert.Equal(t, 1, summary.Comments)
+	assert.Equal(t, 0, summary.Links)
+	assert.Empty(t, summary.Errors)
+}
+
+func TestImportBeadsPromptsInitAndRetries(t *testing.T) {
+	resetFlags(t)
+	stubIsTTY(t, true)
+	env := testenv.New(t)
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+	installFakeBD(t)
+
+	out, err := runBeadsImportTTY(t, env, dir, "y\n", "--as", "importer")
+	require.NoError(t, err)
+	assert.Contains(t, out, "No kata project found. Run kata init now? [y/N]")
+	assert.Contains(t, out, "created and bound project")
+	assert.Contains(t, out, "imported beads: created 1, updated 0, unchanged 0, comments 1, links 0")
+	assert.FileExists(t, filepath.Join(dir, ".kata.toml"))
+}
+
+func TestImportBeadsPromptNoReturnsInitValidation(t *testing.T) {
+	resetFlags(t)
+	stubIsTTY(t, true)
+	env := testenv.New(t)
+	dir := t.TempDir()
+
+	out, err := runBeadsImportTTY(t, env, dir, "n\n")
+	ce := requireCLIError(t, err, ExitValidation)
+	assert.Contains(t, ce.Message, "run kata init first")
+	assert.Contains(t, out, "No kata project found. Run kata init now? [y/N]")
+}
+
+func runBeadsImportTTY(t *testing.T, env *testenv.Env, dir, input string, args ...string) (string, error) {
+	t.Helper()
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	require.NoError(t, os.WriteFile(stdinPath, []byte(input), 0o600))
+	stdin, err := os.Open(stdinPath) //nolint:gosec // test-controlled path
+	require.NoError(t, err)
+	defer func() { _ = stdin.Close() }()
+
+	stdoutPath := filepath.Join(t.TempDir(), "stdout")
+	stdout, err := os.Create(stdoutPath) //nolint:gosec // test-controlled path
+	require.NoError(t, err)
+	defer func() { _ = stdout.Close() }()
+
+	cmd := newRootCmd()
+	cmd.SetIn(stdin)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stdout)
+	cmd.SetArgs(append([]string{"--workspace", dir, "import", "--format", "beads"}, args...))
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	err = cmd.Execute()
+	require.NoError(t, stdout.Sync())
+	bs, readErr := os.ReadFile(stdoutPath) //nolint:gosec // test-controlled path
+	require.NoError(t, readErr)
+	return string(bs), err
 }
 
 func installFakeBD(t *testing.T) {
