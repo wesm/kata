@@ -329,17 +329,19 @@ func buildBeadsImportRequest(r io.Reader, comments map[string][]beadsComment, ac
 	req := beadsImportRequest{Actor: actor, Source: beadsSource, Items: make([]beadsImportIssueInput, 0, len(issues))}
 	indexByID := make(map[string]int, len(issues))
 	for _, b := range issues {
-		status := strings.TrimSpace(b.Status)
-		if status == "" {
-			status = "open"
-		}
-		if status != "open" && status != "closed" {
-			return beadsImportRequest{}, fmt.Errorf("unsupported beads status %q for %s", status, b.ID)
-		}
+		rawStatus := strings.TrimSpace(b.Status)
+		status := mapBeadsStatus(rawStatus)
 
 		labels := []string{"source:beads", beadsIDLabel(b.ID)}
 		seenLabels := map[string]struct{}{}
 		labels = appendNormalizedLabels(nil, seenLabels, labels...)
+		// Preserve the original beads status as a label whenever the
+		// raw value isn't trivially "open" or "closed" — keeps the
+		// "blocked"/"in_progress"/etc. distinction visible after the
+		// kata-side status collapse to open/closed.
+		if rawStatus != "" && rawStatus != "open" && rawStatus != "closed" {
+			labels = appendNormalizedLabels(labels, seenLabels, "beads-status:"+rawStatus)
+		}
 		for _, label := range b.Labels {
 			labels = appendNormalizedLabels(labels, seenLabels, label)
 		}
@@ -469,6 +471,28 @@ func mapBeadsCloseReason(reason string) string {
 		return strings.TrimSpace(reason)
 	default:
 		return "done"
+	}
+}
+
+// mapBeadsStatus collapses beads' richer status vocabulary
+// (open / in_progress / blocked / closed / merged / etc.) into
+// kata's binary open|closed. Empty string defaults to open.
+// Anything that looks terminal — "closed", "done", "merged", "wontfix",
+// "duplicate" — maps to closed; everything else (open, in_progress,
+// blocked, ready, triage, future statuses we haven't seen yet) maps to
+// open. The original raw status is preserved as a "beads-status:<x>"
+// label by the caller when it isn't trivially open/closed.
+func mapBeadsStatus(raw string) string {
+	switch raw {
+	case "", "open", "in_progress", "blocked", "ready", "triage", "todo", "doing":
+		return "open"
+	case "closed", "done", "merged", "wontfix", "duplicate", "resolved":
+		return "closed"
+	default:
+		// Conservative default: unknown beads statuses ride into kata as
+		// open so the import keeps making forward progress. The raw
+		// value is captured in the beads-status:<raw> label.
+		return "open"
 	}
 }
 

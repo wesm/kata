@@ -270,11 +270,51 @@ func TestMapBeadsPriority(t *testing.T) {
 
 func ptrInt64(n int64) *int64 { return &n }
 
-func TestBeadsRejectsUnsupportedStatus(t *testing.T) {
-	export := strings.NewReader(`{"id":"b1","title":"Bad","description":"body","status":"in_progress","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z"}`)
-	_, err := buildBeadsImportRequest(export, nil, "importer")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported beads status")
+func TestMapBeadsStatus(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{"", "open"},
+		{"open", "open"},
+		{"in_progress", "open"},
+		{"blocked", "open"},
+		{"ready", "open"},
+		{"triage", "open"},
+		{"todo", "open"},
+		{"closed", "closed"},
+		{"done", "closed"},
+		{"merged", "closed"},
+		{"resolved", "closed"},
+		{"some-future-status", "open"}, // unknown defaults to open
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			assert.Equal(t, tc.want, mapBeadsStatus(tc.raw))
+		})
+	}
+}
+
+func TestBeadsImportsBlockedStatusAsOpenWithLabel(t *testing.T) {
+	export := strings.NewReader(`{"id":"b1","title":"Active work","description":"body","status":"blocked","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z"}`)
+	req, err := buildBeadsImportRequest(export, nil, "importer")
+	require.NoError(t, err)
+	require.Len(t, req.Items, 1)
+	assert.Equal(t, "open", req.Items[0].Status,
+		"beads 'blocked' must collapse to kata 'open' so the import doesn't bail")
+	assert.Contains(t, req.Items[0].Labels, "beads-status:blocked",
+		"original beads status should be preserved as a label")
+}
+
+func TestBeadsImportsMergedStatusAsClosed(t *testing.T) {
+	export := strings.NewReader(`{"id":"b1","title":"Shipped","description":"body","status":"merged","close_reason":"shipped","closed_at":"2026-05-02T10:00:00Z","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-02T10:00:00Z"}`)
+	req, err := buildBeadsImportRequest(export, nil, "importer")
+	require.NoError(t, err)
+	require.Len(t, req.Items, 1)
+	assert.Equal(t, "closed", req.Items[0].Status)
+	require.NotNil(t, req.Items[0].ClosedReason)
+	assert.Equal(t, "done", *req.Items[0].ClosedReason,
+		"non-canonical close_reason 'shipped' falls back to kata's 'done'")
 }
 
 func TestBeadsRejectsDependencyTargetMissingFromExport(t *testing.T) {
