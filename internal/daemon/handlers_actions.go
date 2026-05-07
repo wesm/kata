@@ -6,6 +6,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/db"
 )
 
 // registerActionsHandlers installs POST /actions/close and /actions/reopen.
@@ -25,7 +26,14 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
-		updated, evt, changed, err := cfg.DB.CloseIssue(ctx, issue.ID, in.Body.Reason, in.Body.Actor)
+		var updated db.Issue
+		var evt *db.Event
+		var changed bool
+		err = db.RetryLockContention(ctx, func() error {
+			var err error
+			updated, evt, changed, err = cfg.DB.CloseIssue(ctx, issue.ID, in.Body.Reason, in.Body.Actor)
+			return err
+		})
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
@@ -52,7 +60,14 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
-		updated, evt, changed, err := cfg.DB.ReopenIssue(ctx, issue.ID, in.Body.Actor)
+		var updated db.Issue
+		var evt *db.Event
+		var changed bool
+		err = db.RetryLockContention(ctx, func() error {
+			var err error
+			updated, evt, changed, err = cfg.DB.ReopenIssue(ctx, issue.ID, in.Body.Actor)
+			return err
+		})
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
