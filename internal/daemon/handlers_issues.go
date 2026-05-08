@@ -343,22 +343,13 @@ func linksDeltaRequestsAnyOp(d *api.LinksDelta) bool {
 		len(d.RemoveBlocks) > 0 || len(d.RemoveBlockedBy) > 0 || len(d.RemoveRelated) > 0
 }
 
-// isLinkTargetNotFound reports whether err is the typed
-// LinkTargetNotFoundError carrying the offending number for a
-// missing add-edge / set-parent target.
-func isLinkTargetNotFound(err error) bool {
-	var lt *db.LinkTargetNotFoundError
-	return errors.As(err, &lt)
-}
-
 // mapAtomicEditError translates DB-layer errors from EditIssueAtomic into
 // the right API error envelope. Touches only error categories the atomic
 // path can produce.
 func mapAtomicEditError(err error, issueNumber int64, delta *api.LinksDelta) error {
+	var lt *db.LinkTargetNotFoundError
 	switch {
-	case isLinkTargetNotFound(err):
-		var lt *db.LinkTargetNotFoundError
-		errors.As(err, &lt)
+	case errors.As(err, &lt):
 		return api.NewError(404, "issue_not_found",
 			fmt.Sprintf("link target #%d not found", lt.Number), "", nil)
 	case errors.Is(err, db.ErrNotFound):
