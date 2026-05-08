@@ -73,6 +73,9 @@ func TestNormalizeRemoteURL(t *testing.T) {
 		{"https://user:pass@github.com/wesm/kata.git", "github.com/wesm/kata"},
 		{"git@github.com:wesm/kata.git", "github.com/wesm/kata"},
 		{"ssh://git@gitlab.com/team/repo.git", "gitlab.com/team/repo"},
+		// Percent-encoded paths (Azure DevOps, spaces in org/project names)
+		{"rtstnz@vs-ssh.visualstudio.com:v3/rtstnz/AI%20Experiments/AI%20Experiments", "vs-ssh.visualstudio.com/v3/rtstnz/AI-Experiments/AI-Experiments"},
+		{"https://dev.azure.com/org/My%20Project/_git/My%20Repo.git", "dev.azure.com/org/My-Project/_git/My-Repo"},
 	}
 	for _, tc := range cases {
 		got, err := config.NormalizeRemoteURL(tc.in)

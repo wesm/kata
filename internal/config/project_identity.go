@@ -257,29 +257,39 @@ var scpLikeRE = regexp.MustCompile(`^([^@\s]+)@([^:\s]+):(.+)$`)
 
 // NormalizeRemoteURL strips credentials, normalizes SSH↔HTTPS, drops trailing
 // .git, and returns "host/path" form (e.g. "github.com/wesm/kata").
+// Percent-encoded characters are decoded and spaces replaced with hyphens so
+// the result satisfies the identity charset (Azure DevOps remotes commonly
+// contain %20 in org/project names).
 func NormalizeRemoteURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("empty remote url")
 	}
+	var result string
 	if m := scpLikeRE.FindStringSubmatch(raw); m != nil {
 		host := m[2]
 		path := strings.TrimSuffix(m[3], ".git")
-		return host + "/" + path, nil
+		result = host + "/" + path
+	} else {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return "", fmt.Errorf("parse remote url %q: not a recognized form", raw)
+		}
+		host := u.Host
+		if at := strings.LastIndex(host, "@"); at >= 0 {
+			host = host[at+1:]
+		}
+		path := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
+		if path == "" {
+			return host, nil
+		}
+		result = host + "/" + path
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("parse remote url %q: not a recognized form", raw)
+	if decoded, err := url.PathUnescape(result); err == nil {
+		result = decoded
 	}
-	host := u.Host
-	if at := strings.LastIndex(host, "@"); at >= 0 {
-		host = host[at+1:]
-	}
-	path := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
-	if path == "" {
-		return host, nil
-	}
-	return host + "/" + path, nil
+	result = strings.ReplaceAll(result, " ", "-")
+	return result, nil
 }
 
 var identityCharsetRE = regexp.MustCompile(`^[A-Za-z0-9._:/\-]+$`)
