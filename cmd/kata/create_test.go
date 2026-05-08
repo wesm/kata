@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/config"
 )
 
 func TestCreate_PrintsIssueNumberInQuietMode(t *testing.T) {
@@ -131,6 +132,27 @@ func TestResolveProjectID_FallsBackOnMissingConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 42, id)
 	assert.Equal(t, dir, got["start_path"])
-	_, hasIdentity := got["project_identity"]
-	assert.False(t, hasIdentity, "no .kata.toml means no project_identity in the request")
+	_, hasName := got["name"]
+	assert.False(t, hasName, "no .kata.toml means no project name in the request")
+}
+
+func TestResolveProjectID_UsesStartPathForWorkspaceConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, "stale-name"))
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bs, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project":{"id":42}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	id, err := resolveProjectID(context.Background(), srv.URL, dir)
+	require.NoError(t, err)
+	assert.EqualValues(t, 42, id)
+	assert.Equal(t, dir, got["start_path"])
+	_, hasName := got["name"]
+	assert.False(t, hasName, "ordinary workspace resolution must let daemon alias repair run")
 }

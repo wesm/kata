@@ -67,7 +67,7 @@ func baseEnvelope(evt db.Event) map[string]any {
 }
 
 func buildProjectBlock(ctx context.Context, evt db.Event, rp projectResolver, log logfn) map[string]any {
-	proj := map[string]any{"id": evt.ProjectID, "identity": evt.ProjectIdentity}
+	proj := map[string]any{"id": evt.ProjectID, "name": evt.ProjectName}
 	if ps, err := rp(ctx, evt.ProjectID); err != nil {
 		log("hooks: project resolver: %v", err)
 	} else {

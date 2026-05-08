@@ -130,7 +130,6 @@ type EventEnvelope struct {
 type ResolveResp struct {
 	Project struct {
 		ID              int64  `json:"id"`
-		Identity        string `json:"identity"`
 		Name            string `json:"name"`
 		NextIssueNumber int64  `json:"next_issue_number"`
 	} `json:"project"`
@@ -139,9 +138,8 @@ type ResolveResp struct {
 
 // ProjectSummary is one row of GET /projects.
 type ProjectSummary struct {
-	ID       int64  `json:"id"`
-	Identity string `json:"identity"`
-	Name     string `json:"name"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 // ProjectStatsSummary is the per-project aggregate carried by

@@ -94,7 +94,7 @@ func TestPeekSchemaVersion(t *testing.T) {
 func TestRoundtripV4PreservesDeletedAt(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/proj-archived", "archived")
+	p, err := src.CreateProject(ctx, "archived")
 	require.NoError(t, err)
 	_, err = src.ExecContext(ctx,
 		`UPDATE projects SET deleted_at = '2026-05-04T12:00:00.000Z' WHERE id = ?`, p.ID)

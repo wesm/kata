@@ -65,7 +65,6 @@ func dbProjectToOut(p db.Project) api.ProjectOut {
 	return api.ProjectOut{
 		ID:              p.ID,
 		UID:             p.UID,
-		Identity:        p.Identity,
 		Name:            p.Name,
 		CreatedAt:       p.CreatedAt,
 		NextIssueNumber: p.NextIssueNumber,
@@ -94,7 +93,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "POST",
 		Path:        "/api/v1/projects/resolve",
 	}, func(ctx context.Context, in *api.ResolveProjectRequest) (*api.ResolveProjectResponse, error) {
-		out, err := resolveProject(ctx, cfg.DB, in.Body.ProjectIdentity, in.Body.StartPath)
+		out, err := resolveProject(ctx, cfg.DB, in.Body.Name, in.Body.StartPath)
 		if err != nil {
 			return nil, err
 		}
@@ -343,8 +342,8 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Path:        "/api/v1/projects/{project_id}",
 	}, func(ctx context.Context, in *api.RenameProjectRequest) (*api.ShowProjectResponse, error) {
 		name := strings.TrimSpace(in.Body.Name)
-		if name == "" {
-			return nil, api.NewError(400, "validation", "name must be non-empty", "", nil)
+		if err := config.ValidateProjectName(name); err != nil {
+			return nil, api.NewError(400, "validation", err.Error(), "", nil)
 		}
 		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
 			return nil, err
@@ -367,23 +366,14 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 }
 
-// resolveProject implements the strict resolution flow per spec §2.4.
-//
-// When projectIdentity is non-empty (remote-client path), the daemon
-// looks the project up by identity directly — no filesystem walk on
-// the daemon's machine. This is what lets a kata client on host B
-// resolve a project that is registered on host A's daemon when host
-// A cannot stat the workspace path on host B.
-//
-// Otherwise (local-mode path), startPath must be set and the daemon
-// walks up from it to find .kata.toml or .git, exactly as before.
-func resolveProject(ctx context.Context, store *db.DB, projectIdentity, startPath string) (*api.ProjectResolveBody, error) {
-	if projectIdentity != "" {
-		return resolveByIdentity(ctx, store, projectIdentity)
+// resolveProject implements project resolution.
+func resolveProject(ctx context.Context, store *db.DB, name, startPath string) (*api.ProjectResolveBody, error) {
+	if name != "" {
+		return resolveByName(ctx, store, name)
 	}
 	if startPath == "" {
 		return nil, api.NewError(400, "validation",
-			"either project_identity or start_path is required", "", nil)
+			"either name or start_path is required", "", nil)
 	}
 	abs, err := filepath.Abs(startPath)
 	if err != nil {
@@ -409,25 +399,18 @@ func resolveProject(ctx context.Context, store *db.DB, projectIdentity, startPat
 		`run "kata init" inside a workspace`, nil)
 }
 
-// resolveByIdentity looks the project up by its committed identity
-// (e.g. "github.com/wesm/kata") without touching the filesystem. Used
-// by remote clients that have a local .kata.toml but a workspace path
-// the daemon cannot stat. No alias is upserted: aliases are tied to
-// daemon-side workspace metadata, which a remote client cannot supply.
-//
-// Strict identity-only lookup: alias names are not accepted here, since
-// the API contract is that this field carries the canonical identity
-// from .kata.toml. An alias collision on the daemon could otherwise
-// leak to a remote client that only knows the committed identity.
-func resolveByIdentity(ctx context.Context, store *db.DB, identity string) (*api.ProjectResolveBody, error) {
-	identity = strings.TrimSpace(identity)
-	if identity == "" {
-		return nil, api.NewError(400, "validation", "project_identity must be non-empty", "", nil)
+func resolveByName(ctx context.Context, store *db.DB, name string) (*api.ProjectResolveBody, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, api.NewError(400, "validation", "name must be non-empty", "", nil)
 	}
-	project, err := store.ProjectByIdentity(ctx, identity)
+	if err := config.ValidateProjectName(name); err != nil {
+		return nil, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	project, err := store.ProjectByName(ctx, name)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, api.NewError(404, "project_not_initialized",
-			"project "+identity+" is bound by .kata.toml but not registered",
+			"project "+name+" is not registered",
 			`run "kata init" in this workspace`, nil)
 	}
 	if err != nil {
@@ -450,10 +433,23 @@ func resolveByKataToml(ctx context.Context, store *db.DB, disc config.Discovered
 		}
 		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
-	project, err := projectByIdentityOrAlias(ctx, store, cfgFile.Project.Identity)
+	if body, ok, err := resolveByAliasIfAvailable(ctx, store, disc); err != nil {
+		return nil, false, err
+	} else if ok {
+		if body == nil {
+			return nil, false, api.NewError(500, "internal", "alias resolver returned no project", "", nil)
+		}
+		if cfgFile.Project.Name != "" && body.Project.Name != cfgFile.Project.Name {
+			if err := config.WriteProjectConfig(disc.WorkspaceRoot, body.Project.Name); err != nil {
+				return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+			}
+		}
+		return body, true, nil
+	}
+	project, err := store.ProjectByName(ctx, cfgFile.Project.Name)
 	if errors.Is(err, db.ErrNotFound) {
 		return nil, false, api.NewError(404, "project_not_initialized",
-			"project "+cfgFile.Project.Identity+" is bound by .kata.toml but not registered",
+			"project "+cfgFile.Project.Name+" is bound by .kata.toml but not registered",
 			`run "kata init" in this workspace`, nil)
 	}
 	if err != nil {
@@ -467,6 +463,38 @@ func resolveByKataToml(ctx context.Context, store *db.DB, disc config.Discovered
 		Project:       dbProjectToOut(project),
 		Alias:         alias,
 		WorkspaceRoot: disc.WorkspaceRoot,
+	}, true, nil
+}
+
+func resolveByAliasIfAvailable(ctx context.Context, store *db.DB, disc config.DiscoveredPaths) (*api.ProjectResolveBody, bool, error) {
+	if disc.GitRoot == "" && disc.WorkspaceRoot == "" {
+		return nil, false, nil
+	}
+	info, err := config.ComputeAliasIdentity(disc)
+	if err != nil {
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	alias, err := store.AliasByIdentity(ctx, info.Identity)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if err := store.TouchAlias(ctx, alias.ID, info.RootPath); err != nil && !errors.Is(err, db.ErrNotFound) {
+		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	if refreshed, err := store.AliasByIdentity(ctx, info.Identity); err == nil {
+		alias = refreshed
+	}
+	project, err := store.ProjectByID(ctx, alias.ProjectID)
+	if err != nil {
+		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return &api.ProjectResolveBody{
+		Project:       dbProjectToOut(project),
+		Alias:         alias,
+		WorkspaceRoot: info.RootPath,
 	}, true, nil
 }
 
@@ -505,23 +533,13 @@ func resolveByAlias(ctx context.Context, store *db.DB, disc config.DiscoveredPat
 	}, nil
 }
 
-// initProject implements `kata init` on the daemon side per spec §2.4.
-//
-// Two modes per InitProjectRequest:
-//
-//  1. start_path set → walk the daemon-side filesystem, derive identity
-//     from .kata.toml / git, write .kata.toml, attach an alias.
-//  2. start_path empty + project_identity set → identity-only init.
-//     Client has already derived identity and will write .kata.toml on
-//     its own filesystem; daemon only registers the project row. No
-//     filesystem access, no alias attachment.
 func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
 	if req.Body.StartPath == "" {
-		if req.Body.ProjectIdentity == "" {
+		if req.Body.Name == "" {
 			return nil, false, api.NewError(400, "validation",
-				"either project_identity or start_path is required", "", nil)
+				"either name or start_path is required", "", nil)
 		}
-		return initByIdentity(ctx, store, req)
+		return initByName(ctx, store, req)
 	}
 	abs, err := filepath.Abs(req.Body.StartPath)
 	if err != nil {
@@ -537,12 +555,9 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 		return nil, false, err
 	}
 
-	identity, name, err := pickInitIdentity(req, disc, tomlCfg)
+	name, err := pickInitName(req, disc, tomlCfg)
 	if err != nil {
 		return nil, false, err
-	}
-	if err := config.ValidateIdentity(identity); err != nil {
-		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
 
 	// When --project was supplied outside any git/workspace ancestor, synthesize
@@ -556,13 +571,24 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	if err != nil {
 		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
+	explicitName := strings.TrimSpace(req.Body.Name) != ""
+	existingAlias, err := store.AliasByIdentity(ctx, aliasInfo.Identity)
+	if err == nil {
+		if !explicitName {
+			if existingProject, err := store.ProjectByID(ctx, existingAlias.ProjectID); err == nil && existingProject.DeletedAt == nil {
+				name = existingProject.Name
+			}
+		}
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
+	}
 	// Preflight alias conflict before mutating anything: without this, a fresh
 	// project row would be created and then orphaned when alias attach fails.
-	if err := preflightAliasConflict(ctx, store, aliasInfo, identity, req.Body.Reassign); err != nil {
+	if err := preflightAliasConflict(ctx, store, aliasInfo, name, req.Body.Reassign); err != nil {
 		return nil, false, err
 	}
 
-	project, created, err := upsertProject(ctx, store, identity, name)
+	project, created, err := upsertProject(ctx, store, name)
 	if err != nil {
 		return nil, false, err
 	}
@@ -581,8 +607,8 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	}
 
 	dest := config.WriteDestination(disc, abs)
-	if tomlCfg == nil || tomlCfg.Project.Identity != project.Identity || tomlCfg.Project.Name != project.Name {
-		if err := config.WriteProjectConfig(dest, project.Identity, project.Name); err != nil {
+	if tomlCfg == nil || tomlCfg.Project.Name != project.Name {
+		if err := config.WriteProjectConfig(dest, project.Name); err != nil {
 			return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 	}
@@ -594,32 +620,14 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	}, created, nil
 }
 
-// initByIdentity is the path-free init mode used by remote clients
-// that have already derived the project identity locally. The daemon
-// does not stat or write the client's filesystem.
-//
-// Project lookup is strict: only ProjectByIdentity, never the
-// alias-fallback used in path-based init. That guards against the
-// client's canonical identity silently re-binding to whichever
-// project happens to own a colliding alias on the daemon side.
-//
-// When the client also supplies alias metadata, the daemon attaches
-// (or reassigns) the alias just as path-based init would, so
-// alias-conflict detection and --reassign survive the path-free
-// flow. Without alias metadata, --reassign is rejected because
-// there's nothing for the daemon to move.
-func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
-	identity := strings.TrimSpace(req.Body.ProjectIdentity)
-	if identity == "" {
-		return nil, false, api.NewError(400, "validation",
-			"project_identity must be non-empty", "", nil)
-	}
-	if err := config.ValidateIdentity(identity); err != nil {
+func initByName(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
+	name := strings.TrimSpace(req.Body.Name)
+	if err := config.ValidateProjectName(name); err != nil {
 		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
 	if req.Body.Reassign && req.Body.Alias == nil {
 		return nil, false, api.NewError(400, "validation",
-			"reassign requires alias metadata in identity-only init",
+			"reassign requires alias metadata in path-free init",
 			"omit --reassign or run from a workspace where the client can derive an alias", nil)
 	}
 
@@ -642,14 +650,13 @@ func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectReque
 		// Preflight before any project mutation, mirroring path-based
 		// init: avoids creating an orphan project row when the alias
 		// would conflict.
-		if err := preflightAliasConflict(ctx, store, info, identity, req.Body.Reassign); err != nil {
+		if err := preflightAliasConflict(ctx, store, info, name, req.Body.Reassign); err != nil {
 			return nil, false, err
 		}
 		aliasInfo = &info
 	}
 
-	name := config.PickName(req.Body.Name, identity)
-	project, created, err := strictUpsertProject(ctx, store, identity, name)
+	project, created, err := upsertProject(ctx, store, name)
 	if err != nil {
 		return nil, false, err
 	}
@@ -672,32 +679,6 @@ func initByIdentity(ctx context.Context, store *db.DB, req *api.InitProjectReque
 	return body, created, nil
 }
 
-// strictUpsertProject is the identity-only counterpart to upsertProject.
-// It looks up by exact project identity (no alias fallback) so a
-// remote client's canonical identity is never silently rebound to a
-// project that happens to own a colliding alias. Archived rows are
-// surfaced as project_archived just like the path-based flow.
-func strictUpsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
-	got, err := store.ProjectByIdentity(ctx, identity)
-	if err == nil {
-		return got, false, nil
-	}
-	if !errors.Is(err, db.ErrNotFound) {
-		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
-	}
-	if archived, archErr := store.ProjectByIdentityIncludingArchived(ctx, identity); archErr == nil && archived.DeletedAt != nil {
-		return db.Project{}, false, api.NewError(409, "project_archived",
-			"project with this identity was archived via `kata projects remove`",
-			"restore the project (not yet supported) or pick a different identity",
-			map[string]any{"identity": identity, "deleted_at": archived.DeletedAt})
-	}
-	created, err := store.CreateProject(ctx, identity, name)
-	if err != nil {
-		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
-	}
-	return created, true, nil
-}
-
 // readWorkspaceConfig reads .kata.toml only when a workspace root was actually
 // discovered; passing "" to ReadProjectConfig would resolve to the daemon's
 // cwd. Parse errors surface as 400; "missing" returns nil.
@@ -715,66 +696,43 @@ func readWorkspaceConfig(disc config.DiscoveredPaths) (*config.ProjectConfig, er
 	return cfgFile, nil
 }
 
-// pickInitIdentity decides the (identity, name) pair for kata init by
-// delegating to the shared config.PickInitIdentity and translating its
-// sentinel errors into API error envelopes.
-func pickInitIdentity(req *api.InitProjectRequest, disc config.DiscoveredPaths, tomlCfg *config.ProjectConfig) (string, string, error) {
-	choice, err := config.PickInitIdentity(disc, tomlCfg,
-		req.Body.ProjectIdentity, req.Body.Name, req.Body.Replace)
+func pickInitName(req *api.InitProjectRequest, disc config.DiscoveredPaths, tomlCfg *config.ProjectConfig) (string, error) {
+	choice, err := config.PickInitName(disc, tomlCfg, req.Body.Name, req.Body.Replace)
 	switch {
-	case errors.Is(err, config.ErrIdentityConflict):
-		return "", "", api.NewError(http.StatusConflict, "project_binding_conflict",
+	case errors.Is(err, config.ErrNameConflict):
+		return "", api.NewError(http.StatusConflict, "project_binding_conflict",
 			err.Error(), "pass replace=true to overwrite", nil)
-	case errors.Is(err, config.ErrNoIdentitySource):
-		return "", "", api.NewError(400, "validation",
-			err.Error(), `pass project_identity or run inside a git repo`, nil)
+	case errors.Is(err, config.ErrNoNameSource):
+		return "", api.NewError(400, "validation",
+			err.Error(), `pass name or run inside a workspace`, nil)
 	case err != nil:
-		return "", "", api.NewError(400, "validation", err.Error(), "", nil)
+		return "", api.NewError(400, "validation", err.Error(), "", nil)
 	}
-	return choice.Identity, choice.Name, nil
+	if err := config.ValidateProjectName(choice.Name); err != nil {
+		return "", api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	return choice.Name, nil
 }
 
-// upsertProject returns the existing project (created=false) when one matches
-// the identity, otherwise creates a new project (created=true). Archived
-// (deleted_at != NULL) projects are NOT auto-resurrected — re-init against
-// an archived identity returns project_archived (409) so the operator
-// either picks a different identity or runs an explicit restore (when that
-// flow ships). The identity stays UNIQUE in projects, so a silent
-// re-create would otherwise hit a raw UNIQUE constraint error.
-func upsertProject(ctx context.Context, store *db.DB, identity, name string) (db.Project, bool, error) {
-	got, err := projectByIdentityOrAlias(ctx, store, identity)
+func upsertProject(ctx context.Context, store *db.DB, name string) (db.Project, bool, error) {
+	got, err := store.ProjectByName(ctx, name)
 	if err == nil {
 		return got, false, nil
 	}
 	if !errors.Is(err, db.ErrNotFound) {
 		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
 	}
-	if archived, archErr := store.ProjectByIdentityIncludingArchived(ctx, identity); archErr == nil && archived.DeletedAt != nil {
+	if archived, archErr := store.ProjectByNameIncludingArchived(ctx, name); archErr == nil && archived.DeletedAt != nil {
 		return db.Project{}, false, api.NewError(409, "project_archived",
-			"project with this identity was archived via `kata projects remove`",
-			"restore the project (not yet supported) or pick a different identity",
-			map[string]any{"identity": identity, "deleted_at": archived.DeletedAt})
+			"project with this name was archived via `kata projects remove`",
+			"restore the project (not yet supported) or pick a different name",
+			map[string]any{"name": name, "deleted_at": archived.DeletedAt})
 	}
-	created, err := store.CreateProject(ctx, identity, name)
+	created, err := store.CreateProject(ctx, name)
 	if err != nil {
 		return db.Project{}, false, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return created, true, nil
-}
-
-func projectByIdentityOrAlias(ctx context.Context, store *db.DB, identity string) (db.Project, error) {
-	project, err := store.ProjectByIdentity(ctx, identity)
-	if err == nil {
-		return project, nil
-	}
-	if !errors.Is(err, db.ErrNotFound) {
-		return db.Project{}, err
-	}
-	alias, err := store.AliasByIdentity(ctx, identity)
-	if err != nil {
-		return db.Project{}, err
-	}
-	return store.ProjectByID(ctx, alias.ProjectID)
 }
 
 // upsertAliasFor is the disc-flavored entry point used during resolve, where
@@ -851,10 +809,10 @@ func applyExistingAlias(ctx context.Context, store *db.DB, projectID int64, info
 }
 
 // preflightAliasConflict returns 409 project_alias_conflict when an existing
-// alias is bound to a different project than targetIdentity and reassign is
+// alias is bound to a different project than targetName and reassign is
 // false. Run before any project mutation so a doomed init does not leave an
 // orphan project row.
-func preflightAliasConflict(ctx context.Context, store *db.DB, info config.AliasInfo, targetIdentity string, reassign bool) error {
+func preflightAliasConflict(ctx context.Context, store *db.DB, info config.AliasInfo, targetName string, reassign bool) error {
 	if reassign {
 		return nil
 	}
@@ -869,10 +827,10 @@ func preflightAliasConflict(ctx context.Context, store *db.DB, info config.Alias
 	if err != nil {
 		return api.NewError(500, "internal", err.Error(), "", nil)
 	}
-	if existingProject.Identity == targetIdentity {
+	if existingProject.Name == targetName {
 		return nil
 	}
-	targetProject, err := projectByIdentityOrAlias(ctx, store, targetIdentity)
+	targetProject, err := store.ProjectByName(ctx, targetName)
 	if err == nil && targetProject.ID == existing.ProjectID {
 		return nil
 	}

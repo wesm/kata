@@ -38,7 +38,7 @@ func (m Model) fetchProjectsWithStats() tea.Cmd {
 		stats := make(map[int64]ProjectStatsSummary, len(rows))
 		for _, r := range rows {
 			names[r.ID] = r.Name
-			idents[r.ID] = r.Identity
+			idents[r.ID] = r.Name
 			if r.Stats != nil {
 				stats[r.ID] = *r.Stats
 			}
@@ -54,7 +54,6 @@ type projectsRow struct {
 	sentinel  bool
 	projectID int64
 	name      string
-	identity  string
 	stats     ProjectStatsSummary
 }
 
@@ -66,13 +65,12 @@ type projectsRow struct {
 // §1.6) so the "All projects" Open/Closed/Total are guaranteed
 // consistent with the rows on the same frame, and last_event_at is the
 // max across rows.
-func projectsRows(byID map[int64]string, identByID map[int64]string, stats map[int64]ProjectStatsSummary) []projectsRow {
+func projectsRows(byID map[int64]string, _ map[int64]string, stats map[int64]ProjectStatsSummary) []projectsRow {
 	rows := []projectsRow{}
 	for id, name := range byID {
 		rows = append(rows, projectsRow{
 			projectID: id,
 			name:      name,
-			identity:  identByID[id],
 			stats:     stats[id],
 		})
 	}

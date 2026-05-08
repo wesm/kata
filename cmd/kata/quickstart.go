@@ -12,6 +12,7 @@ const agentQuickstartText = `# kata agent quickstart
 Use kata as the shared issue ledger for this workspace.
 
 1. Run from the project workspace, or pass --workspace <path>.
+   To work on another project from any directory, pass --project <name>.
 2. Author defaults to $KATA_AUTHOR > $USER > git user.name; set KATA_AUTHOR
    only when you need an actor different from your login.
 3. Prefer --json for reads and writes when parsing output.
@@ -19,6 +20,7 @@ Use kata as the shared issue ledger for this workspace.
 5. Search before creating:
 
    kata search "login race" --json
+   kata search --project foo "login race" --json
 
 6. If no existing issue fits, create with an idempotency key:
 
@@ -27,9 +29,15 @@ Use kata as the shared issue ledger for this workspace.
      --idempotency-key "login-race-2026-05-02" \
      --json
 
+   kata create --project foo "fix login race" \
+     --body "Observed double-submit in Safari callback." \
+     --idempotency-key "foo-login-race-2026-05-02" \
+     --json
+
 7. Prefer updating existing issues over creating duplicates:
 
    kata show 12 --json
+   kata show --project foo 12 --json
    kata comment 12 --body "Found another reproduction path." --json
    kata label add 12 safari --json
    kata block 12 18 --json

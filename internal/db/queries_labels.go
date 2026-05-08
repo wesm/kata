@@ -166,7 +166,7 @@ func (d *DB) AddLabelAndEvent(ctx context.Context, issueID int64, ev LabelEventP
 		return IssueLabel{}, Event{}, classifyLabelInsertError(err)
 	}
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, issueID)
 	if err != nil {
 		return IssueLabel{}, Event{}, err
 	}
@@ -176,13 +176,13 @@ func (d *DB) AddLabelAndEvent(ctx context.Context, issueID int64, ev LabelEventP
 		return IssueLabel{}, Event{}, fmt.Errorf("marshal label payload: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            ev.EventType,
-		Actor:           ev.Actor,
-		Payload:         string(payload),
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        ev.EventType,
+		Actor:       ev.Actor,
+		Payload:     string(payload),
 	})
 	if err != nil {
 		return IssueLabel{}, Event{}, err
@@ -233,7 +233,7 @@ func (d *DB) RemoveLabelAndEvent(ctx context.Context, issueID int64, ev LabelEve
 		return Event{}, ErrNotFound
 	}
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, issueID)
 	if err != nil {
 		return Event{}, err
 	}
@@ -243,13 +243,13 @@ func (d *DB) RemoveLabelAndEvent(ctx context.Context, issueID int64, ev LabelEve
 		return Event{}, fmt.Errorf("marshal label payload: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            ev.EventType,
-		Actor:           ev.Actor,
-		Payload:         string(payload),
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        ev.EventType,
+		Actor:       ev.Actor,
+		Payload:     string(payload),
 	})
 	if err != nil {
 		return Event{}, err

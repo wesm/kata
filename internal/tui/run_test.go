@@ -178,7 +178,7 @@ func TestBuildRunModel_SeedsViewProjectsCacheFromBoot(t *testing.T) {
 		scope: scope{},
 		projects: []ProjectSummaryWithStats{
 			{
-				ProjectSummary: ProjectSummary{ID: 7, Identity: "github.com/wesm/kata", Name: "kata"},
+				ProjectSummary: ProjectSummary{ID: 7, Name: "kata"},
 				Stats:          &ProjectStatsSummary{Open: 3, Closed: 1, LastEventAt: &t1},
 			},
 		},
@@ -186,7 +186,7 @@ func TestBuildRunModel_SeedsViewProjectsCacheFromBoot(t *testing.T) {
 	m := buildRunModel(Options{}, &Client{}, bi)
 	assert.Equal(t, viewProjects, m.view)
 	assert.Equal(t, "kata", m.projectsByID[7])
-	assert.Equal(t, "github.com/wesm/kata", m.projectIdentByID[7])
+	assert.Equal(t, "kata", m.projectIdentByID[7])
 	require.Contains(t, m.projectStats, int64(7))
 	assert.Equal(t, 3, m.projectStats[7].Open)
 	assert.Equal(t, 1, m.projectStats[7].Closed)

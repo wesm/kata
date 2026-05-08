@@ -146,45 +146,38 @@ func validateCreateLabels(labels []string) error {
 	return nil
 }
 
-// resolveProjectID resolves the project ID for a given workspace start
-// path by calling POST /api/v1/projects/resolve on the daemon.
+// resolveProjectID resolves the project ID by calling
+// POST /api/v1/projects/resolve on the daemon.
 //
-// When the workspace has a readable .kata.toml at startPath or any
-// ancestor directory, the project identity is sent and the daemon
-// skips its filesystem walk. This is what lets a client on host B
-// resolve a project registered on host A's daemon — the daemon cannot
-// stat the client's startPath, but it can look up the project by its
-// committed identity. Walking upward also matches user expectations:
-// `kata create` from a subdirectory of an initialized workspace
-// behaves the same as from the workspace root.
-//
-// When no .kata.toml is found (the usual case mid-init), the
-// start_path fallback engages and the daemon walks its own filesystem
-// as before. Local-mode behavior is unchanged.
+// A global --project value wins and is sent as the project name, allowing
+// project-scoped commands to target any project from any directory. Otherwise,
+// start_path lets the daemon resolve by alias first and repair stale .kata.toml
+// bindings after project rename/merge. A readable local .kata.toml is still
+// parsed before the daemon call so malformed config fails with a direct fix-it
+// error instead of being hidden behind daemon-side path resolution.
 func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, error) {
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
 		return 0, err
 	}
 	body := map[string]any{}
-	cfg, _, err := config.FindProjectConfig(startPath)
-	switch {
-	case err == nil && cfg.Project.Identity != "":
-		body["project_identity"] = cfg.Project.Identity
-	case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
-		// Truly missing (or present but with empty identity): fall
-		// back to start_path so the daemon walks its own filesystem
-		// in local mode.
-		body["start_path"] = startPath
-	default:
-		// Found a .kata.toml but couldn't read or parse it. Surface
-		// that loud and clear instead of silently asking the daemon
-		// to resolve a path it may not even be able to stat (remote
-		// mode), which would mask the actual fix-it error.
-		return 0, &cliError{
-			Message:  "read .kata.toml: " + err.Error(),
-			Kind:     kindValidation,
-			ExitCode: ExitValidation,
+	if project := strings.TrimSpace(flags.Project); project != "" {
+		body["name"] = project
+	} else {
+		_, _, err := config.FindProjectConfig(startPath)
+		switch {
+		case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
+			body["start_path"] = startPath
+		default:
+			// Found a .kata.toml but couldn't read or parse it. Surface
+			// that loud and clear instead of silently asking the daemon
+			// to resolve a path it may not even be able to stat (remote
+			// mode), which would mask the actual fix-it error.
+			return 0, &cliError{
+				Message:  "read .kata.toml: " + err.Error(),
+				Kind:     kindValidation,
+				ExitCode: ExitValidation,
+			}
 		}
 	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,

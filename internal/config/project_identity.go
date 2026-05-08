@@ -12,76 +12,47 @@ import (
 	"unicode"
 )
 
-// IdentityChoice is the (identity, name) pair resolved by PickInitIdentity.
-type IdentityChoice struct {
-	Identity string
-	Name     string
+// NameChoice is the project name resolved by PickInitName.
+type NameChoice struct {
+	Name string
 }
 
-// ErrIdentityConflict signals that an existing .kata.toml declares an
-// identity different from the one the caller supplied. Callers must
-// require an explicit replace=true to override; daemon maps this to
-// project_binding_conflict (409), CLI maps it to ExitConflict.
-var ErrIdentityConflict = errors.New(".kata.toml declares a different identity")
+// ErrNameConflict signals that an existing .kata.toml declares a name
+// different from the one the caller supplied. Callers must require an
+// explicit replace=true to override.
+var ErrNameConflict = errors.New(".kata.toml declares a different project name")
 
-// ErrNoIdentitySource signals that no project identity could be
-// derived: there is no .kata.toml, no caller-supplied identity, and no
-// git workspace to read a remote from. Daemon and CLI both surface
-// this as a validation error.
-var ErrNoIdentitySource = errors.New("cannot derive project identity outside a git workspace")
+// ErrNoNameSource signals that no project name could be derived: there is no
+// .kata.toml, no caller-supplied name, and no workspace root.
+var ErrNoNameSource = errors.New("cannot derive project name outside a workspace")
 
-// PickInitIdentity decides the (identity, name) pair for kata init.
-// The same logic runs on the daemon (path-based init, where the daemon
-// reads .kata.toml from its own filesystem) and on the client (path-
-// free init, where the client reads .kata.toml from its workspace and
-// sends only the resolved identity to the daemon).
-//
-// Resolution order:
-//
-//  1. Existing .kata.toml + conflicting input identity (no replace) →
-//     ErrIdentityConflict.
-//  2. Existing .kata.toml → use its identity; explicit inputName wins
-//     over the toml name; fall back to last identity segment when the
-//     toml name is empty.
-//  3. Caller-supplied input identity → use it; name from inputName or
-//     last identity segment.
-//  4. Discovered git root → derive identity via ComputeAliasIdentity.
-//  5. Otherwise → ErrNoIdentitySource.
-func PickInitIdentity(disc DiscoveredPaths, tomlCfg *ProjectConfig, inputIdentity, inputName string, replace bool) (IdentityChoice, error) {
+// PickInitName decides the project name for kata init.
+func PickInitName(disc DiscoveredPaths, tomlCfg *ProjectConfig, inputName string, replace bool) (NameChoice, error) {
+	inputName = strings.TrimSpace(inputName)
 	switch {
-	case tomlCfg != nil && inputIdentity != "" && tomlCfg.Project.Identity != inputIdentity:
+	case tomlCfg != nil && inputName != "" && tomlCfg.Project.Name != "" && tomlCfg.Project.Name != inputName:
 		if !replace {
-			return IdentityChoice{}, ErrIdentityConflict
+			return NameChoice{}, ErrNameConflict
 		}
-		return IdentityChoice{
-			Identity: inputIdentity,
-			Name:     PickName(inputName, inputIdentity),
-		}, nil
-	case tomlCfg != nil:
-		identity := tomlCfg.Project.Identity
-		name := PickName(inputName, tomlCfg.Project.Name)
-		if name == "" {
-			name = PickName("", identity)
-		}
-		return IdentityChoice{Identity: identity, Name: name}, nil
-	case inputIdentity != "":
-		return IdentityChoice{
-			Identity: inputIdentity,
-			Name:     PickName(inputName, inputIdentity),
-		}, nil
+		return validateNameChoice(inputName)
+	case tomlCfg != nil && strings.TrimSpace(tomlCfg.Project.Name) != "":
+		return validateNameChoice(strings.TrimSpace(tomlCfg.Project.Name))
+	case inputName != "":
+		return validateNameChoice(inputName)
 	default:
-		if disc.GitRoot == "" {
-			return IdentityChoice{}, ErrNoIdentitySource
-		}
-		info, err := ComputeAliasIdentity(disc)
+		name, err := DeriveProjectName(disc)
 		if err != nil {
-			return IdentityChoice{}, err
+			return NameChoice{}, err
 		}
-		return IdentityChoice{
-			Identity: info.Identity,
-			Name:     PickName(inputName, info.Identity),
-		}, nil
+		return validateNameChoice(name)
 	}
+}
+
+func validateNameChoice(name string) (NameChoice, error) {
+	if err := ValidateProjectName(name); err != nil {
+		return NameChoice{}, err
+	}
+	return NameChoice{Name: name}, nil
 }
 
 // PickName returns explicit if non-empty, otherwise the last `/` or
@@ -91,6 +62,30 @@ func PickName(explicit, identity string) string {
 		return explicit
 	}
 	return lastSegment(identity)
+}
+
+// DeriveProjectName derives the default project name for init from the
+// discovered workspace. Git remotes use the last normalized remote segment;
+// local workspaces use the directory name.
+func DeriveProjectName(d DiscoveredPaths) (string, error) {
+	if d.GitRoot != "" {
+		remote, err := readGitRemote(d.GitRoot)
+		if err != nil {
+			return "", err
+		}
+		if remote != "" {
+			id, err := NormalizeRemoteURL(remote)
+			if err != nil {
+				return "", err
+			}
+			return lastSegment(id), nil
+		}
+		return filepath.Base(d.GitRoot), nil
+	}
+	if d.WorkspaceRoot != "" {
+		return filepath.Base(d.WorkspaceRoot), nil
+	}
+	return "", ErrNoNameSource
 }
 
 // WriteDestination returns the directory where .kata.toml should be

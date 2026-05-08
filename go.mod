@@ -2,8 +2,6 @@ module github.com/wesm/kata
 
 go 1.26.1
 
-replace github.com/muesli/termenv => ./internal/third_party/termenv
-
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/cenkalti/backoff/v5 v5.0.3

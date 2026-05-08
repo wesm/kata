@@ -180,21 +180,15 @@ func (c *Client) EditBody(
 
 // ResolveProject runs the §4.2 resolution flow against startPath.
 //
-// When the workspace has a readable .kata.toml at startPath or any
-// ancestor directory, the project identity is sent and the daemon
-// skips its filesystem walk — required for remote-client mode where
-// the daemon cannot stat the client's path. Otherwise the start_path
-// fallback walks the daemon's filesystem.
+// start_path lets the daemon resolve by alias first and repair stale
+// .kata.toml bindings after project rename/merge. A readable local .kata.toml
+// is still parsed first so malformed config fails with a direct fix-it error.
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
 	var resp ResolveResp
 	req := map[string]string{}
-	cfg, _, err := config.FindProjectConfig(startPath)
+	_, _, err := config.FindProjectConfig(startPath)
 	switch {
-	case err == nil && cfg.Project.Identity != "":
-		req["project_identity"] = cfg.Project.Identity
 	case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
-		// Truly missing (or present but with empty identity): fall
-		// back to start_path so the daemon walks its own filesystem.
 		req["start_path"] = startPath
 	default:
 		// Found a .kata.toml but couldn't parse it. Propagate so the
@@ -271,23 +265,40 @@ func (c *Client) ListComments(
 // per detail-view open; the SSE consumer (Task 11) handles reset_required
 // for the long-lived stream.
 func (c *Client) ListEvents(ctx context.Context, projectID, number int64) ([]EventLogEntry, error) {
-	path := fmt.Sprintf("/api/v1/projects/%d/events?limit=200", projectID)
-	var resp struct {
-		Events        []EventLogEntry `json:"events"`
-		NextAfterID   int64           `json:"next_after_id"`
-		ResetRequired bool            `json:"reset_required"`
-		ResetAfterID  int64           `json:"reset_after_id,omitempty"`
-	}
-	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, err
-	}
-	out := make([]EventLogEntry, 0, len(resp.Events))
-	for _, e := range resp.Events {
-		if e.IssueNumber != nil && *e.IssueNumber == number {
-			out = append(out, e)
+	var out []EventLogEntry
+	afterID := int64(0)
+	for {
+		resp, err := c.listEventsPage(ctx, projectID, afterID)
+		if err != nil {
+			return nil, err
 		}
+		for _, e := range resp.Events {
+			if e.IssueNumber != nil && *e.IssueNumber == number {
+				out = append(out, e)
+			}
+		}
+		if resp.ResetRequired || len(resp.Events) == 0 || resp.NextAfterID <= afterID {
+			return out, nil
+		}
+		afterID = resp.NextAfterID
 	}
-	return out, nil
+}
+
+type eventsPageResp struct {
+	Events        []EventLogEntry `json:"events"`
+	NextAfterID   int64           `json:"next_after_id"`
+	ResetRequired bool            `json:"reset_required"`
+	ResetAfterID  int64           `json:"reset_after_id,omitempty"`
+}
+
+func (c *Client) listEventsPage(ctx context.Context, projectID, afterID int64) (eventsPageResp, error) {
+	path := fmt.Sprintf("/api/v1/projects/%d/events?limit=1000", projectID)
+	if afterID > 0 {
+		path += fmt.Sprintf("&after_id=%d", afterID)
+	}
+	var resp eventsPageResp
+	err := c.do(ctx, http.MethodGet, path, nil, &resp)
+	return resp, err
 }
 
 // ListLinks returns the links tab data for one issue.

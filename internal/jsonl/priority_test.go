@@ -15,7 +15,7 @@ import (
 func TestRoundtripPreservesPriority(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 
 	prio := int64(0)
@@ -70,7 +70,7 @@ func TestRoundtripPreservesPriority(t *testing.T) {
 func TestRoundtripOmitsPriorityKeyWhenUnset(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	_, _, err = src.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "no priority", Author: "tester",

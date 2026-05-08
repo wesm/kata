@@ -1321,6 +1321,22 @@ func TestDetail_EnterOnEventWithIssueRef_JumpsAndStacks(t *testing.T) {
 	assertJumpDetailCmd(t, cmd, 11)
 }
 
+func TestDetail_EnterOnCurrentIssueEventDoesNotSelfJump(t *testing.T) {
+	api := &fakeDetailAPI{}
+	dm := detailFixture()
+	dm.activeTab = tabEvents
+	dm.tabCursor = 0
+	dm.events = []EventLogEntry{
+		{Type: "issue.created", Actor: "wesm",
+			Payload: map[string]any{"issue_number": float64(dm.issue.Number)}},
+	}
+
+	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, newKeymap(), api)
+	if cmd != nil {
+		t.Fatalf("Enter on current-issue event emitted jump cmd %T; want no-op", cmd)
+	}
+}
+
 // TestDetail_EnterOnLinkEntry_JumpsToTarget: pressing Enter on a link
 // row emits a jumpDetailMsg targeting the link's ToNumber.
 func TestDetail_EnterOnLinkEntry_JumpsToTarget(t *testing.T) {

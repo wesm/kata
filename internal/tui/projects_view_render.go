@@ -18,8 +18,8 @@ const projectsViewChromeRows = 8
 
 // renderProjects draws the projects-view body: a 5-column table
 // (Project / Open / Closed / Total / Updated), an All-projects sentinel
-// pinned at row 0, and a 1-line identity footer for the highlighted
-// row. Spec §5. Rows are clipped to the available height with
+// pinned at row 0, and a 1-line footer for the highlighted row. Spec §5.
+// Rows are clipped to the available height with
 // cursor-relative scrolling so the chrome (footer + key-hint) stays on
 // screen even with many projects on a short terminal.
 func renderProjects(m Model) string {
@@ -191,14 +191,12 @@ func updatedColumn(t *time.Time) string {
 	return humanizeRelative(*t)
 }
 
-// footerForRow renders the 1-line identity footer for a highlighted row.
-// Sentinel: a description; concrete project: the identity URL truncated
-// to width-2 if longer. Spec §5.1, §9.
+// footerForRow renders the 1-line footer for a highlighted row.
 func footerForRow(r projectsRow, width int) string {
 	if r.sentinel {
 		return "issue queue across every registered project"
 	}
-	label := "identity: " + sanitizeForDisplay(r.identity)
+	label := "project: " + sanitizeForDisplay(r.name)
 	if width > 0 && runewidth.StringWidth(label) > width-2 {
 		label = runewidth.Truncate(label, width-2, "…")
 	}

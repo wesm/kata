@@ -37,9 +37,9 @@ A daemon can serve clients on other hosts over a private network:
   gitignored `.kata.local.toml` with `[server] url = "..."` next to
   `.kata.toml`. `KATA_SERVER` env wins.
 - Init and resolution are both path-free whenever the client can
-  derive identity locally (existing `.kata.toml`, `--project`, or a
-  git workspace): the client sends `project_identity` and writes
-  `.kata.toml` itself; the daemon never stats the client's filesystem.
+  derive the project name locally (existing `.kata.toml`, `--project`, or a
+  git workspace): the client sends `name` and writes `.kata.toml` itself; the
+  daemon never stats the client's filesystem.
   `kata init` falls back to a path-based request only when none of
   those sources are available, so the daemon (or its absence) emits
   the existing validation error. No auth yet — network ACLs are the

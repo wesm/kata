@@ -52,7 +52,7 @@ type RemoveProjectParams struct {
 // every project_aliases row, and emits one project.removed event. Refuses
 // with ErrProjectHasOpenIssues when the project still has open, non-deleted
 // issues unless Force=true. The project row stays so events/issues keep a
-// valid FK target; subsequent ListProjects / ProjectByIdentity calls exclude
+// valid FK target; subsequent ListProjects / ProjectByName calls exclude
 // it from the active surface.
 func (d *DB) RemoveProject(ctx context.Context, p RemoveProjectParams) (Project, *Event, error) {
 	tx, err := d.BeginTx(ctx, nil)
@@ -97,11 +97,11 @@ func (d *DB) RemoveProject(ctx context.Context, p RemoveProjectParams) (Project,
 		return Project{}, nil, fmt.Errorf("marshal project.removed payload: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       project.ID,
-		ProjectIdentity: project.Identity,
-		Type:            "project.removed",
-		Actor:           p.Actor,
-		Payload:         string(payload),
+		ProjectID:   project.ID,
+		ProjectName: project.Name,
+		Type:        "project.removed",
+		Actor:       p.Actor,
+		Payload:     string(payload),
 	})
 	if err != nil {
 		return Project{}, nil, err
@@ -184,11 +184,11 @@ func (d *DB) DetachProjectAlias(ctx context.Context, p DetachAliasParams) (Proje
 		return ProjectAlias{}, nil, fmt.Errorf("marshal project.alias_removed payload: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       project.ID,
-		ProjectIdentity: project.Identity,
-		Type:            "project.alias_removed",
-		Actor:           p.Actor,
-		Payload:         string(payload),
+		ProjectID:   project.ID,
+		ProjectName: project.Name,
+		Type:        "project.alias_removed",
+		Actor:       p.Actor,
+		Payload:     string(payload),
 	})
 	if err != nil {
 		return ProjectAlias{}, nil, err

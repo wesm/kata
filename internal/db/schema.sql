@@ -5,13 +5,11 @@
 CREATE TABLE projects (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   uid               TEXT NOT NULL UNIQUE,
-  identity          TEXT UNIQUE NOT NULL,
-  name              TEXT NOT NULL,
+  name              TEXT NOT NULL UNIQUE,
   created_at        DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   next_issue_number INTEGER NOT NULL DEFAULT 1,
   deleted_at        DATETIME,
   CHECK (length(uid) = 26),
-  CHECK (length(trim(identity)) > 0),
   CHECK (length(trim(name)) > 0)
 );
 CREATE INDEX idx_projects_active ON projects(id) WHERE deleted_at IS NULL;
@@ -158,7 +156,7 @@ CREATE TABLE events (
   uid                 TEXT NOT NULL UNIQUE,
   origin_instance_uid TEXT NOT NULL,
   project_id          INTEGER NOT NULL REFERENCES projects(id),
-  project_identity    TEXT NOT NULL,
+  project_name    TEXT NOT NULL,
   issue_id            INTEGER REFERENCES issues(id),
   issue_uid           TEXT,
   issue_number        INTEGER,
@@ -191,7 +189,7 @@ CREATE TABLE purge_log (
   purged_issue_id             INTEGER NOT NULL,   -- the deleted issues.id; no FK (the row is gone)
   issue_uid                   TEXT,
   project_uid                 TEXT,
-  project_identity            TEXT NOT NULL,      -- snapshot of projects.identity at purge time
+  project_name            TEXT NOT NULL,      -- snapshot of projects.name at purge time
   issue_number                INTEGER NOT NULL,
   issue_title                 TEXT NOT NULL,
   issue_author                TEXT NOT NULL,
@@ -214,7 +212,7 @@ CREATE INDEX idx_purge_log_reset
 CREATE INDEX idx_purge_log_project_reset
   ON purge_log(project_id, purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
 CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
-CREATE INDEX idx_purge_log_lookup ON purge_log(project_identity, issue_number);
+CREATE INDEX idx_purge_log_lookup ON purge_log(project_name, issue_number);
 CREATE INDEX idx_purge_log_issue_uid ON purge_log(issue_uid) WHERE issue_uid IS NOT NULL;
 CREATE INDEX idx_purge_log_project_uid ON purge_log(project_uid) WHERE project_uid IS NOT NULL;
 CREATE INDEX idx_purge_log_origin_instance ON purge_log(origin_instance_uid);

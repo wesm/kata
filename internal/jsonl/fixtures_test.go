@@ -170,9 +170,9 @@ func buildRichJSONLFixture(t *testing.T) richJSONLFixture {
 	ctx := context.Background()
 	d := openExportTestDB(t)
 
-	p1, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p1, err := d.CreateProject(ctx, "kata")
 	require.NoError(t, err)
-	p2, err := d.CreateProject(ctx, "github.com/wesm/other", "other")
+	p2, err := d.CreateProject(ctx, "other")
 	require.NoError(t, err)
 	attachAlias(ctx, t, d, p1.ID, "github.com/wesm/kata", "git", "/tmp/kata")
 	attachAlias(ctx, t, d, p1.ID, "kata-local", "local", "/work/kata")

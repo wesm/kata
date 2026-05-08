@@ -121,9 +121,9 @@ func TestSoftDeleteIssue_ScopesByIssueID(t *testing.T) {
 	// across projects without requiring a project context.
 	d := openTestDB(t)
 	ctx := context.Background()
-	p1, err := d.CreateProject(ctx, "p1", "p1")
+	p1, err := d.CreateProject(ctx, "p1")
 	require.NoError(t, err)
-	p2, err := d.CreateProject(ctx, "p2", "p2")
+	p2, err := d.CreateProject(ctx, "p2")
 	require.NoError(t, err)
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p1.ID, Title: "in p1", Author: "tester",
@@ -177,7 +177,7 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 	assert.Equal(t, target.ID, pl.PurgedIssueID)
 	assert.Equal(t, target.UID, *pl.IssueUID)
 	assert.Equal(t, p.UID, *pl.ProjectUID)
-	assert.Equal(t, "github.com/wesm/kata", pl.ProjectIdentity)
+	assert.Equal(t, "kata", pl.ProjectName)
 	assert.Equal(t, target.Number, pl.IssueNumber)
 	assert.Equal(t, "delete me", pl.IssueTitle)
 	assert.Equal(t, "tester", pl.IssueAuthor)

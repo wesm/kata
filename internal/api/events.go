@@ -45,7 +45,7 @@ type EventEnvelope struct {
 	Type              string  `json:"type"`
 	ProjectID         int64   `json:"project_id"`
 	ProjectUID        string  `json:"project_uid"`
-	ProjectIdentity   string  `json:"project_identity"`
+	ProjectName       string  `json:"project_name"`
 	IssueID           *int64  `json:"issue_id,omitempty"`
 	IssueUID          *string `json:"issue_uid,omitempty"`
 	IssueNumber       *int64  `json:"issue_number,omitempty"`

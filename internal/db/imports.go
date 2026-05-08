@@ -109,10 +109,10 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var projectIdentity, projectUID string
+	var projectName, projectUID string
 	if err := tx.QueryRowContext(ctx,
-		`SELECT identity, uid FROM projects WHERE id = ? AND deleted_at IS NULL`, p.ProjectID).
-		Scan(&projectIdentity, &projectUID); err != nil {
+		`SELECT name, uid FROM projects WHERE id = ? AND deleted_at IS NULL`, p.ProjectID).
+		Scan(&projectName, &projectUID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ImportBatchResult{}, nil, ErrNotFound
 		}
@@ -124,7 +124,7 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 	states := make(map[string]*importIssueState, len(p.Items))
 
 	for _, item := range p.Items {
-		state, evt, err := d.importIssue(ctx, tx, p, item, projectIdentity, projectUID)
+		state, evt, err := d.importIssue(ctx, tx, p, item, projectName, projectUID)
 		if err != nil {
 			return ImportBatchResult{}, nil, err
 		}
@@ -158,14 +158,14 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 		if state == nil {
 			continue
 		}
-		commentEvents, n, err := d.importComments(ctx, tx, p, state.issue, item, projectIdentity)
+		commentEvents, n, err := d.importComments(ctx, tx, p, state.issue, item, projectName)
 		if err != nil {
 			return ImportBatchResult{}, nil, err
 		}
 		events = append(events, commentEvents...)
 		result.Comments += n
 		if state.created || state.sourceNewer {
-			labelEvents, err := d.reconcileImportLabels(ctx, tx, p, state.issue, item, projectIdentity)
+			labelEvents, err := d.reconcileImportLabels(ctx, tx, p, state.issue, item, projectName)
 			if err != nil {
 				return ImportBatchResult{}, nil, err
 			}
@@ -179,7 +179,7 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 			continue
 		}
 		if state.created || state.sourceNewer {
-			linkEvents, n, err := d.reconcileImportLinks(ctx, tx, p, state.issue, item, states, projectIdentity)
+			linkEvents, n, err := d.reconcileImportLinks(ctx, tx, p, state.issue, item, states, projectName)
 			if err != nil {
 				return ImportBatchResult{}, nil, err
 			}
@@ -258,13 +258,13 @@ func validateImportBatch(p ImportBatchParams) error {
 	return nil
 }
 
-func (d *DB) importIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, projectIdentity, projectUID string) (*importIssueState, *Event, error) {
+func (d *DB) importIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, projectName, projectUID string) (*importIssueState, *Event, error) {
 	mapping, err := importMappingBySource(ctx, tx, p.ProjectID, p.Source, "issue", item.ExternalID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, nil, err
 	}
 	if errors.Is(err, ErrNotFound) {
-		issue, evt, err := d.insertImportedIssue(ctx, tx, p, item, projectIdentity, projectUID)
+		issue, evt, err := d.insertImportedIssue(ctx, tx, p, item, projectName, projectUID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -282,7 +282,7 @@ func (d *DB) importIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, i
 		return nil, nil, err
 	}
 	if item.UpdatedAt.After(existing.UpdatedAt) {
-		updated, evt, err := d.updateImportedIssue(ctx, tx, p, item, existing, projectIdentity)
+		updated, evt, err := d.updateImportedIssue(ctx, tx, p, item, existing, projectName)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -299,7 +299,7 @@ func (d *DB) importIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, i
 	return &importIssueState{item: item, issue: existing}, nil, nil
 }
 
-func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, projectIdentity, projectUID string) (Issue, Event, error) {
+func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, projectName, projectUID string) (Issue, Event, error) {
 	var nextNum int64
 	if err := tx.QueryRowContext(ctx,
 		`UPDATE projects
@@ -330,7 +330,7 @@ func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
-	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectUID: projectUID, ProjectIdentity: projectIdentity, IssueID: &issueID, IssueUID: &issueUID, IssueNumber: &nextNum, Type: "issue.created", Actor: p.Actor, Payload: payload})
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectUID: projectUID, ProjectName: projectName, IssueID: &issueID, IssueUID: &issueUID, IssueNumber: &nextNum, Type: "issue.created", Actor: p.Actor, Payload: payload})
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
@@ -341,7 +341,7 @@ func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	return issue, evt, nil
 }
 
-func (d *DB) updateImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, existing Issue, projectIdentity string) (Issue, Event, error) {
+func (d *DB) updateImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, existing Issue, projectName string) (Issue, Event, error) {
 	_, err := tx.ExecContext(ctx, `UPDATE issues
 		SET title = ?, body = ?, status = ?, closed_reason = ?, owner = ?, updated_at = ?, closed_at = ?, priority = ?
 		WHERE id = ?`, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.UpdatedAt, item.ClosedAt, item.Priority, existing.ID)
@@ -352,7 +352,7 @@ func (d *DB) updateImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
-	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectIdentity: projectIdentity, IssueID: &existing.ID, IssueNumber: &existing.Number, Type: "issue.updated", Actor: p.Actor, Payload: payload})
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &existing.ID, IssueNumber: &existing.Number, Type: "issue.updated", Actor: p.Actor, Payload: payload})
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
@@ -363,7 +363,7 @@ func (d *DB) updateImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	return updated, evt, nil
 }
 
-func (d *DB) importComments(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, projectIdentity string) ([]Event, int, error) {
+func (d *DB) importComments(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, projectName string) ([]Event, int, error) {
 	events := []Event{}
 	created := 0
 	for _, c := range item.Comments {
@@ -393,7 +393,7 @@ func (d *DB) importComments(ctx context.Context, tx *sql.Tx, p ImportBatchParams
 		if err != nil {
 			return nil, 0, fmt.Errorf("marshal import comment payload: %w", err)
 		}
-		evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectIdentity: projectIdentity, IssueID: &issue.ID, IssueNumber: &issue.Number, Type: "issue.commented", Actor: p.Actor, Payload: string(payload)})
+		evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: &issue.Number, Type: "issue.commented", Actor: p.Actor, Payload: string(payload)})
 		if err != nil {
 			return nil, 0, err
 		}
@@ -403,7 +403,7 @@ func (d *DB) importComments(ctx context.Context, tx *sql.Tx, p ImportBatchParams
 	return events, created, nil
 }
 
-func (d *DB) reconcileImportLabels(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, projectIdentity string) ([]Event, error) {
+func (d *DB) reconcileImportLabels(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, projectName string) ([]Event, error) {
 	events := []Event{}
 	desired := map[string]string{}
 	for _, label := range dedupeStrings(item.Labels) {
@@ -431,7 +431,7 @@ func (d *DB) reconcileImportLabels(ctx context.Context, tx *sql.Tx, p ImportBatc
 				if _, err := tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ? AND label = ?`, issue.ID, label.String); err != nil {
 					return nil, fmt.Errorf("delete source label: %w", err)
 				}
-				evt, err := d.insertLabelEvent(ctx, tx, p, issue, projectIdentity, item.ExternalID, "issue.unlabeled", label.String)
+				evt, err := d.insertLabelEvent(ctx, tx, p, issue, projectName, item.ExternalID, "issue.unlabeled", label.String)
 				if err != nil {
 					return nil, err
 				}
@@ -462,7 +462,7 @@ func (d *DB) reconcileImportLabels(ctx context.Context, tx *sql.Tx, p ImportBatc
 			}
 		}
 		if affected > 0 {
-			evt, err := d.insertLabelEvent(ctx, tx, p, issue, projectIdentity, item.ExternalID, "issue.labeled", label)
+			evt, err := d.insertLabelEvent(ctx, tx, p, issue, projectName, item.ExternalID, "issue.labeled", label)
 			if err != nil {
 				return nil, err
 			}
@@ -472,15 +472,15 @@ func (d *DB) reconcileImportLabels(ctx context.Context, tx *sql.Tx, p ImportBatc
 	return events, nil
 }
 
-func (d *DB) insertLabelEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, projectIdentity, itemExternalID, eventType, label string) (Event, error) {
+func (d *DB) insertLabelEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, projectName, itemExternalID, eventType, label string) (Event, error) {
 	payload, err := json.Marshal(map[string]any{"source": p.Source, "external_id": importLabelExternalID(itemExternalID, label), "label": label})
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal label payload: %w", err)
 	}
-	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectIdentity: projectIdentity, IssueID: &issue.ID, IssueNumber: &issue.Number, Type: eventType, Actor: p.Actor, Payload: string(payload)})
+	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: &issue.Number, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
-func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, states map[string]*importIssueState, projectIdentity string) ([]Event, int, error) {
+func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, states map[string]*importIssueState, projectName string) ([]Event, int, error) {
 	events := []Event{}
 	created := 0
 	desired := map[string]ImportLink{}
@@ -538,7 +538,7 @@ func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatch
 				if _, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, link.ID); err != nil {
 					return nil, 0, fmt.Errorf("delete source link: %w", err)
 				}
-				evt, err := d.insertLinkEvent(ctx, tx, p, issue, projectIdentity, "issue.unlinked", link)
+				evt, err := d.insertLinkEvent(ctx, tx, p, issue, projectName, "issue.unlinked", link)
 				if err != nil {
 					return nil, 0, err
 				}
@@ -587,7 +587,7 @@ func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatch
 		if err != nil {
 			return nil, 0, err
 		}
-		evt, err := d.insertLinkEvent(ctx, tx, p, issue, projectIdentity, "issue.linked", link)
+		evt, err := d.insertLinkEvent(ctx, tx, p, issue, projectName, "issue.linked", link)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -597,7 +597,7 @@ func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatch
 	return events, created, nil
 }
 
-func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, projectIdentity, eventType string, link Link) (Event, error) {
+func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, projectName, eventType string, link Link) (Event, error) {
 	relatedID := link.ToIssueID
 	if relatedID == issue.ID {
 		relatedID = link.FromIssueID
@@ -610,7 +610,7 @@ func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParam
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
-	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectIdentity: projectIdentity, IssueID: &issue.ID, IssueNumber: &issue.Number, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
+	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: &issue.Number, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
 func issueNumberByID(ctx context.Context, tx *sql.Tx, issueID int64) (int64, error) {

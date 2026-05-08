@@ -293,7 +293,7 @@ func newUnixTransport(path string) *http.Transport {
 
 // initProjectE2E posts /api/v1/projects with the test's git repo and
 // returns the resolved project ID. The repo has a remote so the daemon
-// can derive a project identity from the git URL.
+// can derive a project name from the git URL.
 func initProjectE2E(t *testing.T, client *http.Client, baseURL, repoDir string) int64 {
 	t.Helper()
 	body := strings.NewReader(`{"start_path":"` + repoDir + `"}`)

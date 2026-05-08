@@ -24,7 +24,7 @@ func (d *DB) UpdatePriority(ctx context.Context, issueID int64, newPriority *int
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -45,13 +45,13 @@ func (d *DB) UpdatePriority(ctx context.Context, issueID int64, newPriority *int
 		return Issue{}, nil, false, err
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            eventType,
-		Actor:           actor,
-		Payload:         payload,
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        eventType,
+		Actor:       actor,
+		Payload:     payload,
 	})
 	if err != nil {
 		return Issue{}, nil, false, err

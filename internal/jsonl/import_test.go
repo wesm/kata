@@ -16,7 +16,7 @@ import (
 func TestImportRoundTripsExportedRows(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	issue, _, err := src.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID,
@@ -88,7 +88,27 @@ func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 	}
 	var schemaVersion string
 	require.NoError(t, first.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion))
-	assert.Equal(t, "6", schemaVersion)
+	assert.Equal(t, "7", schemaVersion)
+}
+
+func TestImportLegacyEventSnapshotsUseFinalProjectName(t *testing.T) {
+	ctx := context.Background()
+	target := openImportTargetDB(t)
+	_, err := target.CreateProject(ctx, "kata")
+	require.NoError(t, err)
+
+	require.NoError(t, importJSONL(ctx, target,
+		validExportVersion,
+		`{"kind":"project","data":{"id":2,"identity":"github.com/example/kata","name":"kata","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":2}}`,
+		`{"kind":"issue","data":{"id":1,"project_id":2,"number":1,"title":"legacy issue","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
+		`{"kind":"event","data":{"id":1,"project_id":2,"project_identity":"github.com/example/kata","issue_id":1,"issue_number":1,"related_issue_id":null,"type":"issue.created","actor":"tester","payload":{},"created_at":"2026-05-03T00:00:01.000Z"}}`,
+	))
+
+	var projectName, eventProjectName string
+	require.NoError(t, target.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = 2`).Scan(&projectName))
+	require.NoError(t, target.QueryRowContext(ctx, `SELECT project_name FROM events WHERE id = 1`).Scan(&eventProjectName))
+	assert.Equal(t, "kata-2", projectName)
+	assert.Equal(t, projectName, eventProjectName)
 }
 
 func TestImportV1RejectsCorruptEventFK(t *testing.T) {

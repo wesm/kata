@@ -101,8 +101,8 @@ func TestCreateLink_ExactDuplicateParentIsErrLinkExists(t *testing.T) {
 func TestCreateLink_CrossProjectIsErrCrossProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p1 := createProject(ctx, t, d, "p1", "p1")
-	p2 := createProject(ctx, t, d, "p2", "p2")
+	p1 := createProject(ctx, t, d, "p1")
+	p2 := createProject(ctx, t, d, "p2")
 	a := makeIssue(t, ctx, d, p1.ID, "a", "tester")
 	b := makeIssue(t, ctx, d, p2.ID, "b", "tester")
 
@@ -209,8 +209,8 @@ func TestParentNumbersByIssues_ReturnsImmediateParents(t *testing.T) {
 func TestParentNumbersByIssues_ConstrainsProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pa := createProject(ctx, t, d, "a", "a")
-	pb := createProject(ctx, t, d, "b", "b")
+	pa := createProject(ctx, t, d, "a")
+	pb := createProject(ctx, t, d, "b")
 	parentA := makeIssue(t, ctx, d, pa.ID, "parent a", "tester")
 	childA := makeIssue(t, ctx, d, pa.ID, "child a", "tester")
 	parentB := makeIssue(t, ctx, d, pb.ID, "parent b", "tester")

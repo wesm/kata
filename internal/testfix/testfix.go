@@ -4,21 +4,21 @@
 package testfix
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// WriteKataToml writes a minimal v1 .kata.toml under dir with the given
-// identity and name. The world-readable file mode mirrors how users commit
-// .kata.toml in real projects.
-func WriteKataToml(t *testing.T, dir, identity, name string) {
+// WriteKataToml writes a minimal v1 .kata.toml under dir with the given name.
+// The world-readable file mode mirrors how users commit .kata.toml in real
+// projects.
+func WriteKataToml(t *testing.T, dir, name string) {
 	t.Helper()
-	body := fmt.Sprintf("version = 1\n\n[project]\nidentity = %q\nname     = %q\n", identity, name)
+	body := "version = 1\n\n[project]\nname = " + strconv.Quote(name) + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.toml"), []byte(body), 0o644)) //nolint:gosec // test fixture mirrors production .kata.toml mode
 }
 

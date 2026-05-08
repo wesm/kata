@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 type projectAliasRef struct {
@@ -25,7 +26,6 @@ type projectAliasRef struct {
 
 type projectRef struct {
 	ID              int64             `json:"id"`
-	Identity        string            `json:"identity"`
 	Name            string            `json:"name"`
 	NextIssueNumber int64             `json:"next_issue_number"`
 	Aliases         []projectAliasRef `json:"aliases,omitempty"`
@@ -72,7 +72,6 @@ func projectsListCmd() *cobra.Command {
 			var b struct {
 				Projects []struct {
 					ID              int64  `json:"id"`
-					Identity        string `json:"identity"`
 					Name            string `json:"name"`
 					NextIssueNumber int64  `json:"next_issue_number"`
 				} `json:"projects"`
@@ -81,8 +80,8 @@ func projectsListCmd() *cobra.Command {
 				return err
 			}
 			for _, p := range b.Projects {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%d  %s  (%s, next #%d)\n",
-					p.ID, p.Identity, p.Name, p.NextIssueNumber); err != nil {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%d  %s  (next #%d)\n",
+					p.ID, textsafe.Line(p.Name), p.NextIssueNumber); err != nil {
 					return err
 				}
 			}
@@ -141,7 +140,8 @@ func projectsRenameCmd() *cobra.Command {
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "renamed project #%d to %s\n", b.Project.ID, b.Project.Name)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "renamed project #%d to %s\n",
+				b.Project.ID, textsafe.Line(b.Project.Name))
 			return err
 		},
 	}
@@ -192,7 +192,6 @@ func projectsResetCounterCmd() *cobra.Command {
 			var b struct {
 				Project struct {
 					ID              int64  `json:"id"`
-					Identity        string `json:"identity"`
 					Name            string `json:"name"`
 					NextIssueNumber int64  `json:"next_issue_number"`
 				} `json:"project"`
@@ -200,8 +199,8 @@ func projectsResetCounterCmd() *cobra.Command {
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (%s, next #%d)\n",
-				b.Project.ID, b.Project.Identity, b.Project.Name, b.Project.NextIssueNumber)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (next #%d)\n",
+				b.Project.ID, textsafe.Line(b.Project.Name), b.Project.NextIssueNumber)
 			return err
 		},
 	}
@@ -275,7 +274,7 @@ func projectsMergeCmd() *cobra.Command {
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(),
 				"merged project #%d into #%d (%s); moved %s, %s, %s; next #%d\n",
-				b.Source.ID, b.Target.ID, b.Target.Name,
+				b.Source.ID, b.Target.ID, textsafe.Line(b.Target.Name),
 				pluralCount(b.IssuesMoved, "issue"),
 				pluralCount(b.AliasesMoved, "alias"),
 				pluralCount(b.EventsMoved, "event"),
@@ -306,21 +305,21 @@ func repairMergedWorkspaceBinding(source, target projectRef) error {
 		}
 		return err
 	}
-	if !projectConfigReferencesSource(cfg.Project.Identity, source) {
+	if !projectConfigReferencesSource(cfg.Project.Name, source) {
 		return nil
 	}
-	if err := config.WriteProjectConfig(disc.WorkspaceRoot, target.Identity, target.Name); err != nil {
+	if err := config.WriteProjectConfig(disc.WorkspaceRoot, target.Name); err != nil {
 		return fmt.Errorf("repair .kata.toml after project merge: %w", err)
 	}
 	return nil
 }
 
-func projectConfigReferencesSource(identity string, source projectRef) bool {
-	if identity == source.Identity {
+func projectConfigReferencesSource(name string, source projectRef) bool {
+	if name == source.Name {
 		return true
 	}
 	for _, alias := range source.Aliases {
-		if identity == alias.AliasIdentity {
+		if name == alias.AliasIdentity {
 			return true
 		}
 	}
@@ -365,7 +364,6 @@ func projectsShowCmd() *cobra.Command {
 			var b struct {
 				Project struct {
 					ID              int64  `json:"id"`
-					Identity        string `json:"identity"`
 					Name            string `json:"name"`
 					NextIssueNumber int64  `json:"next_issue_number"`
 				} `json:"project"`
@@ -373,8 +371,8 @@ func projectsShowCmd() *cobra.Command {
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (%s, next #%d)\n",
-				b.Project.ID, b.Project.Identity, b.Project.Name, b.Project.NextIssueNumber)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (next #%d)\n",
+				b.Project.ID, textsafe.Line(b.Project.Name), b.Project.NextIssueNumber)
 			return err
 		},
 	}
@@ -401,20 +399,8 @@ func resolveProjectSelector(ctx context.Context, client *http.Client, baseURL, s
 			ExitCode: ExitNotFound,
 		}
 	}
-	// Prefer stable identity/alias matches over display-name matches. This
-	// keeps `projects merge kenn steward` usable even if a failed repair left
-	// both rows with the same display name.
-	for _, matcher := range []projectSelectorMatcher{
-		projectIdentityExact,
-		projectAliasExact,
-		projectIdentitySuffix,
-		projectAliasSuffix,
-		projectNameExact,
-		projectNameSuffix,
-	} {
-		if match, ok, err := uniqueProjectMatch(selector, projects, matcher); ok || err != nil {
-			return match, err
-		}
+	if match, ok, err := uniqueProjectMatch(selector, projects, projectMatchesSelector); ok || err != nil {
+		return match, err
 	}
 	return projectRef{}, &cliError{
 		Message:  fmt.Sprintf("project selector %q did not match any project", selector),
@@ -482,8 +468,11 @@ func uniqueProjectMatch(selector string, projects []projectRef, matchesSelector 
 	}
 }
 
-func projectIdentityExact(project projectRef, selector string) bool {
-	return project.Identity == selector
+func projectMatchesSelector(project projectRef, selector string) bool {
+	return projectNameExact(project, selector) ||
+		projectAliasExact(project, selector) ||
+		projectNameSuffix(project, selector) ||
+		projectAliasSuffix(project, selector)
 }
 
 func projectAliasExact(project projectRef, selector string) bool {
@@ -495,13 +484,9 @@ func projectAliasExact(project projectRef, selector string) bool {
 	return false
 }
 
-func projectIdentitySuffix(project projectRef, selector string) bool {
-	return identitySuffixMatches(project.Identity, selector)
-}
-
 func projectAliasSuffix(project projectRef, selector string) bool {
 	for _, alias := range project.Aliases {
-		if identitySuffixMatches(alias.AliasIdentity, selector) {
+		if suffixMatches(alias.AliasIdentity, selector) {
 			return true
 		}
 	}
@@ -513,19 +498,19 @@ func projectNameExact(project projectRef, selector string) bool {
 }
 
 func projectNameSuffix(project projectRef, selector string) bool {
-	return identitySuffixMatches(project.Name, selector)
+	return suffixMatches(project.Name, selector)
 }
 
-func identitySuffixMatches(identity, selector string) bool {
-	return identity == selector ||
-		strings.HasSuffix(identity, "/"+selector) ||
-		strings.HasSuffix(identity, ":"+selector)
+func suffixMatches(value, selector string) bool {
+	return value == selector ||
+		strings.HasSuffix(value, "/"+selector) ||
+		strings.HasSuffix(value, ":"+selector)
 }
 
 func ambiguousProjectSelectorMessage(selector string, matches []projectRef) string {
 	parts := make([]string, 0, len(matches))
 	for _, match := range matches {
-		parts = append(parts, fmt.Sprintf("#%d %s (%s)", match.ID, match.Identity, match.Name))
+		parts = append(parts, fmt.Sprintf("#%d %s", match.ID, textsafe.Line(match.Name)))
 	}
 	return fmt.Sprintf("project selector %q is ambiguous: %s", selector, strings.Join(parts, ", "))
 }
@@ -542,7 +527,7 @@ func pluralCount(n int64, noun string) string {
 
 // projectsRemoveCmd archives a project: DELETE /api/v1/projects/{id}. The
 // row stays so events keep a valid FK target, but list/resolve hide it and
-// re-init against the same identity returns project_archived. --force
+// re-init against the same name returns project_archived. --force
 // overrides the open-issue refusal.
 func projectsRemoveCmd() *cobra.Command {
 	var force bool
@@ -587,7 +572,7 @@ func projectsRemoveCmd() *cobra.Command {
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(),
 				"archived project #%d (%s); events preserved, aliases dropped\n",
-				project.ID, project.Identity)
+				project.ID, textsafe.Line(project.Name))
 			return err
 		},
 	}

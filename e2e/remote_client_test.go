@@ -169,8 +169,9 @@ func TestRemoteInit_PathFreeWireShape(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, bodies, 1, "kata init should issue exactly one POST /api/v1/projects")
 	body := bodies[0]
-	assert.Contains(t, body, `"project_identity":"github.com/wesm/system"`,
-		"client must send the locally-derived identity")
+	assert.Contains(t, body, `"name":"system"`,
+		"client must send the locally-derived project name")
+	assert.NotContains(t, body, "project_identity")
 	assert.NotContains(t, body, "start_path",
 		"remote init must not leak the client filesystem path to the daemon")
 

@@ -5,12 +5,10 @@ import "time"
 // Project mirrors a row in projects. DeletedAt is set when the project has
 // been archived via kata projects remove (#24); the row stays in the table so
 // events/issues keep referring to a valid FK target, but read paths filter it
-// out. Identity stays UNIQUE so re-creating the same identity hits a clean
-// "project was archived" error rather than silently resurrecting it.
+// out. Name is the user-facing unique project key.
 type Project struct {
 	ID              int64      `json:"id"`
 	UID             string     `json:"uid"`
-	Identity        string     `json:"identity"`
 	Name            string     `json:"name"`
 	CreatedAt       time.Time  `json:"created_at"`
 	NextIssueNumber int64      `json:"next_issue_number"`
@@ -75,7 +73,7 @@ type Event struct {
 	OriginInstanceUID string    `json:"origin_instance_uid"`
 	ProjectID         int64     `json:"project_id"`
 	ProjectUID        string    `json:"project_uid"`
-	ProjectIdentity   string    `json:"project_identity"`
+	ProjectName       string    `json:"project_name"`
 	IssueID           *int64    `json:"issue_id,omitempty"`
 	IssueUID          *string   `json:"issue_uid,omitempty"`
 	IssueNumber       *int64    `json:"issue_number,omitempty"`
@@ -151,7 +149,7 @@ type PurgeLog struct {
 	PurgedIssueID          int64     `json:"purged_issue_id"`
 	IssueUID               *string   `json:"issue_uid,omitempty"`
 	ProjectUID             *string   `json:"project_uid,omitempty"`
-	ProjectIdentity        string    `json:"project_identity"`
+	ProjectName            string    `json:"project_name"`
 	IssueNumber            int64     `json:"issue_number"`
 	IssueTitle             string    `json:"issue_title"`
 	IssueAuthor            string    `json:"issue_author"`

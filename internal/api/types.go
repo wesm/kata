@@ -47,17 +47,10 @@ type ProjectStatsOut struct {
 	LastEventAt *time.Time `json:"last_event_at"`
 }
 
-// ProjectOut is the API-shape of a project. JSON keys mirror db.Project
-// (internal/db/types.go) exactly so the default response is byte-identical
-// to the previous shape. Spec §1.7.
-//
-// The field set is exhaustively derived from db.Project as of this commit:
-// id, uid, identity, name, created_at, next_issue_number, deleted_at
-// (omitempty). No updated_at — db.Project has none.
+// ProjectOut is the API-shape of a project.
 type ProjectOut struct {
 	ID              int64      `json:"id"`
 	UID             string     `json:"uid"`
-	Identity        string     `json:"identity"`
 	Name            string     `json:"name"`
 	CreatedAt       time.Time  `json:"created_at"`
 	NextIssueNumber int64      `json:"next_issue_number"`
@@ -68,15 +61,13 @@ type ProjectOut struct {
 	Stats *ProjectStatsOut `json:"stats,omitempty"`
 }
 
-// ResolveProjectRequest is POST /api/v1/projects/resolve. One of
-// ProjectIdentity or StartPath must be set. ProjectIdentity is used by
-// remote clients (which have a local .kata.toml but a workspace path
-// the daemon cannot stat); StartPath is the original local-mode flow
-// where the daemon walks up from a path on its own filesystem.
+// ResolveProjectRequest is POST /api/v1/projects/resolve. Name performs a
+// path-free strict project-name lookup; StartPath resolves from workspace
+// metadata.
 type ResolveProjectRequest struct {
 	Body struct {
-		ProjectIdentity string `json:"project_identity,omitempty" doc:"project identity from a client-side .kata.toml; preferred over start_path"`
-		StartPath       string `json:"start_path,omitempty" doc:"absolute path to resolve from (daemon-side filesystem)"`
+		Name      string `json:"name,omitempty" doc:"project name; preferred over start_path"`
+		StartPath string `json:"start_path,omitempty" doc:"absolute path to resolve from (daemon-side filesystem)"`
 	}
 }
 
@@ -106,29 +97,14 @@ type AliasInput struct {
 //
 // Two modes:
 //
-//  1. Path-based (start_path set): the daemon walks up from start_path
-//     to locate .kata.toml / .git, derives identity, writes .kata.toml,
-//     and attaches an alias from its own filesystem view. The optional
-//     alias field is ignored in this mode for backward compatibility
-//     with clients that always populated start_path.
-//  2. Identity-only (project_identity set, start_path empty): the
-//     client has already derived identity locally and will write
-//     .kata.toml on its own filesystem. The daemon registers the
-//     project row by strict identity (no alias fallback). When the
-//     client also supplies alias metadata, the daemon attaches the
-//     alias — so alias-conflict and --reassign semantics survive
-//     the path-free flow. Reassign without alias metadata is
-//     rejected because there's nothing to move.
-//
-// Exactly one of start_path or project_identity must be set.
+// Exactly one of start_path or name must be set.
 type InitProjectRequest struct {
 	Body struct {
-		StartPath       string      `json:"start_path,omitempty" doc:"absolute path on the daemon's filesystem; omit for identity-only init"`
-		ProjectIdentity string      `json:"project_identity,omitempty" doc:"client-derived identity; required when start_path is empty"`
-		Name            string      `json:"name,omitempty"`
-		Replace         bool        `json:"replace,omitempty"`
-		Reassign        bool        `json:"reassign,omitempty"`
-		Alias           *AliasInput `json:"alias,omitempty" doc:"client-derived alias metadata; only honored when start_path is empty"`
+		StartPath string      `json:"start_path,omitempty" doc:"absolute path on the daemon's filesystem; omit for path-free init"`
+		Name      string      `json:"name,omitempty" doc:"project name; required when start_path is empty"`
+		Replace   bool        `json:"replace,omitempty"`
+		Reassign  bool        `json:"reassign,omitempty"`
+		Alias     *AliasInput `json:"alias,omitempty" doc:"client-derived alias metadata; only honored when start_path is empty"`
 	}
 }
 
@@ -626,10 +602,10 @@ type DigestTotals struct {
 // into a count and joins the close reason / label name into the token so the
 // renderer can stay dumb.
 type DigestIssueActions struct {
-	ProjectID       int64    `json:"project_id"`
-	ProjectIdentity string   `json:"project_identity"`
-	IssueNumber     int64    `json:"issue_number"`
-	Actions         []string `json:"actions"`
+	ProjectID   int64    `json:"project_id"`
+	ProjectName string   `json:"project_name"`
+	IssueNumber int64    `json:"issue_number"`
+	Actions     []string `json:"actions"`
 }
 
 // DigestActorEntry is one actor's slice of the digest. Issues is sorted by

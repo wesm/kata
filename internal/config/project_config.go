@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -28,8 +29,8 @@ type ProjectConfig struct {
 
 // ProjectBindings carries the [project] block.
 type ProjectBindings struct {
-	Identity string `toml:"identity"`
-	Name     string `toml:"name,omitempty"`
+	LegacyIdentity string `toml:"identity,omitempty"`
+	Name           string `toml:"name"`
 }
 
 // ServerConfig carries the [server] block. Optional in both committed
@@ -66,11 +67,14 @@ func ReadProjectConfig(workspaceRoot string) (*ProjectConfig, error) {
 	if cfg.Version != 1 {
 		return nil, fmt.Errorf("unsupported .kata.toml version %d (expected 1)", cfg.Version)
 	}
-	if strings.TrimSpace(cfg.Project.Identity) == "" {
-		return nil, fmt.Errorf("project.identity must be a non-empty string")
-	}
-	cfg.Project.Identity = strings.TrimSpace(cfg.Project.Identity)
+	cfg.Project.LegacyIdentity = strings.TrimSpace(cfg.Project.LegacyIdentity)
 	cfg.Project.Name = strings.TrimSpace(cfg.Project.Name)
+	if cfg.Project.Name == "" && cfg.Project.LegacyIdentity != "" {
+		cfg.Project.Name = lastSegment(cfg.Project.LegacyIdentity)
+	}
+	if err := ValidateProjectName(cfg.Project.Name); err != nil {
+		return nil, fmt.Errorf("project.name: %w", err)
+	}
 	return &cfg, nil
 }
 
@@ -102,18 +106,29 @@ func FindProjectConfig(startPath string) (*ProjectConfig, string, error) {
 }
 
 // WriteProjectConfig writes a v1 .kata.toml at <workspaceRoot>/.kata.toml.
-// If name is empty the last `/` or `:` segment of identity is used.
-func WriteProjectConfig(workspaceRoot, identity, name string) error {
-	if strings.TrimSpace(identity) == "" {
-		return fmt.Errorf("identity must be non-empty")
+func WriteProjectConfig(workspaceRoot, name string) error {
+	name = strings.TrimSpace(name)
+	if err := ValidateProjectName(name); err != nil {
+		return err
 	}
-	if name == "" {
-		name = lastSegment(identity)
-	}
-	body := fmt.Sprintf("version = 1\n\n[project]\nidentity = %q\nname     = %q\n",
-		identity, name)
+	body := fmt.Sprintf("version = 1\n\n[project]\nname = %q\n", name)
 	path := filepath.Join(workspaceRoot, ProjectConfigFilename)
 	return os.WriteFile(path, []byte(body), 0o644) //nolint:gosec // committed project file, world-readable by design
+}
+
+// ValidateProjectName rejects names that can spoof terminal output when echoed
+// by CLI/TUI surfaces. Names may contain printable Unicode and spaces, but not
+// control characters, ESC, newlines, or other non-printable runes.
+func ValidateProjectName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("name must be non-empty")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || !unicode.IsPrint(r) {
+			return fmt.Errorf("name contains non-printable character %U", r)
+		}
+	}
+	return nil
 }
 
 func lastSegment(identity string) string {

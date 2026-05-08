@@ -145,7 +145,7 @@ func TestV1ToV3CutoverDeterministicRowUIDs(t *testing.T) {
 func TestRoundtripV3PreservesInstanceUID(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	_, _, err = src.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "preserve identity", Author: "tester",
@@ -188,7 +188,7 @@ func TestImportRefreshesCachedInstanceUID(t *testing.T) {
 
 	// Writing an event on the same handle must use the refreshed value, not
 	// the stale LOCAL_FRESH that db.Open originally seeded.
-	p, err := dst.CreateProject(ctx, "github.com/wesm/post-import", "post-import")
+	p, err := dst.CreateProject(ctx, "post-import")
 	require.NoError(t, err)
 	_, evt, err := dst.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "post-import write", Author: "tester",
@@ -204,7 +204,7 @@ func TestImportRefreshesCachedInstanceUID(t *testing.T) {
 func TestImportNewInstanceRegeneratesIdentity(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	_, _, err = src.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "clone me", Author: "tester",

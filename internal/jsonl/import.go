@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -148,10 +149,19 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if err := fillProjectUID(&rec, exportVersion); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO projects(id, uid, identity, name, created_at, next_issue_number, deleted_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.UID, rec.Identity, rec.Name, rec.CreatedAt, rec.NextIssueNumber, rec.DeletedAt)
+		rec.OriginalName = rec.Name
+		name, renamed, err := uniqueProjectName(ctx, tx, rec.ID, rec.Name)
+		if err != nil {
+			return err
+		}
+		rec.Name = name
+		if renamed {
+			fmt.Fprintf(os.Stderr, "note: project #%d renamed from %q to %q during cutover\n", rec.ID, rec.OriginalName, rec.Name)
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO projects(id, uid, name, created_at, next_issue_number, deleted_at)
+			 VALUES(?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.Name, rec.CreatedAt, rec.NextIssueNumber, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindProjectAlias:
 		var rec projectAliasRecord
@@ -235,8 +245,12 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if err := fillEventV3Identity(&rec, exportVersion, localInstanceUID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO events(id, uid, origin_instance_uid, project_id, project_identity, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid,
+		projectName, err := importedProjectName(ctx, tx, rec.ProjectID, rec.ProjectName, rec.LegacyProjectName)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO events(id, uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid,
 			                    type, actor, payload, created_at)
 			 VALUES(
 			   ?, ?, ?, ?, ?, ?,
@@ -244,9 +258,9 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			   ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   ?, ?, ?, ?
-			 )`,
+			)`,
 			rec.ID, rec.UID, rec.OriginInstanceUID,
-			rec.ProjectID, rec.ProjectIdentity, rec.IssueID,
+			rec.ProjectID, projectName, rec.IssueID,
 			stringPtrValue(rec.IssueUID), rec.IssueID,
 			rec.IssueNumber, rec.RelatedIssueID,
 			stringPtrValue(rec.RelatedIssueUID), rec.RelatedIssueID,
@@ -260,8 +274,12 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if err := fillPurgeLogV3Identity(&rec, exportVersion, localInstanceUID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO purge_log(id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number, issue_title,
+		projectName, err := importedProjectName(ctx, tx, rec.ProjectID, rec.ProjectName, rec.LegacyProjectName)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO purge_log(id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid, project_name, issue_number, issue_title,
 			                       issue_author, comment_count, link_count, label_count, event_count,
 			                       events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 			                       actor, reason, purged_at)
@@ -275,7 +293,7 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			rec.ProjectID, rec.PurgedIssueID,
 			stringPtrValue(rec.IssueUID), rec.PurgedIssueID,
 			stringPtrValue(rec.ProjectUID), rec.ProjectID,
-			rec.ProjectIdentity, rec.IssueNumber,
+			projectName, rec.IssueNumber,
 			rec.IssueTitle, rec.IssueAuthor, rec.CommentCount, rec.LinkCount, rec.LabelCount,
 			rec.EventCount, rec.EventsDeletedMinID, rec.EventsDeletedMaxID, rec.PurgeResetAfterEventID,
 			rec.Actor, rec.Reason, rec.PurgedAt)
@@ -314,6 +332,24 @@ func wrapImportErr(kind Kind, err error) error {
 		return fmt.Errorf("import %s: %w", kind, err)
 	}
 	return nil
+}
+
+func uniqueProjectName(ctx context.Context, tx *sql.Tx, projectID int64, name string) (string, bool, error) {
+	original := name
+	if strings.TrimSpace(name) == "" {
+		name = fmt.Sprintf("project-%d", projectID)
+		original = name
+	}
+	for suffix := 1; ; suffix++ {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE name = ?`, name).Scan(&exists); err != nil {
+			return "", false, fmt.Errorf("check project name collision: %w", err)
+		}
+		if exists == 0 {
+			return name, name != original, nil
+		}
+		name = fmt.Sprintf("%s-%d", original, suffix+1)
+	}
 }
 
 func fillProjectUID(rec *projectRecord, exportVersion int) error {
@@ -447,8 +483,9 @@ func stringPtrValue(s *string) any {
 type projectRecord struct {
 	ID              int64   `json:"id"`
 	UID             string  `json:"uid"`
-	Identity        string  `json:"identity"`
+	Identity        string  `json:"identity,omitempty"`
 	Name            string  `json:"name"`
+	OriginalName    string  `json:"-"`
 	CreatedAt       string  `json:"created_at"`
 	NextIssueNumber int64   `json:"next_issue_number"`
 	DeletedAt       *string `json:"deleted_at,omitempty"`
@@ -528,7 +565,8 @@ type eventRecord struct {
 	UID               string          `json:"uid"`
 	OriginInstanceUID string          `json:"origin_instance_uid"`
 	ProjectID         int64           `json:"project_id"`
-	ProjectIdentity   string          `json:"project_identity"`
+	ProjectName       string          `json:"project_name"`
+	LegacyProjectName string          `json:"project_identity,omitempty"`
 	IssueID           *int64          `json:"issue_id"`
 	IssueUID          *string         `json:"issue_uid"`
 	IssueNumber       *int64          `json:"issue_number"`
@@ -548,7 +586,8 @@ type purgeLogRecord struct {
 	PurgedIssueID          int64   `json:"purged_issue_id"`
 	IssueUID               *string `json:"issue_uid"`
 	ProjectUID             *string `json:"project_uid"`
-	ProjectIdentity        string  `json:"project_identity"`
+	ProjectName            string  `json:"project_name"`
+	LegacyProjectName      string  `json:"project_identity,omitempty"`
 	IssueNumber            int64   `json:"issue_number"`
 	IssueTitle             string  `json:"issue_title"`
 	IssueAuthor            string  `json:"issue_author"`
@@ -567,6 +606,21 @@ type purgeLogRecord struct {
 type sqliteSequenceRecord struct {
 	Name string `json:"name"`
 	Seq  int64  `json:"seq"`
+}
+
+func importedProjectName(ctx context.Context, tx *sql.Tx, projectID int64, projectName, legacyProjectIdentity string) (string, error) {
+	var name string
+	err := tx.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, projectID).Scan(&name)
+	if err == nil {
+		return name, nil
+	}
+	if projectName != "" {
+		return projectName, nil
+	}
+	if legacyProjectIdentity != "" {
+		return "", fmt.Errorf("project %d not imported before legacy project snapshot %q: %w", projectID, legacyProjectIdentity, err)
+	}
+	return "", fmt.Errorf("project %d not imported before project snapshot: %w", projectID, err)
 }
 
 func upsertSequence(ctx context.Context, tx *sql.Tx, name string, seq int64) error {

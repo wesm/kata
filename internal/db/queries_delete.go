@@ -19,7 +19,7 @@ func (d *DB) SoftDeleteIssue(ctx context.Context, issueID int64, actor string) (
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueIncludingDeleted(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueIncludingDeleted(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -58,13 +58,13 @@ func (d *DB) SoftDeleteIssue(ctx context.Context, issueID int64, actor string) (
 		return updated, nil, false, nil
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            "issue.soft_deleted",
-		Actor:           actor,
-		Payload:         "{}",
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        "issue.soft_deleted",
+		Actor:       actor,
+		Payload:     "{}",
 	})
 	if err != nil {
 		return Issue{}, nil, false, err
@@ -88,7 +88,7 @@ func (d *DB) RestoreIssue(ctx context.Context, issueID int64, actor string) (Iss
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueIncludingDeleted(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueIncludingDeleted(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -124,13 +124,13 @@ func (d *DB) RestoreIssue(ctx context.Context, issueID int64, actor string) (Iss
 		return updated, nil, false, nil
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            "issue.restored",
-		Actor:           actor,
-		Payload:         "{}",
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        "issue.restored",
+		Actor:       actor,
+		Payload:     "{}",
 	})
 	if err != nil {
 		return Issue{}, nil, false, err
@@ -183,12 +183,12 @@ func (d *DB) PurgeIssue(ctx context.Context, issueID int64, actor string, reason
 		}
 	}()
 
-	issue, projectIdentity, err := lookupIssueIncludingDeleted(ctx, conn, issueID)
+	issue, projectName, err := lookupIssueIncludingDeleted(ctx, conn, issueID)
 	if err != nil {
 		return PurgeLog{}, err
 	}
 
-	purgeLogID, err := purgeCascade(ctx, conn, issue, projectIdentity, actor, reason, d.instanceUID)
+	purgeLogID, err := purgeCascade(ctx, conn, issue, projectName, actor, reason, d.instanceUID)
 	if err != nil {
 		return PurgeLog{}, err
 	}
@@ -220,7 +220,7 @@ func purgeCascade(
 	ctx context.Context,
 	c connExec,
 	issue Issue,
-	projectIdentity string,
+	projectName string,
 	actor string,
 	reason *string,
 	originInstanceUID string,
@@ -299,13 +299,13 @@ func purgeCascade(
 	res, err := c.ExecContext(ctx,
 		`INSERT INTO purge_log(
 		   uid, origin_instance_uid,
-		   project_id, purged_issue_id, issue_uid, project_uid, project_identity, issue_number,
+		   project_id, purged_issue_id, issue_uid, project_uid, project_name, issue_number,
 		   issue_title, issue_author, comment_count, link_count, label_count,
 		   event_count, events_deleted_min_id, events_deleted_max_id,
 		   purge_reset_after_event_id, actor, reason)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		purgeUID, originInstanceUID,
-		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectIdentity, issue.Number,
+		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectName, issue.Number,
 		issue.Title, issue.Author, commentCount, linkCount, labelCount,
 		eventCount, minEventID, maxEventID, reservedCursor, actor, reason)
 	if err != nil {
@@ -362,14 +362,14 @@ func reserveEventSequence(ctx context.Context, c connExec, hadEvents bool) (sql.
 func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) {
 	const q = `
 		SELECT id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid,
-		       project_identity, issue_number, issue_title, issue_author, comment_count, link_count, label_count,
+		       project_name, issue_number, issue_title, issue_author, comment_count, link_count, label_count,
 		       event_count, events_deleted_min_id, events_deleted_max_id,
 		       purge_reset_after_event_id, actor, reason, purged_at
 		FROM purge_log WHERE id = ?`
 	var pl PurgeLog
 	err := r.QueryRowContext(ctx, q, id).Scan(
 		&pl.ID, &pl.UID, &pl.OriginInstanceUID, &pl.ProjectID, &pl.PurgedIssueID, &pl.IssueUID,
-		&pl.ProjectUID, &pl.ProjectIdentity, &pl.IssueNumber, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
+		&pl.ProjectUID, &pl.ProjectName, &pl.IssueNumber, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
 		&pl.LinkCount, &pl.LabelCount, &pl.EventCount,
 		&pl.EventsDeletedMinID, &pl.EventsDeletedMaxID,
 		&pl.PurgeResetAfterEventID, &pl.Actor, &pl.Reason, &pl.PurgedAt)
@@ -382,7 +382,7 @@ func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) 
 	return pl, nil
 }
 
-// lookupIssueIncludingDeleted fetches an issue + its project's identity for
+// lookupIssueIncludingDeleted fetches an issue + its project's name for
 // event snapshotting. Unlike lookupIssueForEvent (queries.go), this version
 // does NOT filter out soft-deleted rows — it's the right primitive for the
 // destructive ladder verbs that need to operate on deleted issues.
@@ -390,23 +390,23 @@ func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64
 	const q = `
 		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
-		       i.closed_at, i.deleted_at, p.identity
+		       i.closed_at, i.deleted_at, p.name
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
 		WHERE i.id = ?`
 	var (
-		i        Issue
-		identity string
+		i           Issue
+		projectName string
 	)
 	err := r.QueryRowContext(ctx, q, issueID).
 		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status,
 			&i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt,
-			&i.ClosedAt, &i.DeletedAt, &identity)
+			&i.ClosedAt, &i.DeletedAt, &projectName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound
 	}
 	if err != nil {
 		return Issue{}, "", fmt.Errorf("lookup issue including deleted: %w", err)
 	}
-	return i, identity, nil
+	return i, projectName, nil
 }

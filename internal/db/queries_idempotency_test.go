@@ -150,8 +150,8 @@ func TestLookupIdempotency_DifferentKeyIsNil(t *testing.T) {
 func TestLookupIdempotency_DifferentProjectIsNil(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p1 := createProject(ctx, t, d, "p1", "p1")
-	p2 := createProject(ctx, t, d, "p2", "p2")
+	p1 := createProject(ctx, t, d, "p1")
+	p2 := createProject(ctx, t, d, "p2")
 	issue, _ := createTesterIssue(ctx, t, d, p1.ID, "x")
 	injectIdempotencyKey(ctx, t, d, issue.ID, "K1", "fp")
 
@@ -172,11 +172,11 @@ func TestLookupIdempotency_OnlyIssueCreatedEvents(t *testing.T) {
 	eventUID, err := uid.New()
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_name, issue_id, issue_number, type, actor, payload, created_at)
 		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester',
 		        json_object('idempotency_key', 'K1', 'idempotency_fingerprint', 'fp'),
 		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		eventUID, p.ID, p.Identity, issue.ID, issue.Number)
+		eventUID, p.ID, p.Name, issue.ID, issue.Number)
 	require.NoError(t, err)
 
 	got, err := d.LookupIdempotency(ctx, p.ID, "K1", time.Now().Add(-1*time.Hour))

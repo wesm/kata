@@ -434,7 +434,7 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 		return Link{}, Event{}, fmt.Errorf("last insert id: %w", err)
 	}
 
-	_, projectIdentity, err := lookupIssueForEvent(ctx, tx, ev.EventIssueID)
+	_, projectName, err := lookupIssueForEvent(ctx, tx, ev.EventIssueID)
 	if err != nil {
 		return Link{}, Event{}, err
 	}
@@ -455,14 +455,14 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 		return Link{}, Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       p.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &ev.EventIssueID,
-		IssueNumber:     &ev.EventIssueNumber,
-		RelatedIssueID:  &relatedID,
-		Type:            ev.EventType,
-		Actor:           ev.Actor,
-		Payload:         string(payload),
+		ProjectID:      p.ProjectID,
+		ProjectName:    projectName,
+		IssueID:        &ev.EventIssueID,
+		IssueNumber:    &ev.EventIssueNumber,
+		RelatedIssueID: &relatedID,
+		Type:           ev.EventType,
+		Actor:          ev.Actor,
+		Payload:        string(payload),
 	})
 	if err != nil {
 		return Link{}, Event{}, err
@@ -512,7 +512,7 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventPara
 		return Event{}, ErrNotFound
 	}
 
-	_, projectIdentity, err := lookupIssueForEvent(ctx, tx, ev.EventIssueID)
+	_, projectName, err := lookupIssueForEvent(ctx, tx, ev.EventIssueID)
 	if err != nil {
 		return Event{}, err
 	}
@@ -530,14 +530,14 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventPara
 		return Event{}, fmt.Errorf("marshal unlink payload: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       link.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &ev.EventIssueID,
-		IssueNumber:     &ev.EventIssueNumber,
-		RelatedIssueID:  &relatedID,
-		Type:            ev.EventType,
-		Actor:           ev.Actor,
-		Payload:         string(payload),
+		ProjectID:      link.ProjectID,
+		ProjectName:    projectName,
+		IssueID:        &ev.EventIssueID,
+		IssueNumber:    &ev.EventIssueNumber,
+		RelatedIssueID: &relatedID,
+		Type:           ev.EventType,
+		Actor:          ev.Actor,
+		Payload:        string(payload),
 	})
 	if err != nil {
 		return Event{}, err

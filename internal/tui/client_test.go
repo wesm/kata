@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/config"
 )
 
 // newTestClient stands up an httptest server with handler, registers
@@ -308,6 +309,14 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 		if r.URL.Path != "/api/v1/projects/7/events" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
+		if r.URL.Query().Get("after_id") != "" {
+			respondJSON(t, w, map[string]any{
+				"events":         []map[string]any{},
+				"next_after_id":  3,
+				"reset_required": false,
+			})
+			return
+		}
 		respondJSON(t, w, map[string]any{
 			"events": []map[string]any{
 				{
@@ -345,6 +354,49 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 	if got[1].RelatedIssueUID != "01JZ0000000000000000000004" {
 		t.Fatalf("related issue UID not decoded: %+v", got[1])
 	}
+}
+
+func TestClient_ListEvents_PaginatesProjectEventStream(t *testing.T) {
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/api/v1/projects/7/events", r.URL.Path)
+		require.Equal(t, "1000", r.URL.Query().Get("limit"))
+		switch r.URL.Query().Get("after_id") {
+		case "":
+			respondJSON(t, w, map[string]any{
+				"events": []map[string]any{
+					{"event_id": 1, "type": "issue.created", "issue_number": 1, "actor": "a"},
+				},
+				"next_after_id":  1,
+				"reset_required": false,
+			})
+		case "1":
+			respondJSON(t, w, map[string]any{
+				"events": []map[string]any{
+					{"event_id": 2, "type": "issue.created", "issue_number": 42, "actor": "a"},
+					{"event_id": 3, "type": "issue.labeled", "issue_number": 42, "actor": "a"},
+				},
+				"next_after_id":  3,
+				"reset_required": false,
+			})
+		case "3":
+			respondJSON(t, w, map[string]any{
+				"events":         []map[string]any{},
+				"next_after_id":  3,
+				"reset_required": false,
+			})
+		default:
+			t.Fatalf("unexpected after_id: %q", r.URL.Query().Get("after_id"))
+		}
+	})
+
+	got, err := c.ListEvents(context.Background(), 7, 42)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, int64(2), got[0].ID)
+	assert.Equal(t, int64(3), got[1].ID)
+	assert.Equal(t, 3, calls)
 }
 
 // TestClient_ListIssues_NotNilOnSuccess guards the bug where listIssuesAt
@@ -613,6 +665,27 @@ func TestClient_ResolveProject_FallsBackOnMissingConfig(t *testing.T) {
 	_, err := c.ResolveProject(t.Context(), dir)
 	require.NoError(t, err)
 	assert.Equal(t, dir, got["start_path"])
-	_, hasIdentity := got["project_identity"]
-	assert.False(t, hasIdentity)
+	_, hasName := got["name"]
+	assert.False(t, hasName)
+}
+
+func TestClient_ResolveProject_UsesStartPathForWorkspaceConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, "stale-name"))
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bs, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project":{"id":42}}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	_, err := c.ResolveProject(t.Context(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, dir, got["start_path"])
+	_, hasName := got["name"]
+	assert.False(t, hasName, "ordinary workspace resolution must let daemon alias repair run")
 }

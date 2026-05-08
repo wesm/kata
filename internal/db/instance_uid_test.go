@@ -104,7 +104,7 @@ func TestEventUIDNotNullRejected(t *testing.T) {
 
 	// uid omitted entirely.
 	_, err := d.ExecContext(ctx, `
-		INSERT INTO events(origin_instance_uid, project_id, project_identity, type, actor, payload, created_at)
+		INSERT INTO events(origin_instance_uid, project_id, project_name, type, actor, payload, created_at)
 		VALUES (?, ?, 'github.com/wesm/kata', 'issue.created', 'tester', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 		d.InstanceUID(), p.ID)
 	require.Error(t, err, "events.uid NOT NULL must reject INSERT without uid")
@@ -113,7 +113,7 @@ func TestEventUIDNotNullRejected(t *testing.T) {
 	freshUID, err := uid.New()
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
-		INSERT INTO events(uid, project_id, project_identity, type, actor, payload, created_at)
+		INSERT INTO events(uid, project_id, project_name, type, actor, payload, created_at)
 		VALUES (?, ?, 'github.com/wesm/kata', 'issue.created', 'tester', '{}', strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 		freshUID, p.ID)
 	require.Error(t, err, "events.origin_instance_uid NOT NULL must reject INSERT without origin")
@@ -127,7 +127,7 @@ func TestPurgeLogUIDNotNullRejected(t *testing.T) {
 
 	// uid omitted entirely.
 	_, err := d.ExecContext(ctx, `
-		INSERT INTO purge_log(origin_instance_uid, project_id, purged_issue_id, project_identity,
+		INSERT INTO purge_log(origin_instance_uid, project_id, purged_issue_id, project_name,
 		                     issue_number, issue_title, issue_author,
 		                     comment_count, link_count, label_count, event_count, actor, purged_at)
 		VALUES (?, 1, 99, 'p', 1, 'title', 'tester', 0, 0, 0, 0, 'tester',
@@ -139,7 +139,7 @@ func TestPurgeLogUIDNotNullRejected(t *testing.T) {
 	freshUID, err := uid.New()
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
-		INSERT INTO purge_log(uid, project_id, purged_issue_id, project_identity,
+		INSERT INTO purge_log(uid, project_id, purged_issue_id, project_name,
 		                     issue_number, issue_title, issue_author,
 		                     comment_count, link_count, label_count, event_count, actor, purged_at)
 		VALUES (?, 1, 99, 'p', 1, 'title', 'tester', 0, 0, 0, 0, 'tester',

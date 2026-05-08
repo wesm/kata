@@ -99,7 +99,7 @@ type issueKey struct {
 // (comments especially) to "verb:N" tokens so the human renderer doesn't
 // drown in duplicate lines for chatty agents.
 type issueAccum struct {
-	ProjectIdentity string
+	ProjectName     string
 	Created         bool
 	CloseReason     string // empty if not closed in window
 	Reopened        bool
@@ -142,7 +142,7 @@ func aggregateDigest(rows []db.Event) (api.DigestTotals, []api.DigestActorEntry)
 			key = issueKey{ProjectID: e.ProjectID, Number: *e.IssueNumber}
 			a, ok := st.issues[key]
 			if !ok {
-				a = &issueAccum{ProjectIdentity: e.ProjectIdentity}
+				a = &issueAccum{ProjectName: e.ProjectName}
 				st.issues[key] = a
 			}
 			acc = a
@@ -417,10 +417,10 @@ func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 			continue
 		}
 		out = append(out, api.DigestIssueActions{
-			ProjectID:       k.ProjectID,
-			ProjectIdentity: acc.ProjectIdentity,
-			IssueNumber:     k.Number,
-			Actions:         renderActions(acc),
+			ProjectID:   k.ProjectID,
+			ProjectName: acc.ProjectName,
+			IssueNumber: k.Number,
+			Actions:     renderActions(acc),
 		})
 	}
 	return out

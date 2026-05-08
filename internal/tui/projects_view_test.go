@@ -147,10 +147,10 @@ func TestProjectsView_DashWhenNoEvents(t *testing.T) {
 	assert.Contains(t, out, "—", "nil LastEventAt must render as em-dash")
 }
 
-// TestProjectsView_IdentityFooterOnHighlight pins spec §5.1:
-// highlighting a real project renders its identity URL beneath the
-// table; highlighting the sentinel renders the description.
-func TestProjectsView_IdentityFooterOnHighlight(t *testing.T) {
+// TestProjectsView_ProjectFooterOnHighlight pins spec §5.1:
+// highlighting a real project renders its name beneath the table;
+// highlighting the sentinel renders the description.
+func TestProjectsView_ProjectFooterOnHighlight(t *testing.T) {
 	m := setupProjectsView(
 		mockProject{ID: 1, Name: "kata", Ident: "github.com/wesm/kata"},
 	)
@@ -161,7 +161,7 @@ func TestProjectsView_IdentityFooterOnHighlight(t *testing.T) {
 
 	m.projectsCursor = 1 // kata row
 	out = m.View()
-	assert.Contains(t, out, "identity: github.com/wesm/kata")
+	assert.Contains(t, out, "project: kata")
 }
 
 // TestProjectsView_JKMoveCursor pins basic vertical navigation. Cursor
