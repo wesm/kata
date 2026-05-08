@@ -111,9 +111,8 @@ func newInitCmd() *cobra.Command {
 		Long: `Initialize kata in this workspace.
 
 Writes a committed .kata.toml that binds the workspace to a project
-identity. The daemon derives the identity from a git remote when one
-is present; pass --project to override, or --name to set the
-human-readable name.
+name. The daemon derives the name from a git remote when one is present;
+pass --project to choose the project name explicitly.
 
 Also adds .kata.local.toml to .gitignore so a developer's per-machine
 overrides (e.g., a remote daemon URL via [server] url = "...") never
@@ -136,8 +135,7 @@ get committed.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Project, "project", "", "project identity (default: derived from git remote)")
-	cmd.Flags().StringVar(&opts.Name, "name", "", "human name for the project (default: last path segment)")
+	cmd.Flags().StringVar(&opts.Name, "name", "", "deprecated alias for --project")
 	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "overwrite .kata.toml binding when it conflicts")
 	cmd.Flags().BoolVar(&opts.Reassign, "reassign", false, "move an existing alias to this project")
 
@@ -145,29 +143,34 @@ get committed.`,
 }
 
 // callInit dispatches `kata init` between the path-free flow (client
-// derives identity locally, daemon registers project, client writes
-// files) and the legacy path-based flow (daemon does everything).
+// derives the project name locally, daemon registers project, client writes
+// files) and the path-based flow (daemon does everything).
 //
-// Path-free runs whenever the client can resolve identity locally —
-// from .kata.toml, --project, or a discoverable git workspace. That's
+// Path-free runs whenever the client can resolve the name locally —
+// from .kata.toml, --project, --name, or a discoverable git workspace. That's
 // the contract that lets a daemon on another host serve init without
 // filesystem access to the client workspace. The client falls back to
 // the path-based request only when local derivation can't produce an
-// identity, so the daemon (or its absence) emits today's validation
-// error.
+// name, so the daemon (or its absence) emits the validation error.
 func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts) (string, error) {
+	if opts.Project == "" {
+		opts.Project = flags.Project
+	}
+	if opts.Project == "" && opts.Name != "" {
+		opts.Project = opts.Name
+	}
 	derived, err := localDerive(startPath, opts)
 	switch {
 	case err == nil:
-		return runIdentityInit(ctx, baseURL, derived, opts)
-	case errors.Is(err, config.ErrIdentityConflict):
+		return runNameInit(ctx, baseURL, derived, opts)
+	case errors.Is(err, config.ErrNameConflict):
 		return "", &cliError{
 			Message:  err.Error(),
 			Kind:     kindConflict,
 			Code:     "project_binding_conflict",
 			ExitCode: ExitConflict,
 		}
-	case errors.Is(err, config.ErrNoIdentitySource):
+	case errors.Is(err, config.ErrNoNameSource):
 		return runStartPathInit(ctx, baseURL, startPath, opts)
 	default:
 		return "", &cliError{
@@ -179,26 +182,26 @@ func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts)
 }
 
 // localInit captures everything callInit needs to run the path-free
-// flow: the chosen identity, the discovered roots (so .kata.toml lands
+// flow: the chosen name, the discovered roots (so .kata.toml lands
 // at the workspace/git root rather than the cwd), the existing
 // .kata.toml binding (so we can skip a redundant write), the absolute
 // start path used as a final fallback for the write location, and
 // optional alias metadata so the daemon can attach an alias without
 // stat'ing the client's filesystem.
 type localInit struct {
-	Choice       config.IdentityChoice
+	Choice       config.NameChoice
 	Disc         config.DiscoveredPaths
 	ExistingToml *config.ProjectConfig
 	StartPath    string
 	Alias        *config.AliasInfo
 }
 
-// localDerive runs the same identity-selection logic the daemon uses
+// localDerive runs the same name-selection logic the daemon uses
 // in path-based init, but on the client's filesystem. Errors from
-// PickInitIdentity (conflict, no-source) are returned unwrapped so
+// PickInitName (conflict, no-source) are returned unwrapped so
 // callInit can dispatch on them. Alias metadata is computed
 // best-effort: when the workspace can't yield an alias, the daemon
-// still gets project_identity but no alias attach happens.
+// still gets name but no alias attach happens.
 func localDerive(startPath string, opts callInitOpts) (localInit, error) {
 	disc, err := config.DiscoverPaths(startPath)
 	if err != nil {
@@ -218,7 +221,7 @@ func localDerive(startPath string, opts callInitOpts) (localInit, error) {
 			return localInit{}, err
 		}
 	}
-	choice, err := config.PickInitIdentity(disc, tomlCfg, opts.Project, opts.Name, opts.Replace)
+	choice, err := config.PickInitName(disc, tomlCfg, opts.Project, opts.Replace)
 	if err != nil {
 		return localInit{}, err
 	}
@@ -252,20 +255,12 @@ func computeAliasInfo(disc config.DiscoveredPaths, startPath string) (*config.Al
 	return &info, nil
 }
 
-// runIdentityInit POSTs the derived identity to the daemon, then
+// runNameInit POSTs the derived name to the daemon, then
 // writes .kata.toml and .gitignore on the client's filesystem. The
 // daemon never sees the client's workspace path.
-func runIdentityInit(ctx context.Context, baseURL string, in localInit, opts callInitOpts) (string, error) {
-	if err := config.ValidateIdentity(in.Choice.Identity); err != nil {
-		return "", &cliError{
-			Message:  err.Error(),
-			Kind:     kindValidation,
-			ExitCode: ExitValidation,
-		}
-	}
+func runNameInit(ctx context.Context, baseURL string, in localInit, opts callInitOpts) (string, error) {
 	reqBody := map[string]any{
-		"project_identity": in.Choice.Identity,
-		"name":             in.Choice.Name,
+		"name": in.Choice.Name,
 	}
 	if opts.Replace {
 		reqBody["replace"] = true
@@ -287,8 +282,7 @@ func runIdentityInit(ctx context.Context, baseURL string, in localInit, opts cal
 
 	var resp struct {
 		Project struct {
-			Identity string `json:"identity"`
-			Name     string `json:"name"`
+			Name string `json:"name"`
 		} `json:"project"`
 		Created bool `json:"created"`
 	}
@@ -297,8 +291,8 @@ func runIdentityInit(ctx context.Context, baseURL string, in localInit, opts cal
 	}
 
 	dest := config.WriteDestination(in.Disc, in.StartPath)
-	if needsTomlWrite(in.ExistingToml, resp.Project.Identity, resp.Project.Name) {
-		if err := config.WriteProjectConfig(dest, resp.Project.Identity, resp.Project.Name); err != nil {
+	if needsTomlWrite(in.ExistingToml, resp.Project.Name) {
+		if err := config.WriteProjectConfig(dest, resp.Project.Name); err != nil {
 			return "", fmt.Errorf("write .kata.toml: %w", err)
 		}
 	}
@@ -306,21 +300,18 @@ func runIdentityInit(ctx context.Context, baseURL string, in localInit, opts cal
 		fmt.Fprintf(os.Stderr, "kata: warning: could not update .gitignore: %v\n", err)
 	}
 
-	return formatInitOutput(bs, resp.Project.Identity, resp.Project.Name, resp.Created)
+	return formatInitOutput(bs, resp.Project.Name, resp.Created)
 }
 
-// runStartPathInit is the legacy fallback used when the client cannot
-// derive identity locally (no .kata.toml, no --project, no git). It
+// runStartPathInit is the fallback used when the client cannot derive a name
+// locally (no .kata.toml, no --project, no git). It
 // preserves today's behavior: the daemon walks its own filesystem,
 // writes .kata.toml, and reports back the workspace root so the client
 // places .gitignore beside it.
 func runStartPathInit(ctx context.Context, baseURL, startPath string, opts callInitOpts) (string, error) {
 	reqBody := map[string]any{"start_path": startPath}
 	if opts.Project != "" {
-		reqBody["project_identity"] = opts.Project
-	}
-	if opts.Name != "" {
-		reqBody["name"] = opts.Name
+		reqBody["name"] = opts.Project
 	}
 	if opts.Replace {
 		reqBody["replace"] = true
@@ -335,8 +326,7 @@ func runStartPathInit(ctx context.Context, baseURL, startPath string, opts callI
 
 	var resp struct {
 		Project struct {
-			Identity string `json:"identity"`
-			Name     string `json:"name"`
+			Name string `json:"name"`
 		} `json:"project"`
 		WorkspaceRoot string `json:"workspace_root,omitempty"`
 		Created       bool   `json:"created"`
@@ -353,7 +343,7 @@ func runStartPathInit(ctx context.Context, baseURL, startPath string, opts callI
 		fmt.Fprintf(os.Stderr, "kata: warning: could not update .gitignore: %v\n", err)
 	}
 
-	return formatInitOutput(bs, resp.Project.Identity, resp.Project.Name, resp.Created)
+	return formatInitOutput(bs, resp.Project.Name, resp.Created)
 }
 
 // postProjects POSTs the request and returns the raw response body on
@@ -375,19 +365,19 @@ func postProjects(ctx context.Context, baseURL string, reqBody any) ([]byte, err
 }
 
 // needsTomlWrite reports whether .kata.toml needs to be written: true
-// when no toml exists yet or its identity/name don't match the chosen
-// values. Mirrors the daemon-side guard so re-running init in the
+// when no toml exists yet or its name doesn't match the chosen value.
+// Mirrors the daemon-side guard so re-running init in the
 // same workspace is a no-op rather than a redundant rewrite.
-func needsTomlWrite(existing *config.ProjectConfig, identity, name string) bool {
+func needsTomlWrite(existing *config.ProjectConfig, name string) bool {
 	if existing == nil {
 		return true
 	}
-	return existing.Project.Identity != identity || existing.Project.Name != name
+	return existing.Project.Name != name
 }
 
 // formatInitOutput renders the human-readable or JSON form of the init
 // result, shared between the path-free and path-based flows.
-func formatInitOutput(bs []byte, identity, name string, created bool) (string, error) {
+func formatInitOutput(bs []byte, name string, created bool) (string, error) {
 	if flags.JSON {
 		var buf bytes.Buffer
 		if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
@@ -399,7 +389,7 @@ func formatInitOutput(bs []byte, identity, name string, created bool) (string, e
 	if created {
 		action = "created and bound"
 	}
-	return fmt.Sprintf("%s project %s (%s)\n", action, identity, name), nil
+	return fmt.Sprintf("%s project %s\n", action, name), nil
 }
 
 // resolveStartPath returns the absolute path to use as the daemon's

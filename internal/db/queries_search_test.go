@@ -98,7 +98,7 @@ func TestSearchFTS_MatchedIn_AllThreeColumns(t *testing.T) {
 
 func TestSearchFTS_FiltersByProject(t *testing.T) {
 	d, ctx, p1 := setupTestProject(t)
-	p2 := createProject(ctx, t, d, "p2", "p2")
+	p2 := createProject(ctx, t, d, "p2")
 
 	createTesterIssueWithBody(ctx, t, d, p1.ID, "login bug", "")
 	createTesterIssueWithBody(ctx, t, d, p2.ID, "login bug", "")

@@ -24,7 +24,7 @@ func TestExportWritesOrderedRecordsWithSequenceLast(t *testing.T) {
 
 	require.NotEmpty(t, records)
 	assert.Equal(t, "meta", records[0]["kind"])
-	assert.Equal(t, map[string]any{"key": "export_version", "value": "6"}, records[0]["data"])
+	assert.Equal(t, map[string]any{"key": "export_version", "value": "7"}, records[0]["data"])
 	assert.Equal(t, "sqlite_sequence", records[len(records)-1]["kind"])
 
 	assertKindOrder(t, records)
@@ -88,9 +88,9 @@ func TestExportLegacyV1OmitsUIDFields(t *testing.T) {
 func TestExportProjectIDFiltersProjectScopedRows(t *testing.T) {
 	ctx := context.Background()
 	d := openExportTestDB(t)
-	p1, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p1, err := d.CreateProject(ctx, "kata")
 	require.NoError(t, err)
-	p2, err := d.CreateProject(ctx, "github.com/wesm/other", "other")
+	p2, err := d.CreateProject(ctx, "other")
 	require.NoError(t, err)
 	attachAlias(ctx, t, d, p1.ID, "github.com/wesm/kata", "git", "/tmp/kata")
 	attachAlias(ctx, t, d, p2.ID, "github.com/wesm/other", "git", "/tmp/other")
@@ -157,7 +157,7 @@ func newExportEnv(t *testing.T) (context.Context, *db.DB, db.Project) {
 	t.Helper()
 	ctx := context.Background()
 	d := openExportTestDB(t)
-	p, err := d.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := d.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	return ctx, d, p
 }

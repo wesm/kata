@@ -67,14 +67,14 @@ func newTestHook(t *testing.T, event string, args ...string) ResolvedHook {
 }
 
 // enqueueEvents pushes count events of the given type into d, with sequential
-// IDs starting at startID and ProjectID/ProjectIdentity placeholders.
+// IDs starting at startID and ProjectID/ProjectName placeholders.
 func enqueueEvents(d *Dispatcher, eventType string, startID, count int) {
 	for i := 0; i < count; i++ {
 		d.Enqueue(db.Event{
-			ID:              int64(startID + i),
-			Type:            eventType,
-			ProjectID:       1,
-			ProjectIdentity: "x",
+			ID:          int64(startID + i),
+			Type:        eventType,
+			ProjectID:   1,
+			ProjectName: "x",
 		})
 	}
 }

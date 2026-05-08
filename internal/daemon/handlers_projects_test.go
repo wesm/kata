@@ -35,9 +35,8 @@ func TestInit_FromGitRemoteCreatesProject(t *testing.T) {
 
 	var body struct {
 		Project struct {
-			ID       int64
-			Identity string
-			Name     string
+			ID   int64
+			Name string
 		} `json:"project"`
 		Alias struct {
 			AliasIdentity string `json:"alias_identity"`
@@ -47,7 +46,7 @@ func TestInit_FromGitRemoteCreatesProject(t *testing.T) {
 		Created       bool   `json:"created"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &body))
-	assert.Equal(t, "github.com/wesm/kata", body.Project.Identity)
+	assert.Equal(t, "kata", body.Project.Name)
 	assert.Equal(t, "kata", body.Project.Name)
 	assert.True(t, body.Created)
 	assert.Equal(t, "github.com/wesm/kata", body.Alias.AliasIdentity)
@@ -60,7 +59,7 @@ func TestInit_FromGitRemoteCreatesProject(t *testing.T) {
 func TestInit_FreshCloneFromExistingKataToml(t *testing.T) {
 	// Simulate "git clone, kata init" on a repo that already had .kata.toml.
 	h := newServerWithGitWorkspace(t, "")
-	testfix.WriteKataToml(t, h.dir, "github.com/wesm/system", "system")
+	testfix.WriteKataToml(t, h.dir, "system")
 
 	resp, bs := postJSON(t, h.ts.(*httptest.Server), "/api/v1/projects", map[string]any{
 		"start_path": h.dir,
@@ -69,12 +68,12 @@ func TestInit_FreshCloneFromExistingKataToml(t *testing.T) {
 
 	var body struct {
 		Project struct {
-			Identity string
+			Name string
 		} `json:"project"`
 		Created bool `json:"created"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &body))
-	assert.Equal(t, "github.com/wesm/system", body.Project.Identity)
+	assert.Equal(t, "system", body.Project.Name)
 	assert.True(t, body.Created)
 }
 
@@ -86,14 +85,14 @@ func TestResolve_AfterInitSucceeds(t *testing.T) {
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{"start_path": h.dir})
 	assert.Equal(t, 200, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
+	assert.Contains(t, string(bs), `"name":"kata"`)
 }
 
-// TestResolve_ByProjectIdentity_PathFree verifies the remote-client
+// TestResolve_ByProjectName_PathFree verifies the remote-client
 // resolution path: the daemon looks up the project by its committed
 // identity without touching the filesystem. This is what lets a kata
 // client on host B reach a project registered on host A's daemon.
-func TestResolve_ByProjectIdentity_PathFree(t *testing.T) {
+func TestResolve_ByProjectName_PathFree(t *testing.T) {
 	dir := t.TempDir()
 	testfix.RunGit(t, dir, "init", "--quiet")
 	testfix.RunGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
@@ -106,40 +105,40 @@ func TestResolve_ByProjectIdentity_PathFree(t *testing.T) {
 	// identity we send doesn't refer to anything on the daemon's
 	// filesystem; the lookup must be path-free.
 	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
-		"project_identity": "github.com/wesm/kata",
+		"name": "kata",
 	})
 	assert.Equal(t, 200, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
+	assert.Contains(t, string(bs), `"name":"kata"`)
 }
 
-// TestResolve_ByProjectIdentity_NotRegistered surfaces the right error
+// TestResolve_ByProjectName_NotRegistered surfaces the right error
 // when a remote client claims an identity the daemon doesn't know about.
-func TestResolve_ByProjectIdentity_NotRegistered(t *testing.T) {
+func TestResolve_ByProjectName_NotRegistered(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
-		"project_identity": "github.com/never/registered",
+		"name": "never-registered",
 	})
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), "project_not_initialized")
-	assert.Contains(t, string(bs), "github.com/never/registered")
+	assert.Contains(t, string(bs), "never-registered")
 }
 
 // TestResolve_NeitherFieldSet rejects a request that supplies neither
-// project_identity nor start_path.
+// name nor start_path.
 func TestResolve_NeitherFieldSet(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), "project_identity")
+	assert.Contains(t, string(bs), "name")
 	assert.Contains(t, string(bs), "start_path")
 }
 
-// TestResolve_IdentityWinsOverStartPath verifies precedence: when both
-// project_identity and start_path are supplied, identity takes priority
-// and the daemon never touches the (potentially nonexistent) path.
-func TestResolve_IdentityWinsOverStartPath(t *testing.T) {
+// TestResolve_NameWinsOverStartPath verifies precedence: when both
+// name and start_path are supplied, name takes priority and the daemon
+// never touches the (potentially nonexistent) path.
+func TestResolve_NameWinsOverStartPath(t *testing.T) {
 	dir := t.TempDir()
 	testfix.RunGit(t, dir, "init", "--quiet")
 	testfix.RunGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
@@ -147,30 +146,34 @@ func TestResolve_IdentityWinsOverStartPath(t *testing.T) {
 
 	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": dir})
 
-	// start_path is bogus and would not stat; identity must win.
+	// start_path is bogus and would not stat; name must win.
 	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
-		"project_identity": "github.com/wesm/kata",
-		"start_path":       "/no/such/path/anywhere",
+		"name":       "kata",
+		"start_path": "/no/such/path/anywhere",
 	})
 	assert.Equal(t, 200, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
+	assert.Contains(t, string(bs), `"name":"kata"`)
 }
 
 func TestInit_AliasConflictWithoutReassign(t *testing.T) {
 	h := newServerWithGitWorkspace(t, "https://github.com/wesm/kata.git")
 	ts := h.ts.(*httptest.Server)
 
-	// First init binds the alias to "github.com/wesm/kata".
+	// First init binds the workspace alias to project "kata".
 	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": h.dir})
 
-	// .kata.toml now declares a different identity.
-	testfix.WriteKataToml(t, h.dir, "github.com/wesm/other", "other")
+	// .kata.toml now declares a different name.
+	testfix.WriteKataToml(t, h.dir, "other")
 
-	// Re-init without --replace must fail.
+	// Re-init follows the alias, treats the config as stale, and rewrites it.
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
 		"start_path": h.dir,
 	})
-	assertAPIError(t, resp.StatusCode, bs, http.StatusConflict, "project_alias_conflict")
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"name":"kata"`)
+	cfgBytes, err := os.ReadFile(filepath.Join(h.dir, ".kata.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cfgBytes), `name = "kata"`)
 
 	// With --reassign + --replace, succeeds and rewrites alias.
 	resp2, bs2 := postJSON(t, ts, "/api/v1/projects", map[string]any{
@@ -181,30 +184,28 @@ func TestInit_AliasConflictWithoutReassign(t *testing.T) {
 	require.Equal(t, 200, resp2.StatusCode, string(bs2))
 }
 
-// TestInit_ByIdentity_PathFree verifies the remote-client init path:
+// TestInit_ByName_PathFree verifies the remote-client init path:
 // the daemon registers a project by client-derived identity without
 // touching the filesystem. This is what lets a kata client on host B
 // init a project against host A's daemon when host A cannot stat host
 // B's workspace.
-func TestInit_ByIdentity_PathFree(t *testing.T) {
+func TestInit_ByName_PathFree(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/remote",
-		"name":             "remote",
+		"name": "remote",
 	})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 
 	var body struct {
 		Project struct {
-			Identity string
-			Name     string
+			Name string
 		} `json:"project"`
 		WorkspaceRoot string `json:"workspace_root"`
 		Created       bool   `json:"created"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &body))
-	assert.Equal(t, "github.com/wesm/remote", body.Project.Identity)
+	assert.Equal(t, "remote", body.Project.Name)
 	assert.Equal(t, "remote", body.Project.Name)
 	assert.True(t, body.Created)
 	// Daemon never knew the client workspace path; response must
@@ -214,7 +215,7 @@ func TestInit_ByIdentity_PathFree(t *testing.T) {
 
 	// Re-init by same identity is idempotent and reports created=false.
 	resp2, bs2 := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/remote",
+		"name": "remote",
 	})
 	require.Equal(t, 200, resp2.StatusCode, string(bs2))
 	var body2 struct {
@@ -225,36 +226,36 @@ func TestInit_ByIdentity_PathFree(t *testing.T) {
 }
 
 // TestInit_NeitherFieldSet rejects requests that supply neither
-// project_identity nor start_path (mirrors the resolve contract so
+// name nor start_path (mirrors the resolve contract so
 // callers see a uniform validation message).
 func TestInit_NeitherFieldSet(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{})
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), "project_identity")
+	assert.Contains(t, string(bs), "name")
 	assert.Contains(t, string(bs), "start_path")
 }
 
-// TestInit_ByIdentity_RejectsEmptyIdentity guards against an empty or
-// whitespace-only project_identity slipping through into a project row.
-func TestInit_ByIdentity_RejectsEmptyIdentity(t *testing.T) {
+// TestInit_ByName_RejectsEmptyIdentity guards against an empty or
+// whitespace-only name slipping through into a project row.
+func TestInit_ByName_RejectsEmptyIdentity(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "   ",
+		"name": "   ",
 	})
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), "project_identity")
+	assert.Contains(t, string(bs), "name")
 }
 
-// TestInit_ByIdentity_StrictIdentityLookup guards against an alias
-// collision silently rebinding identity-only init to the wrong
+// TestInit_ByName_StrictNameLookup guards against an alias
+// collision silently rebinding path-free init to the wrong
 // project. If "github.com/wesm/origin" is registered as an alias for
 // project X (whose canonical identity is "github.com/wesm/override"),
-// a path-free init that asserts project_identity="github.com/wesm/origin"
+// a path-free init that asserts name="github.com/wesm/origin"
 // must create a new project — not return the alias-bound override.
-func TestInit_ByIdentity_StrictIdentityLookup(t *testing.T) {
+func TestInit_ByName_StrictNameLookup(t *testing.T) {
 	dir := t.TempDir()
 	testfix.RunGit(t, dir, "init", "--quiet")
 	testfix.RunGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/origin.git")
@@ -264,40 +265,39 @@ func TestInit_ByIdentity_StrictIdentityLookup(t *testing.T) {
 	// "github.com/wesm/override" but its alias derives from the git
 	// remote → "github.com/wesm/origin".
 	resp1, bs1 := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"start_path":       dir,
-		"project_identity": "github.com/wesm/override",
+		"start_path": dir,
+		"name":       "override",
 	})
 	require.Equal(t, 200, resp1.StatusCode, string(bs1))
 
-	// Identity-only init asserting "github.com/wesm/origin" as canonical.
+	// Path-free init asserting "github.com/wesm/origin" as canonical.
 	// Strict lookup must not return the override project.
 	resp2, bs2 := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/origin",
+		"name": "origin",
 	})
 	require.Equal(t, 200, resp2.StatusCode, string(bs2))
 
 	var body struct {
 		Project struct {
-			Identity string
+			Name string `json:"name"`
 		} `json:"project"`
 		Created bool `json:"created"`
 	}
 	require.NoError(t, json.Unmarshal(bs2, &body))
-	assert.Equal(t, "github.com/wesm/origin", body.Project.Identity,
-		"daemon must treat project_identity as canonical, not as an alias lookup")
+	assert.Equal(t, "origin", body.Project.Name,
+		"daemon must treat name as canonical, not as an alias lookup")
 	assert.True(t, body.Created)
 }
 
-// TestInit_ByIdentity_AttachesAliasWhenSupplied verifies the path-free
+// TestInit_ByName_AttachesAliasWhenSupplied verifies the path-free
 // init attaches an alias the client supplies. This preserves alias
 // semantics (resolve-by-git-remote, conflict detection) for remote
 // clients that can compute alias info locally.
-func TestInit_ByIdentity_AttachesAliasWhenSupplied(t *testing.T) {
+func TestInit_ByName_AttachesAliasWhenSupplied(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/foo",
-		"name":             "foo",
+		"name": "foo",
 		"alias": map[string]any{
 			"identity":  "github.com/wesm/foo",
 			"kind":      "git",
@@ -319,15 +319,15 @@ func TestInit_ByIdentity_AttachesAliasWhenSupplied(t *testing.T) {
 	assert.Equal(t, "/client/workspace", body.Alias.RootPath)
 }
 
-// TestInit_ByIdentity_AliasConflictWithoutReassign returns
+// TestInit_ByName_AliasConflictWithoutReassign returns
 // project_alias_conflict when the supplied alias is already attached
 // to a different project. Without reassign, the daemon must not
 // silently move the alias.
-func TestInit_ByIdentity_AliasConflictWithoutReassign(t *testing.T) {
+func TestInit_ByName_AliasConflictWithoutReassign(t *testing.T) {
 	ts := newTestServer(t)
 
 	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/a",
+		"name": "a",
 		"alias": map[string]any{
 			"identity":  "shared",
 			"kind":      "git",
@@ -336,7 +336,7 @@ func TestInit_ByIdentity_AliasConflictWithoutReassign(t *testing.T) {
 	})
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/b",
+		"name": "b",
 		"alias": map[string]any{
 			"identity":  "shared",
 			"kind":      "git",
@@ -347,15 +347,15 @@ func TestInit_ByIdentity_AliasConflictWithoutReassign(t *testing.T) {
 	assert.Contains(t, string(bs), "project_alias_conflict")
 }
 
-// TestInit_ByIdentity_ReassignMovesAlias asserts that reassign +
+// TestInit_ByName_ReassignMovesAlias asserts that reassign +
 // alias metadata moves the alias from the old project to the new one
 // — this is what `kata init --reassign` against a remote daemon
 // should do.
-func TestInit_ByIdentity_ReassignMovesAlias(t *testing.T) {
+func TestInit_ByName_ReassignMovesAlias(t *testing.T) {
 	ts := newTestServer(t)
 
 	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/old",
+		"name": "old",
 		"alias": map[string]any{
 			"identity":  "shared",
 			"kind":      "git",
@@ -364,8 +364,8 @@ func TestInit_ByIdentity_ReassignMovesAlias(t *testing.T) {
 	})
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/new",
-		"reassign":         true,
+		"name":     "new",
+		"reassign": true,
 		"alias": map[string]any{
 			"identity":  "shared",
 			"kind":      "git",
@@ -376,44 +376,44 @@ func TestInit_ByIdentity_ReassignMovesAlias(t *testing.T) {
 
 	var body struct {
 		Project struct {
-			Identity string
+			Name string `json:"name"`
 		} `json:"project"`
 		Alias struct {
 			AliasIdentity string `json:"alias_identity"`
 		} `json:"alias"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &body))
-	assert.Equal(t, "github.com/wesm/new", body.Project.Identity)
+	assert.Equal(t, "new", body.Project.Name)
 	assert.Equal(t, "shared", body.Alias.AliasIdentity)
 }
 
-// TestInit_ByIdentity_ReassignWithoutAliasErrors guards against the
+// TestInit_ByName_ReassignWithoutAliasErrors guards against the
 // silent-success case where --reassign is requested but no alias
 // metadata is supplied. With nothing to reassign, the daemon must
 // reject rather than report success and leave the old binding intact.
-func TestInit_ByIdentity_ReassignWithoutAliasErrors(t *testing.T) {
+func TestInit_ByName_ReassignWithoutAliasErrors(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/foo",
-		"reassign":         true,
+		"name":     "foo",
+		"reassign": true,
 	})
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), "reassign")
 	assert.Contains(t, string(bs), "alias")
 }
 
-// TestInit_ByIdentity_AcceptsLocalAliasWithSpaces guards against
+// TestInit_ByName_AcceptsLocalAliasWithSpaces guards against
 // rejecting valid local:// aliases derived from workspace paths
 // that contain spaces (or other characters the project-identity
 // charset rules disallow). Path-based init attaches such aliases
 // without complaint; the path-free flow must do the same so users
 // in workspaces like "/Users/me/My Project" aren't blocked.
-func TestInit_ByIdentity_AcceptsLocalAliasWithSpaces(t *testing.T) {
+func TestInit_ByName_AcceptsLocalAliasWithSpaces(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/foo",
+		"name": "foo",
 		"alias": map[string]any{
 			"identity":  "local:///Users/me/My Project",
 			"kind":      "local",
@@ -435,14 +435,14 @@ func TestInit_ByIdentity_AcceptsLocalAliasWithSpaces(t *testing.T) {
 	assert.Equal(t, "/Users/me/My Project", body.Alias.RootPath)
 }
 
-// TestInit_ByIdentity_RejectsInvalidAliasKind ensures the daemon
+// TestInit_ByName_RejectsInvalidAliasKind ensures the daemon
 // rejects malformed alias metadata explicitly rather than relying on
 // downstream code to misbehave on an unknown kind.
-func TestInit_ByIdentity_RejectsInvalidAliasKind(t *testing.T) {
+func TestInit_ByName_RejectsInvalidAliasKind(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/foo",
+		"name": "foo",
 		"alias": map[string]any{
 			"identity":  "github.com/wesm/foo",
 			"kind":      "bogus",
@@ -453,14 +453,14 @@ func TestInit_ByIdentity_RejectsInvalidAliasKind(t *testing.T) {
 	assert.Contains(t, string(bs), "kind")
 }
 
-// TestInit_ByIdentity_RejectsEmptyAliasRootPath enforces that an
+// TestInit_ByName_RejectsEmptyAliasRootPath enforces that an
 // alias attach has somewhere to root: empty root_path makes future
 // path-anchored operations meaningless.
-func TestInit_ByIdentity_RejectsEmptyAliasRootPath(t *testing.T) {
+func TestInit_ByName_RejectsEmptyAliasRootPath(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/foo",
+		"name": "foo",
 		"alias": map[string]any{
 			"identity":  "github.com/wesm/foo",
 			"kind":      "git",
@@ -471,15 +471,15 @@ func TestInit_ByIdentity_RejectsEmptyAliasRootPath(t *testing.T) {
 	assert.Contains(t, string(bs), "root_path")
 }
 
-// TestInit_ByIdentity_DefaultsName verifies the daemon falls back to
+// TestInit_ByName_DefaultsName verifies the daemon falls back to
 // the last identity segment when the client doesn't supply name. This
 // matches the local-init contract so the two paths produce the same
 // project rows.
-func TestInit_ByIdentity_DefaultsName(t *testing.T) {
+func TestInit_ByName_DefaultsName(t *testing.T) {
 	ts := newTestServer(t)
 
 	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
-		"project_identity": "github.com/wesm/auto-name",
+		"name": "auto-name",
 	})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 
@@ -557,7 +557,7 @@ func TestListProjectsAndShow(t *testing.T) {
 	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": h.dir})
 
 	listBody := getBody(t, ts, "/api/v1/projects")
-	assert.Contains(t, listBody, `"identity":"github.com/wesm/x"`)
+	assert.Contains(t, listBody, `"name":"x"`)
 
 	pid := resolveProjectID(t, ts, h.dir)
 	showBody := getBody(t, ts, "/api/v1/projects/"+strconv.FormatInt(pid, 10))
@@ -570,7 +570,7 @@ func TestListProjectsAndShow(t *testing.T) {
 // response. Spec §7.2.
 func TestListProjects_DefaultShape(t *testing.T) {
 	h := openTestDB(t)
-	_, err := h.db.CreateProject(t.Context(), "github.com/wesm/x", "x")
+	_, err := h.db.CreateProject(t.Context(), "x")
 	require.NoError(t, err)
 	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
 	ts := httptest.NewServer(srv.Handler())
@@ -584,7 +584,7 @@ func TestListProjects_DefaultShape(t *testing.T) {
 	require.Len(t, parsed.Projects, 1)
 	p := parsed.Projects[0]
 
-	for _, key := range []string{"id", "uid", "identity", "name", "created_at", "next_issue_number"} {
+	for _, key := range []string{"id", "uid", "name", "created_at", "next_issue_number"} {
 		_, ok := p[key]
 		assert.True(t, ok, "missing key %q in projects[0]: %s", key, body)
 	}
@@ -596,7 +596,7 @@ func TestListProjects_DefaultShape(t *testing.T) {
 	assert.False(t, hasDeleted, "deleted_at must omit on active project: %s", body)
 }
 
-func TestRenameProject_UpdatesNameAndKeepsIdentity(t *testing.T) {
+func TestRenameProject_UpdatesName(t *testing.T) {
 	h := newServerWithGitWorkspace(t, "https://github.com/wesm/kata.git")
 	ts := h.ts.(*httptest.Server)
 	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": h.dir})
@@ -608,7 +608,6 @@ func TestRenameProject_UpdatesNameAndKeepsIdentity(t *testing.T) {
 		"name": "Kata Tracker",
 	})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"identity":"github.com/wesm/kata"`)
 	assert.Contains(t, string(bs), `"name":"Kata Tracker"`)
 	assert.Contains(t, string(bs), `"aliases":`)
 
@@ -642,31 +641,31 @@ func TestMergeProject_SourceMovesIntoSurvivingTarget(t *testing.T) {
 	h := newServerWithGitWorkspace(t, "")
 	store := h.DB()
 	ctx := t.Context()
-	kenn, err := store.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
+	alpha, err := store.CreateProject(ctx, "alpha")
 	require.NoError(t, err)
-	steward, err := store.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	beta, err := store.CreateProject(ctx, "beta")
 	require.NoError(t, err)
-	_, err = store.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", "/tmp/kenn")
+	_, err = store.AttachAlias(ctx, alpha.ID, "github.com/wesm/alpha", "git", "/tmp/alpha")
 	require.NoError(t, err)
-	_, err = store.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", "/tmp/steward")
+	_, err = store.AttachAlias(ctx, beta.ID, "github.com/wesm/beta", "git", "/tmp/beta")
 	require.NoError(t, err)
 	_, _, err = store.CreateIssue(ctx, db.CreateIssueParams{
-		ProjectID: kenn.ID, Title: "existing work", Author: "tester",
+		ProjectID: alpha.ID, Title: "existing work", Author: "tester",
 	})
 	require.NoError(t, err)
 
 	resp, bs := postJSON(t, h.ts.(*httptest.Server),
-		"/api/v1/projects/"+strconv.FormatInt(steward.ID, 10)+"/merge",
-		map[string]any{"source_project_id": kenn.ID})
+		"/api/v1/projects/"+strconv.FormatInt(beta.ID, 10)+"/merge",
+		map[string]any{"source_project_id": alpha.ID})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"identity":"github.com/wesm/steward"`)
+	assert.Contains(t, string(bs), `"name":"beta"`)
 	assert.Contains(t, string(bs), `"issues_moved":1`)
 	assert.Contains(t, string(bs), `"next_issue_number":2`)
 
-	issue, err := store.IssueByNumber(ctx, steward.ID, 1)
+	issue, err := store.IssueByNumber(ctx, beta.ID, 1)
 	require.NoError(t, err)
 	assert.Equal(t, "existing work", issue.Title)
-	_, err = store.ProjectByID(ctx, kenn.ID)
+	_, err = store.ProjectByID(ctx, alpha.ID)
 	assert.ErrorIs(t, err, db.ErrNotFound)
 }
 
@@ -679,7 +678,7 @@ func TestRemoveProject_ArchivesAndDropsAliases(t *testing.T) {
 	ts := h.ts.(*httptest.Server)
 	store := h.DB()
 	ctx := t.Context()
-	p, err := store.CreateProject(ctx, "github.com/wesm/proj-rm", "proj-rm")
+	p, err := store.CreateProject(ctx, "proj-rm")
 	require.NoError(t, err)
 	_, err = store.AttachAlias(ctx, p.ID, "github.com/wesm/proj-rm", "git", h.dir)
 	require.NoError(t, err)
@@ -712,7 +711,7 @@ func TestRemoveProject_RefusesWithOpenIssues(t *testing.T) {
 	ts := h.ts.(*httptest.Server)
 	store := h.DB()
 	ctx := t.Context()
-	p, err := store.CreateProject(ctx, "github.com/wesm/proj-busy", "proj-busy")
+	p, err := store.CreateProject(ctx, "proj-busy")
 	require.NoError(t, err)
 	_, _, err = store.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "still open", Author: "tester",
@@ -731,7 +730,7 @@ func TestRemoveProject_ForceOverridesOpenIssues(t *testing.T) {
 	ts := h.ts.(*httptest.Server)
 	store := h.DB()
 	ctx := t.Context()
-	p, err := store.CreateProject(ctx, "github.com/wesm/proj-force-http", "proj-force-http")
+	p, err := store.CreateProject(ctx, "proj-force-http")
 	require.NoError(t, err)
 	_, _, err = store.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "still open", Author: "tester",
@@ -751,7 +750,7 @@ func TestDetachProjectAlias_DropsOneAndEmitsEvent(t *testing.T) {
 	ts := h.ts.(*httptest.Server)
 	store := h.DB()
 	ctx := t.Context()
-	p, err := store.CreateProject(ctx, "github.com/wesm/proj-alias-http", "proj-alias-http")
+	p, err := store.CreateProject(ctx, "proj-alias-http")
 	require.NoError(t, err)
 	a1, err := store.AttachAlias(ctx, p.ID, "github.com/wesm/proj-alias-http", "git", h.dir)
 	require.NoError(t, err)
@@ -788,7 +787,7 @@ func TestDetachProjectAlias_LastRefuses(t *testing.T) {
 	ts := h.ts.(*httptest.Server)
 	store := h.DB()
 	ctx := t.Context()
-	p, err := store.CreateProject(ctx, "github.com/wesm/proj-only-http", "proj-only-http")
+	p, err := store.CreateProject(ctx, "proj-only-http")
 	require.NoError(t, err)
 	a, err := store.AttachAlias(ctx, p.ID, "github.com/wesm/proj-only-http", "git", h.dir)
 	require.NoError(t, err)
@@ -807,9 +806,9 @@ func TestDetachProjectAlias_RejectsCrossProject(t *testing.T) {
 	ts := h.ts.(*httptest.Server)
 	store := h.DB()
 	ctx := t.Context()
-	p1, err := store.CreateProject(ctx, "github.com/wesm/p1", "p1")
+	p1, err := store.CreateProject(ctx, "p1")
 	require.NoError(t, err)
-	p2, err := store.CreateProject(ctx, "github.com/wesm/p2", "p2")
+	p2, err := store.CreateProject(ctx, "p2")
 	require.NoError(t, err)
 	_, err = store.AttachAlias(ctx, p1.ID, "github.com/wesm/p1", "git", h.dir)
 	require.NoError(t, err)
@@ -822,10 +821,10 @@ func TestDetachProjectAlias_RejectsCrossProject(t *testing.T) {
 	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "alias_not_found")
 }
 
-// TestRemoveProject_ArchivedIdentityRefusesReinit pins the user's clarifier
+// TestRemoveProject_ArchivedNameRefusesReinit pins the user's clarifier
 // in the design conversation: re-init against an archived identity returns
 // project_archived (409) rather than silently resurrecting the project.
-func TestRemoveProject_ArchivedIdentityRefusesReinit(t *testing.T) {
+func TestRemoveProject_ArchivedNameRefusesReinit(t *testing.T) {
 	h := newServerWithGitWorkspace(t, "https://github.com/wesm/proj-archive-reinit.git")
 	store := h.DB()
 	ctx := t.Context()
@@ -858,7 +857,7 @@ func TestRemoveProject_ArchivedIdentityRefusesReinit(t *testing.T) {
 func TestListProjects_WithStatsIncludesAggregates(t *testing.T) {
 	h := openTestDB(t)
 	ctx := t.Context()
-	p, err := h.db.CreateProject(ctx, "github.com/wesm/x", "x")
+	p, err := h.db.CreateProject(ctx, "x")
 	require.NoError(t, err)
 	for i := 0; i < 3; i++ {
 		_, _, err := h.db.CreateIssue(ctx, db.CreateIssueParams{
@@ -894,7 +893,7 @@ func TestListProjects_WithStatsIncludesAggregates(t *testing.T) {
 // LastEventAt=null. Spec §7.1.
 func TestListProjects_WithStatsHandlesEmptyProjects(t *testing.T) {
 	h := openTestDB(t)
-	_, err := h.db.CreateProject(t.Context(), "github.com/wesm/empty", "empty")
+	_, err := h.db.CreateProject(t.Context(), "empty")
 	require.NoError(t, err)
 	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
 	ts := httptest.NewServer(srv.Handler())
@@ -927,7 +926,7 @@ func TestListProjects_WithStatsHandlesEmptyProjects(t *testing.T) {
 // kata projects list and any other consumer that doesn't opt in. Spec §7.1.
 func TestListProjects_DefaultShapeUnchangedAfterStats(t *testing.T) {
 	h := openTestDB(t)
-	_, err := h.db.CreateProject(t.Context(), "github.com/wesm/x", "x")
+	_, err := h.db.CreateProject(t.Context(), "x")
 	require.NoError(t, err)
 	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
 	ts := httptest.NewServer(srv.Handler())
@@ -946,9 +945,9 @@ func TestListProjects_DefaultShapeUnchangedAfterStats(t *testing.T) {
 func TestMergeProject_ImportMappingCollisionReturns409(t *testing.T) {
 	ts, h := startDefaultTestServer(t)
 	ctx := t.Context()
-	source, err := h.db.CreateProject(ctx, "github.com/wesm/source", "source")
+	source, err := h.db.CreateProject(ctx, "source")
 	require.NoError(t, err)
-	target, err := h.db.CreateProject(ctx, "github.com/wesm/target", "target")
+	target, err := h.db.CreateProject(ctx, "target")
 	require.NoError(t, err)
 	require.NoError(t, h.db.ResetIssueCounter(ctx, target.ID, 10))
 	sourceIssue, _, err := h.db.CreateIssue(ctx, db.CreateIssueParams{ProjectID: source.ID, Title: "source", Author: "tester"})
@@ -971,32 +970,32 @@ func TestMergeProject_ImportMappingCollisionReturns409(t *testing.T) {
 	assertAPIError(t, resp.StatusCode, bs, 409, "project_merge_import_mapping_collision")
 }
 
-func TestInit_MergedKataTomlIdentityResolvesToSurvivingProject(t *testing.T) {
-	h := newServerWithGitWorkspace(t, "https://github.com/wesm/steward.git")
+func TestInit_MergedKataTomlNameResolvesToSurvivingProject(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "https://github.com/wesm/beta.git")
 	store := h.DB()
 	ctx := t.Context()
-	kenn, err := store.CreateProject(ctx, "github.com/wesm/kenn", "kenn")
+	alpha, err := store.CreateProject(ctx, "alpha")
 	require.NoError(t, err)
-	steward, err := store.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	beta, err := store.CreateProject(ctx, "beta")
 	require.NoError(t, err)
-	_, err = store.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", h.dir)
+	_, err = store.AttachAlias(ctx, alpha.ID, "github.com/wesm/alpha", "git", h.dir)
 	require.NoError(t, err)
-	_, err = store.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", h.dir)
+	_, err = store.AttachAlias(ctx, beta.ID, "github.com/wesm/beta", "git", h.dir)
 	require.NoError(t, err)
 	_, err = store.MergeProjects(ctx, db.MergeProjectsParams{
-		SourceProjectID: kenn.ID,
-		TargetProjectID: steward.ID,
+		SourceProjectID: alpha.ID,
+		TargetProjectID: beta.ID,
 	})
 	require.NoError(t, err)
-	testfix.WriteKataToml(t, h.dir, "github.com/wesm/kenn", "kenn")
+	testfix.WriteKataToml(t, h.dir, "alpha")
 
 	resp, bs := postJSON(t, h.ts.(*httptest.Server), "/api/v1/projects", map[string]any{
 		"start_path": h.dir,
 	})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
-	assert.Contains(t, string(bs), `"identity":"github.com/wesm/steward"`)
+	assert.Contains(t, string(bs), `"name":"beta"`)
 
 	cfgBytes, err := os.ReadFile(filepath.Join(h.dir, ".kata.toml"))
 	require.NoError(t, err)
-	assert.Contains(t, string(cfgBytes), `identity = "github.com/wesm/steward"`)
+	assert.Contains(t, string(cfgBytes), `name = "beta"`)
 }

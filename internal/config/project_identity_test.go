@@ -14,7 +14,7 @@ import (
 func TestDiscoverPaths_FindsKataTomlAndGit(t *testing.T) {
 	root := t.TempDir()
 	testfix.MkDotGit(t, root)
-	testfix.WriteKataToml(t, root, "x", "x")
+	testfix.WriteKataToml(t, root, "x")
 	sub := filepath.Join(root, "a", "b")
 	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir.
 
@@ -29,7 +29,7 @@ func TestDiscoverPaths_KataTomlInSubdirOfGit(t *testing.T) {
 	testfix.MkDotGit(t, root)
 	sub := filepath.Join(root, "subproject")
 	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir.
-	testfix.WriteKataToml(t, sub, "x", "x")
+	testfix.WriteKataToml(t, sub, "x")
 
 	d, err := config.DiscoverPaths(sub)
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ func TestDiscoverPaths_StartPathMissingErrors(t *testing.T) {
 func TestDiscoverPaths_StartPathIsFileWalksFromParent(t *testing.T) {
 	root := t.TempDir()
 	testfix.MkDotGit(t, root)
-	testfix.WriteKataToml(t, root, "x", "x")
+	testfix.WriteKataToml(t, root, "x")
 	filePath := filepath.Join(root, "README.md")
 	require.NoError(t, os.WriteFile(filePath, []byte("hi"), 0o644)) //nolint:gosec // test fixture
 
@@ -143,85 +143,79 @@ func TestValidateIdentity(t *testing.T) {
 	}
 }
 
-func TestPickInitIdentity_KataTomlOnly(t *testing.T) {
+func TestPickInitName_KataTomlOnly(t *testing.T) {
 	cfg := &config.ProjectConfig{}
-	cfg.Project.Identity = "github.com/wesm/kata"
 	cfg.Project.Name = "kata"
 
-	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg, "", "", false)
+	got, err := config.PickInitName(config.DiscoveredPaths{}, cfg, "", false)
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/kata", got.Identity)
 	assert.Equal(t, "kata", got.Name)
 }
 
-func TestPickInitIdentity_KataTomlMatchingInputIdentity(t *testing.T) {
+func TestPickInitName_KataTomlMatchingInputName(t *testing.T) {
 	cfg := &config.ProjectConfig{}
-	cfg.Project.Identity = "github.com/wesm/kata"
 	cfg.Project.Name = "kata"
 
-	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
-		"github.com/wesm/kata", "", false)
+	got, err := config.PickInitName(config.DiscoveredPaths{}, cfg, "kata", false)
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/kata", got.Identity)
 	assert.Equal(t, "kata", got.Name)
 }
 
-func TestPickInitIdentity_KataTomlConflictWithoutReplace(t *testing.T) {
+func TestPickInitName_KataTomlConflictWithoutReplace(t *testing.T) {
 	cfg := &config.ProjectConfig{}
-	cfg.Project.Identity = "github.com/wesm/kata"
 	cfg.Project.Name = "kata"
 
-	_, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
-		"github.com/wesm/other", "", false)
+	_, err := config.PickInitName(config.DiscoveredPaths{}, cfg, "other", false)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, config.ErrIdentityConflict)
+	assert.ErrorIs(t, err, config.ErrNameConflict)
 }
 
-func TestPickInitIdentity_KataTomlConflictWithReplace(t *testing.T) {
+func TestPickInitName_KataTomlConflictWithReplace(t *testing.T) {
 	cfg := &config.ProjectConfig{}
-	cfg.Project.Identity = "github.com/wesm/kata"
 	cfg.Project.Name = "kata"
 
-	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg,
-		"github.com/wesm/other", "", true)
+	got, err := config.PickInitName(config.DiscoveredPaths{}, cfg, "other", true)
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/other", got.Identity)
 	assert.Equal(t, "other", got.Name)
 }
 
-func TestPickInitIdentity_InputIdentityWithExplicitName(t *testing.T) {
-	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, nil,
-		"github.com/wesm/kata", "custom", false)
+func TestPickInitName_InputName(t *testing.T) {
+	got, err := config.PickInitName(config.DiscoveredPaths{}, nil, "custom", false)
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/kata", got.Identity)
 	assert.Equal(t, "custom", got.Name)
 }
 
-func TestPickInitIdentity_FromGitRoot(t *testing.T) {
+func TestPickInitName_FromGitRoot(t *testing.T) {
 	dir := testfix.InitGitRepo(t)
 	testfix.RunGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
 
-	got, err := config.PickInitIdentity(
-		config.DiscoveredPaths{GitRoot: dir}, nil, "", "", false)
+	got, err := config.PickInitName(config.DiscoveredPaths{GitRoot: dir}, nil, "", false)
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/kata", got.Identity)
 	assert.Equal(t, "kata", got.Name)
 }
 
-func TestPickInitIdentity_NoSource(t *testing.T) {
-	_, err := config.PickInitIdentity(config.DiscoveredPaths{}, nil, "", "", false)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, config.ErrNoIdentitySource)
+func TestPickInitName_FromLocalWorkspace(t *testing.T) {
+	dir := t.TempDir()
+
+	got, err := config.PickInitName(config.DiscoveredPaths{WorkspaceRoot: dir}, nil, "", false)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Base(dir), got.Name)
 }
 
-func TestPickInitIdentity_KataTomlEmptyName(t *testing.T) {
-	cfg := &config.ProjectConfig{}
-	cfg.Project.Identity = "github.com/wesm/kata"
-	cfg.Project.Name = ""
+func TestPickInitName_NoSource(t *testing.T) {
+	_, err := config.PickInitName(config.DiscoveredPaths{}, nil, "", false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrNoNameSource)
+}
 
-	got, err := config.PickInitIdentity(config.DiscoveredPaths{}, cfg, "", "", false)
+func TestPickInitName_KataTomlEmptyNameFallsBackToSource(t *testing.T) {
+	cfg := &config.ProjectConfig{}
+	cfg.Project.Name = ""
+	dir := testfix.InitGitRepo(t)
+	testfix.RunGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	got, err := config.PickInitName(config.DiscoveredPaths{GitRoot: dir}, cfg, "", false)
 	require.NoError(t, err)
-	assert.Equal(t, "github.com/wesm/kata", got.Identity)
 	assert.Equal(t, "kata", got.Name)
 }
 

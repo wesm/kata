@@ -145,7 +145,7 @@ func eventToEnvelope(e db.Event) api.EventEnvelope {
 		Type:              e.Type,
 		ProjectID:         e.ProjectID,
 		ProjectUID:        e.ProjectUID,
-		ProjectIdentity:   e.ProjectIdentity,
+		ProjectName:       e.ProjectName,
 		IssueID:           e.IssueID,
 		IssueUID:          e.IssueUID,
 		IssueNumber:       e.IssueNumber,

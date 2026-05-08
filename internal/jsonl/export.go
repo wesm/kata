@@ -102,12 +102,50 @@ func exportMeta(ctx context.Context, d *db.DB, enc *Encoder) error {
 }
 
 func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, sourceSchemaVersion int) error {
-	if sourceSchemaVersion < 2 {
-		return exportProjectsV1(ctx, d, enc, opts)
+	hasIdentity, err := tableHasColumn(ctx, d, "projects", "identity")
+	if err != nil {
+		return err
 	}
-	if sourceSchemaVersion < 4 {
-		return exportProjectsV2(ctx, d, enc, opts)
+	if hasIdentity {
+		if sourceSchemaVersion < 2 {
+			return exportProjectsV1(ctx, d, enc, opts)
+		}
+		if sourceSchemaVersion < 4 {
+			return exportProjectsV2(ctx, d, enc, opts)
+		}
+		if sourceSchemaVersion < 7 {
+			return exportProjectsV4(ctx, d, enc, opts)
+		}
 	}
+	type record struct {
+		ID              int64   `json:"id"`
+		UID             string  `json:"uid"`
+		Name            string  `json:"name"`
+		CreatedAt       string  `json:"created_at"`
+		NextIssueNumber int64   `json:"next_issue_number"`
+		DeletedAt       *string `json:"deleted_at,omitempty"`
+	}
+	query := `SELECT id, uid, name, CAST(created_at AS TEXT), next_issue_number,
+	                 CAST(deleted_at AS TEXT) FROM projects`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export projects: %w", err)
+	}
+	return scanRecords(rows, KindProject, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.Name, &rec.CreatedAt,
+			&rec.NextIssueNumber, &rec.DeletedAt)
+		return rec, err
+	})
+}
+
+func exportProjectsV4(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID              int64   `json:"id"`
 		UID             string  `json:"uid"`
@@ -503,18 +541,19 @@ func exportImportMappings(ctx context.Context, d *db.DB, enc *Encoder, opts Expo
 }
 
 func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, sourceSchemaVersion int) error {
+	projectNameExpr, joinProjects := eventProjectNameExpr(sourceSchemaVersion)
 	if sourceSchemaVersion < 2 {
-		return exportEventsV1(ctx, d, enc, opts)
+		return exportEventsV1(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
 	if sourceSchemaVersion < 3 {
-		return exportEventsV2(ctx, d, enc, opts)
+		return exportEventsV2(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
 	type record struct {
 		ID                int64           `json:"id"`
 		UID               string          `json:"uid"`
 		OriginInstanceUID string          `json:"origin_instance_uid"`
 		ProjectID         int64           `json:"project_id"`
-		ProjectIdentity   string          `json:"project_identity"`
+		ProjectName       string          `json:"project_name"`
 		IssueID           *int64          `json:"issue_id"`
 		IssueUID          *string         `json:"issue_uid"`
 		IssueNumber       *int64          `json:"issue_number"`
@@ -525,12 +564,12 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		Payload           json.RawMessage `json:"payload"`
 		CreatedAt         string          `json:"created_at"`
 	}
-	query := `SELECT id, uid, origin_instance_uid, project_id, project_identity, issue_id, issue_uid,
+	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.project_id, %s, events.issue_id, events.issue_uid,
 	                 issue_number, related_issue_id, related_issue_uid,
-	                 type, actor, payload, CAST(created_at AS TEXT)
-	          FROM events`
+	                 type, actor, payload, CAST(events.created_at AS TEXT)
+	          FROM events%s`, projectNameExpr, joinProjects)
 	where, args := eventExportWhere(opts)
-	query += where + ` ORDER BY id ASC`
+	query += where + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
@@ -538,7 +577,7 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		var payload string
-		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.ProjectIdentity, &rec.IssueID,
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
 			&rec.IssueUID, &rec.IssueNumber, &rec.RelatedIssueID, &rec.RelatedIssueUID,
 			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
 		if err != nil {
@@ -552,11 +591,11 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	})
 }
 
-func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
 	type record struct {
 		ID              int64           `json:"id"`
 		ProjectID       int64           `json:"project_id"`
-		ProjectIdentity string          `json:"project_identity"`
+		ProjectName     string          `json:"project_name"`
 		IssueID         *int64          `json:"issue_id"`
 		IssueUID        *string         `json:"issue_uid"`
 		IssueNumber     *int64          `json:"issue_number"`
@@ -567,12 +606,12 @@ func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		Payload         json.RawMessage `json:"payload"`
 		CreatedAt       string          `json:"created_at"`
 	}
-	query := `SELECT id, project_id, project_identity, issue_id, issue_uid,
+	query := fmt.Sprintf(`SELECT events.id, events.project_id, %s, events.issue_id, events.issue_uid,
 	                 issue_number, related_issue_id, related_issue_uid,
-	                 type, actor, payload, CAST(created_at AS TEXT)
-	          FROM events`
+	                 type, actor, payload, CAST(events.created_at AS TEXT)
+	          FROM events%s`, projectNameExpr, joinProjects)
 	where, args := eventExportWhere(opts)
-	query += where + ` ORDER BY id ASC`
+	query += where + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
@@ -580,7 +619,7 @@ func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		var payload string
-		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.ProjectIdentity, &rec.IssueID,
+		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
 			&rec.IssueUID, &rec.IssueNumber, &rec.RelatedIssueID, &rec.RelatedIssueUID,
 			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
 		if err != nil {
@@ -594,24 +633,24 @@ func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	})
 }
 
-func exportEventsV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+func exportEventsV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
 	type record struct {
-		ID              int64           `json:"id"`
-		ProjectID       int64           `json:"project_id"`
-		ProjectIdentity string          `json:"project_identity"`
-		IssueID         *int64          `json:"issue_id"`
-		IssueNumber     *int64          `json:"issue_number"`
-		RelatedIssueID  *int64          `json:"related_issue_id"`
-		Type            string          `json:"type"`
-		Actor           string          `json:"actor"`
-		Payload         json.RawMessage `json:"payload"`
-		CreatedAt       string          `json:"created_at"`
+		ID             int64           `json:"id"`
+		ProjectID      int64           `json:"project_id"`
+		ProjectName    string          `json:"project_name"`
+		IssueID        *int64          `json:"issue_id"`
+		IssueNumber    *int64          `json:"issue_number"`
+		RelatedIssueID *int64          `json:"related_issue_id"`
+		Type           string          `json:"type"`
+		Actor          string          `json:"actor"`
+		Payload        json.RawMessage `json:"payload"`
+		CreatedAt      string          `json:"created_at"`
 	}
-	query := `SELECT id, project_id, project_identity, issue_id, issue_number,
-	                 related_issue_id, type, actor, payload, CAST(created_at AS TEXT)
-	          FROM events`
+	query := fmt.Sprintf(`SELECT events.id, events.project_id, %s, events.issue_id, issue_number,
+	                 related_issue_id, type, actor, payload, CAST(events.created_at AS TEXT)
+	          FROM events%s`, projectNameExpr, joinProjects)
 	where, args := eventExportWhere(opts)
-	query += where + ` ORDER BY id ASC`
+	query += where + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
@@ -619,7 +658,7 @@ func exportEventsV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		var payload string
-		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.ProjectIdentity, &rec.IssueID,
+		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
 			&rec.IssueNumber, &rec.RelatedIssueID, &rec.Type, &rec.Actor,
 			&payload, &rec.CreatedAt)
 		if err != nil {
@@ -634,11 +673,15 @@ func exportEventsV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 }
 
 func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, sourceSchemaVersion int) error {
+	projectNameExpr, joinProjects, err := purgeProjectNameExpr(ctx, d, sourceSchemaVersion)
+	if err != nil {
+		return err
+	}
 	if sourceSchemaVersion < 2 {
-		return exportPurgeLogV1(ctx, d, enc, opts)
+		return exportPurgeLogV1(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
 	if sourceSchemaVersion < 3 {
-		return exportPurgeLogV2(ctx, d, enc, opts)
+		return exportPurgeLogV2(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
 	type record struct {
 		ID                     int64   `json:"id"`
@@ -648,7 +691,7 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		PurgedIssueID          int64   `json:"purged_issue_id"`
 		IssueUID               *string `json:"issue_uid"`
 		ProjectUID             *string `json:"project_uid"`
-		ProjectIdentity        string  `json:"project_identity"`
+		ProjectName            string  `json:"project_name"`
 		IssueNumber            int64   `json:"issue_number"`
 		IssueTitle             string  `json:"issue_title"`
 		IssueAuthor            string  `json:"issue_author"`
@@ -663,18 +706,18 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		Reason                 *string `json:"reason"`
 		PurgedAt               string  `json:"purged_at"`
 	}
-	query := `SELECT id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid,
-	                 project_identity, issue_number, issue_title,
+	query := fmt.Sprintf(`SELECT purge_log.id, purge_log.uid, purge_log.origin_instance_uid, purge_log.project_id, purged_issue_id, issue_uid, project_uid,
+	                 %s, issue_number, issue_title,
 	                 issue_author, comment_count, link_count, label_count, event_count,
 	                 events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 	                 actor, reason, CAST(purged_at AS TEXT)
-	          FROM purge_log`
+	          FROM purge_log%s`, projectNameExpr, joinProjects)
 	args := []any{}
 	if opts.ProjectID > 0 {
-		query += ` WHERE project_id = ?`
+		query += ` WHERE purge_log.project_id = ?`
 		args = append(args, opts.ProjectID)
 	}
-	query += ` ORDER BY id ASC`
+	query += ` ORDER BY purge_log.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export purge_log: %w", err)
@@ -682,7 +725,7 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	return scanRecords(rows, KindPurgeLog, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.PurgedIssueID, &rec.IssueUID,
-			&rec.ProjectUID, &rec.ProjectIdentity, &rec.IssueNumber, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
+			&rec.ProjectUID, &rec.ProjectName, &rec.IssueNumber, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
 			&rec.LinkCount, &rec.LabelCount, &rec.EventCount, &rec.EventsDeletedMinID,
 			&rec.EventsDeletedMaxID, &rec.PurgeResetAfterEventID, &rec.Actor, &rec.Reason,
 			&rec.PurgedAt)
@@ -690,14 +733,14 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	})
 }
 
-func exportPurgeLogV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+func exportPurgeLogV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
 	type record struct {
 		ID                     int64   `json:"id"`
 		ProjectID              int64   `json:"project_id"`
 		PurgedIssueID          int64   `json:"purged_issue_id"`
 		IssueUID               *string `json:"issue_uid"`
 		ProjectUID             *string `json:"project_uid"`
-		ProjectIdentity        string  `json:"project_identity"`
+		ProjectName            string  `json:"project_name"`
 		IssueNumber            int64   `json:"issue_number"`
 		IssueTitle             string  `json:"issue_title"`
 		IssueAuthor            string  `json:"issue_author"`
@@ -712,18 +755,18 @@ func exportPurgeLogV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOp
 		Reason                 *string `json:"reason"`
 		PurgedAt               string  `json:"purged_at"`
 	}
-	query := `SELECT id, project_id, purged_issue_id, issue_uid, project_uid,
-	                 project_identity, issue_number, issue_title,
+	query := fmt.Sprintf(`SELECT purge_log.id, purge_log.project_id, purged_issue_id, issue_uid, project_uid,
+	                 %s, issue_number, issue_title,
 	                 issue_author, comment_count, link_count, label_count, event_count,
 	                 events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 	                 actor, reason, CAST(purged_at AS TEXT)
-	          FROM purge_log`
+	          FROM purge_log%s`, projectNameExpr, joinProjects)
 	args := []any{}
 	if opts.ProjectID > 0 {
-		query += ` WHERE project_id = ?`
+		query += ` WHERE purge_log.project_id = ?`
 		args = append(args, opts.ProjectID)
 	}
-	query += ` ORDER BY id ASC`
+	query += ` ORDER BY purge_log.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export purge_log: %w", err)
@@ -731,7 +774,7 @@ func exportPurgeLogV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOp
 	return scanRecords(rows, KindPurgeLog, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.PurgedIssueID, &rec.IssueUID,
-			&rec.ProjectUID, &rec.ProjectIdentity, &rec.IssueNumber, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
+			&rec.ProjectUID, &rec.ProjectName, &rec.IssueNumber, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
 			&rec.LinkCount, &rec.LabelCount, &rec.EventCount, &rec.EventsDeletedMinID,
 			&rec.EventsDeletedMaxID, &rec.PurgeResetAfterEventID, &rec.Actor, &rec.Reason,
 			&rec.PurgedAt)
@@ -739,12 +782,12 @@ func exportPurgeLogV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOp
 	})
 }
 
-func exportPurgeLogV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+func exportPurgeLogV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
 	type record struct {
 		ID                     int64   `json:"id"`
 		ProjectID              int64   `json:"project_id"`
 		PurgedIssueID          int64   `json:"purged_issue_id"`
-		ProjectIdentity        string  `json:"project_identity"`
+		ProjectName            string  `json:"project_name"`
 		IssueNumber            int64   `json:"issue_number"`
 		IssueTitle             string  `json:"issue_title"`
 		IssueAuthor            string  `json:"issue_author"`
@@ -759,17 +802,17 @@ func exportPurgeLogV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOp
 		Reason                 *string `json:"reason"`
 		PurgedAt               string  `json:"purged_at"`
 	}
-	query := `SELECT id, project_id, purged_issue_id, project_identity, issue_number, issue_title,
+	query := fmt.Sprintf(`SELECT purge_log.id, purge_log.project_id, purged_issue_id, %s, issue_number, issue_title,
 	                 issue_author, comment_count, link_count, label_count, event_count,
 	                 events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 	                 actor, reason, CAST(purged_at AS TEXT)
-	          FROM purge_log`
+	          FROM purge_log%s`, projectNameExpr, joinProjects)
 	args := []any{}
 	if opts.ProjectID > 0 {
-		query += ` WHERE project_id = ?`
+		query += ` WHERE purge_log.project_id = ?`
 		args = append(args, opts.ProjectID)
 	}
-	query += ` ORDER BY id ASC`
+	query += ` ORDER BY purge_log.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export purge_log: %w", err)
@@ -777,12 +820,57 @@ func exportPurgeLogV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOp
 	return scanRecords(rows, KindPurgeLog, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.PurgedIssueID,
-			&rec.ProjectIdentity, &rec.IssueNumber, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
+			&rec.ProjectName, &rec.IssueNumber, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
 			&rec.LinkCount, &rec.LabelCount, &rec.EventCount, &rec.EventsDeletedMinID,
 			&rec.EventsDeletedMaxID, &rec.PurgeResetAfterEventID, &rec.Actor, &rec.Reason,
 			&rec.PurgedAt)
 		return rec, err
 	})
+}
+
+func tableHasColumn(ctx context.Context, d *db.DB, table, column string) (bool, error) {
+	rows, err := d.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, fmt.Errorf("scan %s column: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	return false, nil
+}
+
+func eventProjectNameExpr(sourceSchemaVersion int) (expr, joinProjects string) {
+	if sourceSchemaVersion < 7 {
+		return "projects.name", " JOIN projects ON projects.id = events.project_id"
+	}
+	return "events.project_name", ""
+}
+
+func purgeProjectNameExpr(ctx context.Context, d *db.DB, sourceSchemaVersion int) (expr, joinProjects string, err error) {
+	if sourceSchemaVersion < 7 {
+		hasLegacy, err := tableHasColumn(ctx, d, "purge_log", "project_identity")
+		if err != nil {
+			return "", "", err
+		}
+		if hasLegacy {
+			return "COALESCE(projects.name, purge_log.project_identity)", " LEFT JOIN projects ON projects.id = purge_log.project_id", nil
+		}
+	}
+	return "purge_log.project_name", "", nil
 }
 
 func issueExportWhere(table string, opts ExportOptions) (string, []any) {
@@ -815,7 +903,7 @@ func eventExportWhere(opts ExportOptions) (string, []any) {
 	clauses := []string{}
 	args := []any{}
 	if opts.ProjectID > 0 {
-		clauses = append(clauses, `project_id = ?`)
+		clauses = append(clauses, `events.project_id = ?`)
 		args = append(args, opts.ProjectID)
 	}
 	if !opts.IncludeDeleted {

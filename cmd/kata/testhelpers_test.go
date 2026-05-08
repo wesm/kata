@@ -252,21 +252,21 @@ func requireCmdOutput(t *testing.T, env *testenv.Env, args ...string) string {
 	return out
 }
 
-// setupMergeProjects creates the canonical "kenn" and "steward" projects, each
+// setupMergeProjects creates the canonical "alpha" and "beta" projects, each
 // with a matching git alias, used by ProjectsMerge tests.
-func setupMergeProjects(t *testing.T, env *testenv.Env) (kenn, steward db.Project) {
+func setupMergeProjects(t *testing.T, env *testenv.Env) (alpha, beta db.Project) {
 	t.Helper()
 	ctx := context.Background()
 	var err error
-	kenn, err = env.DB.CreateProject(ctx, "github.com/wesm/kenn", "steward")
+	alpha, err = env.DB.CreateProject(ctx, "alpha")
 	require.NoError(t, err)
-	steward, err = env.DB.CreateProject(ctx, "github.com/wesm/steward", "steward")
+	beta, err = env.DB.CreateProject(ctx, "beta")
 	require.NoError(t, err)
-	_, err = env.DB.AttachAlias(ctx, kenn.ID, "github.com/wesm/kenn", "git", "/tmp/kenn")
+	_, err = env.DB.AttachAlias(ctx, alpha.ID, "github.com/wesm/alpha", "git", "/tmp/alpha")
 	require.NoError(t, err)
-	_, err = env.DB.AttachAlias(ctx, steward.ID, "github.com/wesm/steward", "git", "/tmp/steward")
+	_, err = env.DB.AttachAlias(ctx, beta.ID, "github.com/wesm/beta", "git", "/tmp/beta")
 	require.NoError(t, err)
-	return kenn, steward
+	return alpha, beta
 }
 
 // runCLI executes a root command and returns the output.

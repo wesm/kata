@@ -80,7 +80,7 @@ func buildRunModel(opts Options, c *Client, bi bootInit) Model {
 		m.projectStats = make(map[int64]ProjectStatsSummary, len(bi.projects))
 		for _, r := range bi.projects {
 			m.projectsByID[r.ID] = r.Name
-			m.projectIdentByID[r.ID] = r.Identity
+			m.projectIdentByID[r.ID] = r.Name
 			if r.Stats != nil {
 				m.projectStats[r.ID] = *r.Stats
 			}

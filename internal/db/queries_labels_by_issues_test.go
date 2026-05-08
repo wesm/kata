@@ -31,7 +31,7 @@ func TestLabelsByIssues_EmptyInput_ReturnsEmptyMap(t *testing.T) {
 // no project_id column, so the constraint runs through the JOIN.
 func TestLabelsByIssues_ConstrainedByProjectID(t *testing.T) {
 	d, ctx, pa := setupTestProject(t)
-	pb := createProject(ctx, t, d, "b", "b")
+	pb := createProject(ctx, t, d, "b")
 	ia := makeIssueWithLabels(t, ctx, d, pa.ID, "a", "tester", "bug")
 	ib := makeIssueWithLabels(t, ctx, d, pb.ID, "b", "tester", "feature")
 

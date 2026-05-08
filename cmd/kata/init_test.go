@@ -29,7 +29,8 @@ func TestInit_FreshGitRepoBindsViaRemote(t *testing.T) {
 	ctx := context.Background()
 	out, err := callInit(ctx, env.URL, dir, callInitOpts{})
 	require.NoError(t, err)
-	assert.Contains(t, out, `"identity":"github.com/wesm/kata"`)
+	assert.Contains(t, out, `"name":"kata"`)
+	assert.NotContains(t, out, `"identity":`)
 	assert.FileExists(t, filepath.Join(dir, ".kata.toml"))
 }
 
@@ -128,19 +129,14 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 		f.mu.Lock()
 		f.lastReq = body
 		f.mu.Unlock()
-		identity, _ := body["project_identity"].(string)
 		name, _ := body["name"].(string)
-		if identity == "" {
-			http.Error(w, `{"error":{"code":"validation","message":"identity required"}}`, http.StatusBadRequest)
-			return
-		}
 		if name == "" {
-			name = identity
+			http.Error(w, `{"error":{"code":"validation","message":"name required"}}`, http.StatusBadRequest)
+			return
 		}
 		resp := map[string]any{
 			"project": map[string]any{
-				"identity": identity,
-				"name":     name,
+				"name": name,
 			},
 			"created": true,
 		}
@@ -158,11 +154,11 @@ func (f *fakeDaemon) request() map[string]any {
 	return f.lastReq
 }
 
-// TestInit_RemoteClient_SendsIdentityNotPath verifies the CLI derives
-// identity locally and omits start_path from the request body when it
+// TestInit_RemoteClient_SendsNameNotPath verifies the CLI derives
+// the project name locally and omits start_path from the request body when it
 // can — that's the contract that lets a daemon on another host serve
 // `kata init` without filesystem access to the client workspace.
-func TestInit_RemoteClient_SendsIdentityNotPath(t *testing.T) {
+func TestInit_RemoteClient_SendsNameNotPath(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init", "--quiet")
 	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
@@ -177,7 +173,8 @@ func TestInit_RemoteClient_SendsIdentityNotPath(t *testing.T) {
 
 	req := daemonStub.request()
 	require.NotNil(t, req)
-	assert.Equal(t, "github.com/wesm/kata", req["project_identity"])
+	assert.Equal(t, "kata", req["name"])
+	assert.NotContains(t, req, "project_identity")
 	assert.NotContains(t, req, "start_path", "remote init must not leak client filesystem path")
 
 	// Client wrote .kata.toml itself — daemon never had FS access.
@@ -233,7 +230,7 @@ func TestInit_RemoteClient_FromSubdir(t *testing.T) {
 // TestInit_RemoteClient_ConflictDetectedLocally asserts that a
 // client-side .kata.toml conflict with --project (without --replace)
 // fails before any daemon round-trip, so a remote daemon never sees a
-// stale identity. The error must also carry the structured
+// stale name. The error must also carry the structured
 // "project_binding_conflict" code so --json consumers can branch on
 // it (matching the daemon-side conflict envelope).
 func TestInit_RemoteClient_ConflictDetectedLocally(t *testing.T) {
@@ -254,7 +251,7 @@ name     = "kata"
 	t.Cleanup(func() { flags.JSON = false })
 
 	_, err := callInit(context.Background(), daemonStub.srv.URL, dir,
-		callInitOpts{Project: "github.com/wesm/other"})
+		callInitOpts{Project: "other"})
 	require.Error(t, err)
 	var ce *cliError
 	require.ErrorAs(t, err, &ce)

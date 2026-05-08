@@ -41,6 +41,13 @@ cross-project digest.`,
 					ExitCode: ExitUsage,
 				}
 			}
+			if strings.TrimSpace(flags.Project) != "" && (allProjects || projectIDArg != 0) {
+				return &cliError{
+					Message:  "--project cannot be combined with --all-projects or --project-id",
+					Kind:     kindUsage,
+					ExitCode: ExitUsage,
+				}
+			}
 			if strings.TrimSpace(sinceStr) == "" {
 				return &cliError{
 					Message:  "--since is required (e.g. --since 24h)",
@@ -207,10 +214,10 @@ func printDigestHuman(cmd *cobra.Command, bs []byte) error {
 				Unblocked int `json:"unblocked"`
 			} `json:"totals"`
 			Issues []struct {
-				ProjectID       int64    `json:"project_id"`
-				ProjectIdentity string   `json:"project_identity"`
-				IssueNumber     int64    `json:"issue_number"`
-				Actions         []string `json:"actions"`
+				ProjectID   int64    `json:"project_id"`
+				ProjectName string   `json:"project_name"`
+				IssueNumber int64    `json:"issue_number"`
+				Actions     []string `json:"actions"`
 			} `json:"issues"`
 		} `json:"actors"`
 	}
@@ -240,10 +247,10 @@ func printDigestHuman(cmd *cobra.Command, bs []byte) error {
 		}
 		for _, iss := range a.Issues {
 			prefix := fmt.Sprintf("#%d", iss.IssueNumber)
-			// On cross-project digests, prefix the project identity so the
+			// On cross-project digests, prefix the project name so the
 			// reader can disambiguate colliding numbers.
-			if b.ProjectID == 0 && iss.ProjectIdentity != "" {
-				prefix = fmt.Sprintf("%s#%d", textsafe.Line(iss.ProjectIdentity)+"/", iss.IssueNumber)
+			if b.ProjectID == 0 && iss.ProjectName != "" {
+				prefix = fmt.Sprintf("%s#%d", textsafe.Line(iss.ProjectName)+"/", iss.IssueNumber)
 			}
 			if _, err := fmt.Fprintf(out, "  %-12s %s\n",
 				prefix, textsafe.Line(strings.Join(iss.Actions, ", "))); err != nil {

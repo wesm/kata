@@ -17,7 +17,7 @@ import (
 func TestRemoveProject_ArchivesAndDropsAliases(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj-archive", "archive-me")
+	p, err := d.CreateProject(ctx, "archive-me")
 	require.NoError(t, err)
 	_, err = d.AttachAlias(ctx, p.ID, "github.com/wesm/proj-archive", "git", "/tmp/archive")
 	require.NoError(t, err)
@@ -42,7 +42,7 @@ func TestRemoveProject_ArchivesAndDropsAliases(t *testing.T) {
 func TestRemoveProject_RefusesWhenOpenIssues(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj-busy", "busy")
+	p, err := d.CreateProject(ctx, "busy")
 	require.NoError(t, err)
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "still open", Author: "tester",
@@ -64,7 +64,7 @@ func TestRemoveProject_RefusesWhenOpenIssues(t *testing.T) {
 func TestRemoveProject_ForceOverridesOpenIssues(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj-force", "force")
+	p, err := d.CreateProject(ctx, "force")
 	require.NoError(t, err)
 	_, _, err = d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "still open under force", Author: "tester",
@@ -88,7 +88,7 @@ func TestRemoveProject_ForceOverridesOpenIssues(t *testing.T) {
 func TestRemoveProject_AlreadyArchived(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj-twice", "twice")
+	p, err := d.CreateProject(ctx, "twice")
 	require.NoError(t, err)
 	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: p.ID, Actor: "tester"})
 	require.NoError(t, err)
@@ -100,13 +100,13 @@ func TestRemoveProject_AlreadyArchived(t *testing.T) {
 
 // TestRemoveProject_ExcludedFromListAndResolve pins the read-path filter:
 // after archival the project no longer surfaces in ListProjects /
-// ProjectByIdentity.
+// ProjectByName.
 func TestRemoveProject_ExcludedFromListAndResolve(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	keep, err := d.CreateProject(ctx, "github.com/wesm/proj-keep", "keep")
+	keep, err := d.CreateProject(ctx, "keep")
 	require.NoError(t, err)
-	gone, err := d.CreateProject(ctx, "github.com/wesm/proj-gone", "gone")
+	gone, err := d.CreateProject(ctx, "gone")
 	require.NoError(t, err)
 	_, _, err = d.RemoveProject(ctx, db.RemoveProjectParams{ProjectID: gone.ID, Actor: "tester"})
 	require.NoError(t, err)
@@ -116,11 +116,11 @@ func TestRemoveProject_ExcludedFromListAndResolve(t *testing.T) {
 	require.Len(t, list, 1)
 	assert.Equal(t, keep.ID, list[0].ID)
 
-	_, err = d.ProjectByIdentity(ctx, "github.com/wesm/proj-gone")
+	_, err = d.ProjectByName(ctx, "gone")
 	assert.ErrorIs(t, err, db.ErrNotFound)
 
 	// Including-archived variant still finds it.
-	got, err := d.ProjectByIdentityIncludingArchived(ctx, "github.com/wesm/proj-gone")
+	got, err := d.ProjectByNameIncludingArchived(ctx, "gone")
 	require.NoError(t, err)
 	require.NotNil(t, got.DeletedAt)
 }
@@ -130,7 +130,7 @@ func TestRemoveProject_ExcludedFromListAndResolve(t *testing.T) {
 func TestDetachProjectAlias_RemovesOneAndEmitsEvent(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj-detach", "detach")
+	p, err := d.CreateProject(ctx, "detach")
 	require.NoError(t, err)
 	a1, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/proj-detach", "git", "/tmp/a")
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestDetachProjectAlias_RemovesOneAndEmitsEvent(t *testing.T) {
 func TestDetachProjectAlias_RefusesWhenLast(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj-only", "only")
+	p, err := d.CreateProject(ctx, "only")
 	require.NoError(t, err)
 	a, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/proj-only", "git", "/tmp/only")
 	require.NoError(t, err)
@@ -180,7 +180,7 @@ func TestDetachProjectAlias_RefusesWhenLast(t *testing.T) {
 func TestDetachProjectAlias_ForceDropsLast(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "github.com/wesm/proj-force-last", "force-last")
+	p, err := d.CreateProject(ctx, "force-last")
 	require.NoError(t, err)
 	a, err := d.AttachAlias(ctx, p.ID, "github.com/wesm/proj-force-last", "git", "/tmp/force-last")
 	require.NoError(t, err)
@@ -204,9 +204,9 @@ func TestDetachProjectAlias_ForceDropsLast(t *testing.T) {
 func TestDetachProjectAlias_RejectsCrossProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pA, err := d.CreateProject(ctx, "github.com/wesm/proj-a", "a")
+	pA, err := d.CreateProject(ctx, "a")
 	require.NoError(t, err)
-	pB, err := d.CreateProject(ctx, "github.com/wesm/proj-b", "b")
+	pB, err := d.CreateProject(ctx, "b")
 	require.NoError(t, err)
 	// Two aliases on B so detaching one doesn't trip the last-alias gate
 	// (we want the cross-project check to be the only refusal path).

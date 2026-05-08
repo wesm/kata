@@ -33,10 +33,10 @@ func TestV3ToV4CutoverPreservesProjects(t *testing.T) {
 	t.Cleanup(func() { _ = d2.Close() })
 
 	var id int64
-	var identity string
+	var name string
 	var deletedAt sql.NullString
-	require.NoError(t, d2.QueryRowContext(ctx, `SELECT id, identity, deleted_at FROM projects WHERE id=1`).Scan(&id, &identity, &deletedAt))
+	require.NoError(t, d2.QueryRowContext(ctx, `SELECT id, name, deleted_at FROM projects WHERE id=1`).Scan(&id, &name, &deletedAt))
 	assert.Equal(t, int64(1), id)
-	assert.Equal(t, "proj-a", identity)
+	assert.Equal(t, "Proj A", name)
 	assert.False(t, deletedAt.Valid, "deleted_at should be NULL for survived project")
 }

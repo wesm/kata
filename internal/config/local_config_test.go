@@ -33,7 +33,6 @@ url = "http://100.64.0.5:7777"
 	cfg, err := config.ReadLocalConfig(dir)
 	require.NoError(t, err)
 	assert.Equal(t, 1, cfg.Version)
-	assert.Empty(t, cfg.Project.Identity)
 	assert.Equal(t, "http://100.64.0.5:7777", cfg.Server.URL)
 }
 
@@ -75,7 +74,7 @@ url = "http://x"
 func TestMergeLocal_NilLocalReturnsBase(t *testing.T) {
 	base := &config.ProjectConfig{
 		Version: 1,
-		Project: config.ProjectBindings{Identity: "github.com/wesm/kata", Name: "kata"},
+		Project: config.ProjectBindings{Name: "kata"},
 	}
 	got := config.MergeLocal(base, nil)
 	assert.Equal(t, base, got)
@@ -85,7 +84,7 @@ func TestMergeLocal_NilLocalReturnsBase(t *testing.T) {
 func TestMergeLocal_LocalServerWins(t *testing.T) {
 	base := &config.ProjectConfig{
 		Version: 1,
-		Project: config.ProjectBindings{Identity: "github.com/wesm/kata", Name: "kata"},
+		Project: config.ProjectBindings{Name: "kata"},
 	}
 	local := &config.ProjectConfig{
 		Version: 1,
@@ -93,7 +92,6 @@ func TestMergeLocal_LocalServerWins(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	got := config.MergeLocalWithStderr(base, local, &stderr)
-	assert.Equal(t, "github.com/wesm/kata", got.Project.Identity)
 	assert.Equal(t, "kata", got.Project.Name)
 	assert.Equal(t, "http://100.64.0.5:7777", got.Server.URL)
 	assert.Empty(t, stderr.String())
@@ -102,7 +100,7 @@ func TestMergeLocal_LocalServerWins(t *testing.T) {
 func TestMergeLocal_LocalNameOverridesBase(t *testing.T) {
 	base := &config.ProjectConfig{
 		Version: 1,
-		Project: config.ProjectBindings{Identity: "github.com/wesm/kata", Name: "kata"},
+		Project: config.ProjectBindings{Name: "kata"},
 	}
 	local := &config.ProjectConfig{
 		Version: 1,
@@ -112,18 +110,17 @@ func TestMergeLocal_LocalNameOverridesBase(t *testing.T) {
 	assert.Equal(t, "Kata Local", got.Project.Name)
 }
 
-func TestMergeLocal_DivergentIdentityWarnsAndIgnoresLocal(t *testing.T) {
+func TestMergeLocal_LegacyIdentityIsIgnored(t *testing.T) {
 	base := &config.ProjectConfig{
 		Version: 1,
-		Project: config.ProjectBindings{Identity: "github.com/wesm/kata", Name: "kata"},
+		Project: config.ProjectBindings{Name: "kata"},
 	}
 	local := &config.ProjectConfig{
 		Version: 1,
-		Project: config.ProjectBindings{Identity: "github.com/other/repo"},
+		Project: config.ProjectBindings{LegacyIdentity: "github.com/other/repo"},
 	}
 	var stderr bytes.Buffer
 	got := config.MergeLocalWithStderr(base, local, &stderr)
-	assert.Equal(t, "github.com/wesm/kata", got.Project.Identity)
-	assert.Contains(t, stderr.String(), "ignoring divergent project.identity")
-	assert.Contains(t, stderr.String(), "github.com/other/repo")
+	assert.Equal(t, "kata", got.Project.Name)
+	assert.Empty(t, stderr.String())
 }

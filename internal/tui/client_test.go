@@ -613,6 +613,6 @@ func TestClient_ResolveProject_FallsBackOnMissingConfig(t *testing.T) {
 	_, err := c.ResolveProject(t.Context(), dir)
 	require.NoError(t, err)
 	assert.Equal(t, dir, got["start_path"])
-	_, hasIdentity := got["project_identity"]
-	assert.False(t, hasIdentity)
+	_, hasName := got["name"]
+	assert.False(t, hasName)
 }

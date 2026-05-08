@@ -18,10 +18,10 @@ func setupKataProjectDir(t *testing.T, body string) string {
 	return dir
 }
 
-func writeAndReadConfig(t *testing.T, identity, name string) *config.ProjectConfig {
+func writeAndReadConfig(t *testing.T, name string) *config.ProjectConfig {
 	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, config.WriteProjectConfig(dir, identity, name))
+	require.NoError(t, config.WriteProjectConfig(dir, name))
 	cfg, err := config.ReadProjectConfig(dir)
 	require.NoError(t, err)
 	return cfg
@@ -31,15 +31,26 @@ func TestReadProjectConfig_Roundtrip(t *testing.T) {
 	dir := setupKataProjectDir(t, `version = 1
 
 [project]
-identity = "github.com/wesm/kata"
-name     = "kata"
+name = "kata"
 `)
 
 	cfg, err := config.ReadProjectConfig(dir)
 	require.NoError(t, err)
 	assert.Equal(t, 1, cfg.Version)
-	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
 	assert.Equal(t, "kata", cfg.Project.Name)
+}
+
+func TestReadProjectConfig_IgnoresLegacyIdentity(t *testing.T) {
+	dir := setupKataProjectDir(t, `version = 1
+
+[project]
+identity = "github.com/example/foo"
+name = "foo"
+`)
+
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "foo", cfg.Project.Name)
 }
 
 func TestReadProjectConfig_Missing(t *testing.T) {
@@ -52,7 +63,6 @@ func TestReadProjectConfig_RejectsBadVersion(t *testing.T) {
 	dir := setupKataProjectDir(t, `version = 2
 
 [project]
-identity = "x"
 name = "y"
 `)
 
@@ -61,26 +71,39 @@ name = "y"
 	assert.Contains(t, err.Error(), "unsupported .kata.toml version")
 }
 
-func TestReadProjectConfig_RejectsBlankIdentity(t *testing.T) {
+func TestReadProjectConfig_RejectsBlankName(t *testing.T) {
 	dir := setupKataProjectDir(t, `version = 1
 
 [project]
-identity = "   "
-name = "x"
+name = "   "
 `)
 
 	_, err := config.ReadProjectConfig(dir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "project.identity")
+	assert.Contains(t, err.Error(), "project.name")
 }
 
-func TestWriteProjectConfig_DerivesNameFromLastSegment(t *testing.T) {
-	cfg := writeAndReadConfig(t, "github.com/wesm/kata", "")
-	assert.Equal(t, "kata", cfg.Project.Name)
+func TestWriteProjectConfig_WritesNameOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, "foo"))
+	bs, err := os.ReadFile(filepath.Join(dir, ".kata.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(bs), `name = "foo"`)
+	assert.NotContains(t, string(bs), "identity")
+
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "foo", cfg.Project.Name)
 }
 
-func TestWriteProjectConfig_PreservesExplicitName(t *testing.T) {
-	cfg := writeAndReadConfig(t, "github.com/wesm/kata", "Kata Tracker")
+func TestWriteProjectConfig_RejectsBlankName(t *testing.T) {
+	err := config.WriteProjectConfig(t.TempDir(), " ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name")
+}
+
+func TestWriteProjectConfig_PreservesName(t *testing.T) {
+	cfg := writeAndReadConfig(t, "Kata Tracker")
 	assert.Equal(t, "Kata Tracker", cfg.Project.Name)
 }
 
@@ -88,8 +111,7 @@ func TestReadProjectConfig_AcceptsOptionalServerBlock(t *testing.T) {
 	dir := setupKataProjectDir(t, `version = 1
 
 [project]
-identity = "github.com/wesm/kata"
-name     = "kata"
+name = "kata"
 
 [server]
 url = "http://127.0.0.1:7777"
@@ -103,8 +125,7 @@ func TestReadProjectConfig_NoServerBlockYieldsZeroValue(t *testing.T) {
 	dir := setupKataProjectDir(t, `version = 1
 
 [project]
-identity = "github.com/wesm/kata"
-name     = "kata"
+name = "kata"
 `)
 	cfg, err := config.ReadProjectConfig(dir)
 	require.NoError(t, err)
@@ -115,8 +136,7 @@ func TestFindProjectConfig_FromSubdirectory(t *testing.T) {
 	root := setupKataProjectDir(t, `version = 1
 
 [project]
-identity = "github.com/wesm/kata"
-name     = "kata"
+name = "kata"
 `)
 	sub := filepath.Join(root, "internal", "tui")
 	require.NoError(t, os.MkdirAll(sub, 0o755)) //nolint:gosec // test fixture under TempDir
@@ -124,19 +144,19 @@ name     = "kata"
 	cfg, foundDir, err := config.FindProjectConfig(sub)
 	require.NoError(t, err)
 	assert.Equal(t, root, foundDir)
-	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
+	assert.Equal(t, "kata", cfg.Project.Name)
 }
 
 func TestFindProjectConfig_FromExactDir(t *testing.T) {
 	root := setupKataProjectDir(t, `version = 1
 
 [project]
-identity = "github.com/wesm/kata"
+name = "kata"
 `)
 	cfg, foundDir, err := config.FindProjectConfig(root)
 	require.NoError(t, err)
 	assert.Equal(t, root, foundDir)
-	assert.Equal(t, "github.com/wesm/kata", cfg.Project.Identity)
+	assert.Equal(t, "kata", cfg.Project.Name)
 }
 
 func TestFindProjectConfig_MissingReturnsSentinel(t *testing.T) {

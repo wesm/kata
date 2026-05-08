@@ -29,7 +29,7 @@ func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
 }
 
 func TestOpen_RecordsCurrentSchemaVersion(t *testing.T) {
-	assert.Equal(t, 6, db.CurrentSchemaVersion())
+	assert.Equal(t, 7, db.CurrentSchemaVersion())
 	d := openTestDB(t)
 	assertSchemaVersion(t, d, db.CurrentSchemaVersion())
 }
@@ -67,7 +67,7 @@ func TestOpen_TimestampColumnsScanIntoTime(t *testing.T) {
 
 	projectUID, err := uid.New()
 	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO projects(uid, identity, name) VALUES(?,'x','x')`, projectUID)
+	_, err = d.Exec(`INSERT INTO projects(uid, name) VALUES(?,'x')`, projectUID)
 	require.NoError(t, err)
 
 	rows, err := d.Query(`SELECT created_at FROM projects`)

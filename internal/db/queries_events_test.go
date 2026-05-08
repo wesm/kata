@@ -19,7 +19,7 @@ func TestMaxEventID_EmptyTable(t *testing.T) {
 func TestMaxEventID_AfterInserts(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	p := createProject(ctx, t, d, "a")
 	createTesterIssues(ctx, t, d, p.ID, 3)
 	got, err := d.MaxEventID(ctx)
 	require.NoError(t, err)
@@ -29,8 +29,8 @@ func TestMaxEventID_AfterInserts(t *testing.T) {
 func TestEventsAfter_CrossProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pa := createProject(ctx, t, d, "github.com/test/a", "a")
-	pb := createProject(ctx, t, d, "github.com/test/b", "b")
+	pa := createProject(ctx, t, d, "a")
+	pb := createProject(ctx, t, d, "b")
 	createTesterIssue(ctx, t, d, pa.ID, "a1")
 	createTesterIssue(ctx, t, d, pb.ID, "b1")
 
@@ -44,8 +44,8 @@ func TestEventsAfter_CrossProject(t *testing.T) {
 func TestEventsAfter_PerProjectFilter(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pa := createProject(ctx, t, d, "github.com/test/a", "a")
-	pb := createProject(ctx, t, d, "github.com/test/b", "b")
+	pa := createProject(ctx, t, d, "a")
+	pb := createProject(ctx, t, d, "b")
 	createTesterIssue(ctx, t, d, pa.ID, "a1")
 	createTesterIssue(ctx, t, d, pb.ID, "b1")
 
@@ -58,7 +58,7 @@ func TestEventsAfter_PerProjectFilter(t *testing.T) {
 func TestEventsAfter_RespectsThroughID(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	p := createProject(ctx, t, d, "a")
 	createTesterIssues(ctx, t, d, p.ID, 5)
 	got, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 0, ThroughID: 3, Limit: 100})
 	require.NoError(t, err)
@@ -69,7 +69,7 @@ func TestEventsAfter_RespectsThroughID(t *testing.T) {
 func TestEventsAfter_RespectsLimit(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	p := createProject(ctx, t, d, "a")
 	createTesterIssues(ctx, t, d, p.ID, 5)
 	got, err := d.EventsAfter(ctx, db.EventsAfterParams{AfterID: 0, Limit: 2})
 	require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestEventsAfter_RespectsLimit(t *testing.T) {
 func TestEventsAfter_StrictlyAfterNonZeroID(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	p := createProject(ctx, t, d, "a")
 	createTesterIssues(ctx, t, d, p.ID, 5)
 	// Five issue.created events with ids 1..5. AfterID=3 must return ids 4, 5
 	// (strict >); AfterID=5 must return zero rows.
@@ -104,7 +104,7 @@ func TestPurgeResetCheck_NoPurges(t *testing.T) {
 func TestPurgeResetCheck_AfterPurgeWithEvents(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	p := createProject(ctx, t, d, "github.com/test/a", "a")
+	p := createProject(ctx, t, d, "a")
 	is, _ := createTesterIssue(ctx, t, d, p.ID, "doomed")
 	_, err := d.PurgeIssue(ctx, is.ID, "tester", nil)
 	require.NoError(t, err)
@@ -123,8 +123,8 @@ func TestPurgeResetCheck_AfterPurgeWithEvents(t *testing.T) {
 func TestPurgeResetCheck_PerProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	pa := createProject(ctx, t, d, "github.com/test/a", "a")
-	pb := createProject(ctx, t, d, "github.com/test/b", "b")
+	pa := createProject(ctx, t, d, "a")
+	pb := createProject(ctx, t, d, "b")
 	is, _ := createTesterIssue(ctx, t, d, pa.ID, "doomed")
 	_, err := d.PurgeIssue(ctx, is.ID, "tester", nil)
 	require.NoError(t, err)

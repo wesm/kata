@@ -280,9 +280,9 @@ func importEndpointPath(projectID int64) string {
 	return "/api/v1/projects/" + strconv.FormatInt(projectID, 10) + "/imports"
 }
 
-func createImportTestProject(t *testing.T, env *testenv.Env, identity, name string) db.Project {
+func createImportTestProject(t *testing.T, env *testenv.Env, _ string, name string) db.Project {
 	t.Helper()
-	p, err := env.DB.CreateProject(context.Background(), identity, name)
+	p, err := env.DB.CreateProject(context.Background(), name)
 	require.NoError(t, err)
 	return p
 }

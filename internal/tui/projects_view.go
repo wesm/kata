@@ -38,7 +38,7 @@ func (m Model) fetchProjectsWithStats() tea.Cmd {
 		stats := make(map[int64]ProjectStatsSummary, len(rows))
 		for _, r := range rows {
 			names[r.ID] = r.Name
-			idents[r.ID] = r.Identity
+			idents[r.ID] = r.Name
 			if r.Stats != nil {
 				stats[r.ID] = *r.Stats
 			}
@@ -54,7 +54,6 @@ type projectsRow struct {
 	sentinel  bool
 	projectID int64
 	name      string
-	identity  string
 	stats     ProjectStatsSummary
 }
 
@@ -72,7 +71,6 @@ func projectsRows(byID map[int64]string, identByID map[int64]string, stats map[i
 		rows = append(rows, projectsRow{
 			projectID: id,
 			name:      name,
-			identity:  identByID[id],
 			stats:     stats[id],
 		})
 	}

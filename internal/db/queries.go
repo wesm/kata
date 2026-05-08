@@ -16,13 +16,13 @@ import (
 var ErrNotFound = errors.New("not found")
 
 // CreateProject inserts a new projects row with default next_issue_number=1.
-func (d *DB) CreateProject(ctx context.Context, identity, name string) (Project, error) {
+func (d *DB) CreateProject(ctx context.Context, name string) (Project, error) {
 	projectUID, err := katauid.New()
 	if err != nil {
 		return Project{}, fmt.Errorf("generate project uid: %w", err)
 	}
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO projects(uid, identity, name) VALUES(?, ?, ?)`, projectUID, identity, name)
+		`INSERT INTO projects(uid, name) VALUES(?, ?)`, projectUID, name)
 	if err != nil {
 		return Project{}, fmt.Errorf("insert project: %w", err)
 	}
@@ -42,27 +42,26 @@ func (d *DB) ProjectByID(ctx context.Context, id int64) (Project, error) {
 	return scanProject(row)
 }
 
-// ProjectByIdentity fetches one project by its UNIQUE identity. Archived
-// projects are excluded — resolve flow uses this and an archived project
-// must look gone from the active surface. Callers needing the row even when
-// archived (e.g. to surface a "this identity was archived" error) can
-// follow up with ProjectByIdentityIncludingArchived.
-func (d *DB) ProjectByIdentity(ctx context.Context, identity string) (Project, error) {
+// ProjectByName fetches one project by its UNIQUE name. Archived projects are
+// excluded — resolve flow uses this and an archived project must look gone
+// from the active surface. Callers needing the row even when archived can
+// follow up with ProjectByNameIncludingArchived.
+func (d *DB) ProjectByName(ctx context.Context, name string) (Project, error) {
 	row := d.QueryRowContext(ctx,
-		projectSelect+` WHERE identity = ? AND deleted_at IS NULL`, identity)
+		projectSelect+` WHERE name = ? AND deleted_at IS NULL`, name)
 	return scanProject(row)
 }
 
-// ProjectByIdentityIncludingArchived returns the project even when archived.
+// ProjectByNameIncludingArchived returns the project even when archived.
 // Used by error-message paths that want to distinguish "no project at all"
 // from "project was archived".
-func (d *DB) ProjectByIdentityIncludingArchived(ctx context.Context, identity string) (Project, error) {
-	row := d.QueryRowContext(ctx, projectSelect+` WHERE identity = ?`, identity)
+func (d *DB) ProjectByNameIncludingArchived(ctx context.Context, name string) (Project, error) {
+	row := d.QueryRowContext(ctx, projectSelect+` WHERE name = ?`, name)
 	return scanProject(row)
 }
 
-// RenameProject updates a project's display name without changing its stable
-// identity, aliases, or issue numbering.
+// RenameProject updates a project's canonical name without changing aliases or
+// issue numbering.
 func (d *DB) RenameProject(ctx context.Context, id int64, name string) (Project, error) {
 	res, err := d.ExecContext(ctx, `UPDATE projects SET name = ? WHERE id = ?`, name, id)
 	if err != nil {
@@ -360,7 +359,7 @@ func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlia
 }
 
 // projectSelect is the canonical SELECT list for projects rows.
-const projectSelect = `SELECT id, uid, identity, name, created_at, next_issue_number, deleted_at FROM projects`
+const projectSelect = `SELECT id, uid, name, created_at, next_issue_number, deleted_at FROM projects`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows used by scan helpers.
 type rowScanner interface {
@@ -369,7 +368,7 @@ type rowScanner interface {
 
 func scanProject(r rowScanner) (Project, error) {
 	var p Project
-	err := r.Scan(&p.ID, &p.UID, &p.Identity, &p.Name, &p.CreatedAt, &p.NextIssueNumber, &p.DeletedAt)
+	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.CreatedAt, &p.NextIssueNumber, &p.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -471,16 +470,16 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		identity   string
-		projectUID string
-		nextNum    int64
+		projectName string
+		projectUID  string
+		nextNum     int64
 	)
 	if err := tx.QueryRowContext(ctx,
 		`UPDATE projects
 		 SET next_issue_number = next_issue_number + 1
 		 WHERE id = ? AND deleted_at IS NULL
-		 RETURNING next_issue_number - 1, identity, uid`, p.ProjectID).
-		Scan(&nextNum, &identity, &projectUID); err != nil {
+		 RETURNING next_issue_number - 1, name, uid`, p.ProjectID).
+		Scan(&nextNum, &projectName, &projectUID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrNotFound
 		}
@@ -550,15 +549,15 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	payload := buildCreatedPayload(labels, links, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
 
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       p.ProjectID,
-		ProjectUID:      projectUID,
-		ProjectIdentity: identity,
-		IssueID:         &issueID,
-		IssueUID:        &issueUID,
-		IssueNumber:     &nextNum,
-		Type:            "issue.created",
-		Actor:           p.Author,
-		Payload:         payload,
+		ProjectID:   p.ProjectID,
+		ProjectUID:  projectUID,
+		ProjectName: projectName,
+		IssueID:     &issueID,
+		IssueUID:    &issueUID,
+		IssueNumber: &nextNum,
+		Type:        "issue.created",
+		Actor:       p.Author,
+		Payload:     payload,
 	})
 	if err != nil {
 		return Issue{}, Event{}, err
@@ -820,7 +819,7 @@ func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, p.IssueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, p.IssueID)
 	if err != nil {
 		return Comment{}, Event{}, err
 	}
@@ -844,13 +843,13 @@ func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment,
 
 	payload := fmt.Sprintf(`{"comment_id":%d}`, commentID)
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            "issue.commented",
-		Actor:           p.Author,
-		Payload:         payload,
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        "issue.commented",
+		Actor:       p.Author,
+		Payload:     payload,
 	})
 	if err != nil {
 		return Comment{}, Event{}, err
@@ -880,7 +879,7 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -898,13 +897,13 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 	}
 	payload := fmt.Sprintf(`{"reason":%q}`, reason)
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            "issue.closed",
-		Actor:           actor,
-		Payload:         payload,
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        "issue.closed",
+		Actor:       actor,
+		Payload:     payload,
 	})
 	if err != nil {
 		return Issue{}, nil, false, err
@@ -927,7 +926,7 @@ func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issu
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -944,13 +943,13 @@ func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issu
 		return Issue{}, nil, false, fmt.Errorf("reopen: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            "issue.reopened",
-		Actor:           actor,
-		Payload:         "{}",
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        "issue.reopened",
+		Actor:       actor,
+		Payload:     "{}",
 	})
 	if err != nil {
 		return Issue{}, nil, false, err
@@ -985,7 +984,7 @@ func (d *DB) EditIssue(ctx context.Context, p EditIssueParams) (Issue, *Event, b
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, p.IssueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, p.IssueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -1012,13 +1011,13 @@ func (d *DB) EditIssue(ctx context.Context, p EditIssueParams) (Issue, *Event, b
 		return Issue{}, nil, false, fmt.Errorf("update issue: %w", err)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            "issue.updated",
-		Actor:           p.Actor,
-		Payload:         "{}",
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        "issue.updated",
+		Actor:       p.Actor,
+		Payload:     "{}",
 	})
 	if err != nil {
 		return Issue{}, nil, false, err
@@ -1044,7 +1043,7 @@ func joinComma(parts []string) string {
 	return out
 }
 
-// lookupIssueForEvent fetches the issue + its project's identity for event
+// lookupIssueForEvent fetches the issue + its project's name for event
 // snapshotting. Used inside transactions. Soft-deleted issues are excluded so
 // lifecycle mutations (close/reopen/edit/comment) cannot operate on hidden
 // rows; callers see ErrNotFound for both nonexistent and deleted issues.
@@ -1052,21 +1051,21 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	const q = `
 		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
-		       i.closed_at, i.deleted_at, p.identity
+		       i.closed_at, i.deleted_at, p.name
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
 		WHERE i.id = ? AND i.deleted_at IS NULL`
 	var i Issue
-	var identity string
+	var projectName string
 	err := tx.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &identity)
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &projectName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound
 	}
 	if err != nil {
 		return Issue{}, "", fmt.Errorf("lookup issue: %w", err)
 	}
-	return i, identity, nil
+	return i, projectName, nil
 }
 
 const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
@@ -1087,7 +1086,7 @@ func scanIssue(r rowScanner) (Issue, error) {
 type eventInsert struct {
 	ProjectID       int64
 	ProjectUID      string
-	ProjectIdentity string
+	ProjectName     string
 	IssueID         *int64
 	IssueUID        *string
 	IssueNumber     *int64
@@ -1108,7 +1107,7 @@ func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, a
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issue, projectIdentity, err := lookupIssueForEvent(ctx, tx, issueID)
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -1138,13 +1137,13 @@ func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, a
 		payload = string(bs)
 	}
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
-		ProjectID:       issue.ProjectID,
-		ProjectIdentity: projectIdentity,
-		IssueID:         &issue.ID,
-		IssueNumber:     &issue.Number,
-		Type:            eventType,
-		Actor:           actor,
-		Payload:         payload,
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		IssueNumber: &issue.Number,
+		Type:        eventType,
+		Actor:       actor,
+		Payload:     payload,
 	})
 	if err != nil {
 		return Issue{}, nil, false, err
@@ -1209,7 +1208,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 		return Event{}, fmt.Errorf("generate event uid: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events(uid, origin_instance_uid, project_id, project_identity, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid, type, actor, payload)
+		`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid, type, actor, payload)
 		 VALUES(
 		   ?, ?, ?, ?, ?,
 		   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
@@ -1218,7 +1217,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 		   ?, ?, ?
 		 )`,
 		eventUID, d.instanceUID,
-		in.ProjectID, in.ProjectIdentity, in.IssueID,
+		in.ProjectID, in.ProjectName, in.IssueID,
 		stringPtrValue(in.IssueUID), in.IssueID,
 		in.IssueNumber, in.RelatedIssueID,
 		stringPtrValue(in.RelatedIssueUID), in.RelatedIssueID,
@@ -1232,7 +1231,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	}
 	var e Event
 	err = tx.QueryRowContext(ctx, eventSelectByID, id).
-		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectIdentity, &e.IssueID,
+		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName, &e.IssueID,
 			&e.IssueUID, &e.IssueNumber, &e.RelatedIssueID, &e.RelatedIssueUID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt)
 	if err != nil {
@@ -1241,7 +1240,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	return e, nil
 }
 
-const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_identity,
+const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
        e.issue_id, e.issue_uid, e.issue_number, e.related_issue_id, e.related_issue_uid,
        e.type, e.actor, e.payload, e.created_at
   FROM events e

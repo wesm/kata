@@ -38,6 +38,9 @@ until SIGINT/SIGTERM. Reconnects with exponential backoff on disconnect.`,
 			if allProjects && projectIDArg != 0 {
 				return &cliError{Message: "--all-projects and --project-id are mutually exclusive", Kind: kindUsage, ExitCode: ExitUsage}
 			}
+			if strings.TrimSpace(flags.Project) != "" && (allProjects || projectIDArg != 0) {
+				return &cliError{Message: "--project cannot be combined with --all-projects or --project-id", Kind: kindUsage, ExitCode: ExitUsage}
+			}
 			if tail {
 				// One-shot-only flags must reject under --tail so users
 				// don't think `--tail --limit 1` will stream just one

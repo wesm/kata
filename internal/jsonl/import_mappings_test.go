@@ -15,7 +15,7 @@ import (
 func TestExportImport_DeletedIssueOmitsImportMappings(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	live, _, err := src.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "live issue", Author: "tester"})
 	require.NoError(t, err)
@@ -70,7 +70,7 @@ func TestExportImport_DeletedIssueOmitsImportMappings(t *testing.T) {
 func TestExportImport_PreservesImportMappings(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	issue, _, err := src.CreateIssue(ctx, db.CreateIssueParams{ProjectID: p.ID, Title: "from beads", Author: "tester"})
 	require.NoError(t, err)

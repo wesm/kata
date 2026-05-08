@@ -74,7 +74,7 @@ func (e *ProjectMergeImportMappingCollisionError) Unwrap() error {
 }
 
 // MergeProjectsParams identifies a source project to fold into a surviving
-// target project. The target keeps its id and identity.
+// target project. The target keeps its id.
 type MergeProjectsParams struct {
 	SourceProjectID int64
 	TargetProjectID int64
@@ -134,22 +134,6 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 		return ProjectMergeResult{}, &ProjectMergeImportMappingCollisionError{Mappings: mappingCollisions}
 	}
 
-	kind, rootPath := aliasDefaultsForMergedIdentity(source.Identity)
-	var existingAliasProjectID int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT project_id FROM project_aliases WHERE alias_identity = ?`, source.Identity).Scan(&existingAliasProjectID)
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO project_aliases(project_id, alias_identity, alias_kind, root_path)
-			 VALUES(?, ?, ?, ?)`, source.ID, source.Identity, kind, rootPath); err != nil {
-			return ProjectMergeResult{}, fmt.Errorf("preserve source identity alias: %w", err)
-		}
-	} else if err != nil {
-		return ProjectMergeResult{}, fmt.Errorf("check source identity alias: %w", err)
-	} else if existingAliasProjectID != source.ID && existingAliasProjectID != target.ID {
-		return ProjectMergeResult{}, fmt.Errorf("preserve source identity alias: alias %q belongs to project %d", source.Identity, existingAliasProjectID)
-	}
-
 	issuesMoved, err := countProjectRows(ctx, tx, "issues", source.ID)
 	if err != nil {
 		return ProjectMergeResult{}, err
@@ -174,13 +158,13 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 		return ProjectMergeResult{}, fmt.Errorf("move links: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE events SET project_id = ?, project_identity = ? WHERE project_id = ?`,
-		target.ID, target.Identity, source.ID); err != nil {
+		`UPDATE events SET project_id = ?, project_name = ? WHERE project_id = ?`,
+		target.ID, target.Name, source.ID); err != nil {
 		return ProjectMergeResult{}, fmt.Errorf("move events: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE purge_log SET project_id = ?, project_identity = ? WHERE project_id = ?`,
-		target.ID, target.Identity, source.ID); err != nil {
+		`UPDATE purge_log SET project_id = ?, project_name = ? WHERE project_id = ?`,
+		target.ID, target.Name, source.ID); err != nil {
 		return ProjectMergeResult{}, fmt.Errorf("move purge log: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE import_mappings SET project_id = ? WHERE project_id = ?`, target.ID, source.ID); err != nil {
@@ -279,13 +263,6 @@ func projectMergeImportMappingCollisions(
 		out = append(out, c)
 	}
 	return out, rows.Err()
-}
-
-func aliasDefaultsForMergedIdentity(identity string) (kind, rootPath string) {
-	if strings.HasPrefix(identity, "local://") {
-		return "local", strings.TrimPrefix(identity, "local://")
-	}
-	return "git", "merged:" + identity
 }
 
 func countProjectRows(ctx context.Context, tx *sql.Tx, table string, projectID int64) (int64, error) {

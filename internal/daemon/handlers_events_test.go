@@ -16,9 +16,9 @@ import (
 	"github.com/wesm/kata/internal/testenv"
 )
 
-func mkProject(t *testing.T, env *testenv.Env, identity, name string) int64 {
+func mkProject(t *testing.T, env *testenv.Env, _ string, name string) int64 {
 	t.Helper()
-	p, err := env.DB.CreateProject(context.Background(), identity, name)
+	p, err := env.DB.CreateProject(context.Background(), name)
 	require.NoError(t, err)
 	return p.ID
 }

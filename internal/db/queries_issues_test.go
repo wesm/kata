@@ -70,7 +70,7 @@ func TestListIssues_DefaultsToOpenOnlyAndExcludesDeleted(t *testing.T) {
 // excluded, and the ordering is created_at DESC, id DESC.
 func TestListAllIssues_CoversAllProjectsAndOrders(t *testing.T) {
 	d, ctx, p1 := setupTestProject(t)
-	p2 := createProject(ctx, t, d, "beta", "beta")
+	p2 := createProject(ctx, t, d, "beta")
 
 	a1, _ := createTesterIssue(ctx, t, d, p1.ID, "alpha-1")
 	b1, _ := createTesterIssue(ctx, t, d, p2.ID, "beta-1")
@@ -91,7 +91,7 @@ func TestListAllIssues_CoversAllProjectsAndOrders(t *testing.T) {
 // passing ProjectID>0 returns only that project's issues.
 func TestListAllIssues_ProjectFilterScopes(t *testing.T) {
 	d, ctx, p1 := setupTestProject(t)
-	p2 := createProject(ctx, t, d, "beta", "beta")
+	p2 := createProject(ctx, t, d, "beta")
 	createTesterIssue(ctx, t, d, p1.ID, "a1")
 	createTesterIssue(ctx, t, d, p2.ID, "b1")
 

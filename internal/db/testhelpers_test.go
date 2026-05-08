@@ -41,31 +41,28 @@ func assertSchemaVersion(t *testing.T, d *db.DB, expected int) {
 	assert.Equal(t, strconv.Itoa(expected), got)
 }
 
-// createKataProject creates the canonical "github.com/wesm/kata" / "kata"
-// project used by tests that need a project to exist but don't care about its
-// identity.
+// createKataProject creates the canonical "kata" project used by tests that
+// need a project to exist but don't care about its name.
 func createKataProject(ctx context.Context, t *testing.T, d *db.DB) db.Project {
 	t.Helper()
-	return createProject(ctx, t, d, "github.com/wesm/kata", "kata")
+	return createProject(ctx, t, d, "kata")
 }
 
-// createProject creates a project with the given url and name, asserting no
-// error. Use when a test needs a specific project identity (e.g. multiple
-// projects to exercise per-project filtering).
-func createProject(ctx context.Context, t *testing.T, d *db.DB, url, name string) db.Project {
+// createProject creates a project with the given name, asserting no error.
+func createProject(ctx context.Context, t *testing.T, d *db.DB, name string) db.Project {
 	t.Helper()
-	p, err := d.CreateProject(ctx, url, name)
+	p, err := d.CreateProject(ctx, name)
 	require.NoError(t, err)
 	return p
 }
 
-// setupTestProject opens a fresh database and creates a generic "p"/"p"
-// project. Returns the db, a fresh context, and the project.
+// setupTestProject opens a fresh database and creates a generic "p" project.
+// Returns the db, a fresh context, and the project.
 func setupTestProject(t *testing.T) (*db.DB, context.Context, db.Project) {
 	t.Helper()
 	d := openTestDB(t)
 	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p", "p")
+	p, err := d.CreateProject(ctx, "p")
 	require.NoError(t, err)
 	return d, ctx, p
 }
@@ -221,9 +218,9 @@ func insertLegacyEvent(ctx context.Context, t *testing.T, d *db.DB, p db.Project
 	eventUID, err := uid.New()
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, issue_number, type, actor, payload, created_at)
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_name, issue_id, issue_number, type, actor, payload, created_at)
 		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, ?, 'tester', '{}', ?)`,
-		eventUID, p.ID, p.Identity, issue.ID, issue.Number, eventType, createdAt)
+		eventUID, p.ID, p.Name, issue.ID, issue.Number, eventType, createdAt)
 	require.NoError(t, err)
 }
 

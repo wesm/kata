@@ -123,9 +123,9 @@ type Model struct {
 	// fetchProjectsWithStats. nil-safe: viewProjects renders rows for
 	// projects in projectsByID even if their stats haven't loaded yet.
 	projectStats map[int64]ProjectStatsSummary
-	// projectIdentByID caches each project's identity (Git URL) for the
-	// projects-view detail footer. Populated alongside projectsByID by
-	// fetchProjectsWithStats.
+	// projectIdentByID is retained as a per-project auxiliary label map for the
+	// projects view. It currently mirrors project names for compatibility with
+	// existing view plumbing.
 	projectIdentByID map[int64]string
 	// projectsCursor is the highlighted row in viewProjects. Reset when
 	// transitioning into the view; preserved across re-renders.

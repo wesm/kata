@@ -16,7 +16,7 @@ func TestExportWritesJSONLToOutput(t *testing.T) {
 	dbPath := filepath.Join(home, "kata.db")
 	d, err := db.Open(context.Background(), dbPath)
 	require.NoError(t, err)
-	p, err := d.CreateProject(context.Background(), "github.com/wesm/kata", "kata")
+	p, err := d.CreateProject(context.Background(), "kata")
 	require.NoError(t, err)
 	_, _, err = d.CreateIssue(context.Background(), db.CreateIssueParams{
 		ProjectID: p.ID,

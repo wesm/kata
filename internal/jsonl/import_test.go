@@ -16,7 +16,7 @@ import (
 func TestImportRoundTripsExportedRows(t *testing.T) {
 	ctx := context.Background()
 	src := openExportTestDB(t)
-	p, err := src.CreateProject(ctx, "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(ctx, "kata")
 	require.NoError(t, err)
 	issue, _, err := src.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID,
@@ -88,7 +88,7 @@ func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 	}
 	var schemaVersion string
 	require.NoError(t, first.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion))
-	assert.Equal(t, "6", schemaVersion)
+	assert.Equal(t, "7", schemaVersion)
 }
 
 func TestImportV1RejectsCorruptEventFK(t *testing.T) {

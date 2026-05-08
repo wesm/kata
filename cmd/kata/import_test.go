@@ -30,7 +30,7 @@ func TestImportCreatesTargetDB(t *testing.T) {
 	d, err := db.Open(context.Background(), target)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
-	got, err := d.ProjectByIdentity(context.Background(), "github.com/wesm/kata")
+	got, err := d.ProjectByName(context.Background(), "kata")
 	require.NoError(t, err)
 	assert.Equal(t, "kata", got.Name)
 	assert.Contains(t, out, target)
@@ -40,7 +40,7 @@ func TestImportRejectsExistingTargetWithoutForce(t *testing.T) {
 	_, input, target := setupImportTest(t)
 	d, err := db.Open(context.Background(), target)
 	require.NoError(t, err)
-	_, err = d.CreateProject(context.Background(), "github.com/wesm/existing", "existing")
+	_, err = d.CreateProject(context.Background(), "existing")
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
 
@@ -70,7 +70,7 @@ func writeExportFixture(t *testing.T, home string) string {
 	srcPath := filepath.Join(home, "source.db")
 	src, err := db.Open(context.Background(), srcPath)
 	require.NoError(t, err)
-	p, err := src.CreateProject(context.Background(), "github.com/wesm/kata", "kata")
+	p, err := src.CreateProject(context.Background(), "kata")
 	require.NoError(t, err)
 	_, _, err = src.CreateIssue(context.Background(), db.CreateIssueParams{
 		ProjectID: p.ID,

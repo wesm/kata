@@ -131,6 +131,6 @@ func TestResolveProjectID_FallsBackOnMissingConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 42, id)
 	assert.Equal(t, dir, got["start_path"])
-	_, hasIdentity := got["project_identity"]
-	assert.False(t, hasIdentity, "no .kata.toml means no project_identity in the request")
+	_, hasName := got["name"]
+	assert.False(t, hasName, "no .kata.toml means no project name in the request")
 }

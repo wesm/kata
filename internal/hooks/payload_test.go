@@ -18,15 +18,15 @@ func sampleEvent(t string) db.Event {
 	id := int64(42)
 	num := int64(7)
 	return db.Event{
-		ID:              81237,
-		Type:            t,
-		Actor:           "claude-4.7-wesm-laptop",
-		ProjectID:       3,
-		ProjectIdentity: "github.com/wesm/kata",
-		IssueID:         &id,
-		IssueNumber:     &num,
-		Payload:         `{"comment_id":104}`,
-		CreatedAt:       nowZero(),
+		ID:          81237,
+		Type:        t,
+		Actor:       "claude-4.7-wesm-laptop",
+		ProjectID:   3,
+		ProjectName: "github.com/wesm/kata",
+		IssueID:     &id,
+		IssueNumber: &num,
+		Payload:     `{"comment_id":104}`,
+		CreatedAt:   nowZero(),
 	}
 }
 
@@ -144,7 +144,7 @@ func TestBuildStdin_IssueResolverError_OmitsIssueBlock(t *testing.T) {
 	}
 }
 
-func TestBuildStdin_ProjectResolverError_KeepsIDAndIdentity(t *testing.T) {
+func TestBuildStdin_ProjectResolverError_KeepsIDAndName(t *testing.T) {
 	bad := func(_ context.Context, _ int64) (ProjectSnapshot, error) {
 		return ProjectSnapshot{}, errors.New("db down")
 	}
@@ -153,8 +153,8 @@ func TestBuildStdin_ProjectResolverError_KeepsIDAndIdentity(t *testing.T) {
 	if proj["id"].(float64) != 3 {
 		t.Fatalf("project.id should still be present: %v", proj["id"])
 	}
-	if _, ok := proj["name"]; ok {
-		t.Fatal("project.name should be omitted when ProjectResolver errors")
+	if proj["name"] != "github.com/wesm/kata" {
+		t.Fatalf("project.name should still be present: %v", proj["name"])
 	}
 }
 

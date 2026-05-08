@@ -135,11 +135,11 @@ kata init
 ```
 
 `kata init` creates or resolves the project and writes `.kata.toml` when
-needed. In a git workspace, the default project identity is derived from the
-remote URL. For a non-git workspace or an explicit shared identity:
+needed. In a git workspace, the default project name is derived from the
+remote URL. For a non-git workspace or an explicit shared project name:
 
 ```sh
-kata init --project github.com/example/product --name product
+kata init --project product
 ```
 
 Create and inspect issues:
@@ -344,7 +344,7 @@ Today kata is local-first:
 - trusted same-user CLI and TUI clients.
 
 Multiple checkouts or repositories can share one kata project when they use
-the same `.kata.toml` project identity and run `kata init` in each checkout.
+the same `.kata.toml` project name and run `kata init` in each checkout.
 That shares issue numbering, labels, links, and events across those workspaces
 in the same local database.
 
@@ -432,7 +432,6 @@ The workspace binding file is intentionally secret-free:
 version = 1
 
 [project]
-identity = "github.com/example/product"
 name = "product"
 ```
 
