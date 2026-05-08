@@ -270,23 +270,40 @@ func (c *Client) ListComments(
 // per detail-view open; the SSE consumer (Task 11) handles reset_required
 // for the long-lived stream.
 func (c *Client) ListEvents(ctx context.Context, projectID, number int64) ([]EventLogEntry, error) {
-	path := fmt.Sprintf("/api/v1/projects/%d/events?limit=200", projectID)
-	var resp struct {
-		Events        []EventLogEntry `json:"events"`
-		NextAfterID   int64           `json:"next_after_id"`
-		ResetRequired bool            `json:"reset_required"`
-		ResetAfterID  int64           `json:"reset_after_id,omitempty"`
-	}
-	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, err
-	}
-	out := make([]EventLogEntry, 0, len(resp.Events))
-	for _, e := range resp.Events {
-		if e.IssueNumber != nil && *e.IssueNumber == number {
-			out = append(out, e)
+	var out []EventLogEntry
+	afterID := int64(0)
+	for {
+		resp, err := c.listEventsPage(ctx, projectID, afterID)
+		if err != nil {
+			return nil, err
 		}
+		for _, e := range resp.Events {
+			if e.IssueNumber != nil && *e.IssueNumber == number {
+				out = append(out, e)
+			}
+		}
+		if resp.ResetRequired || len(resp.Events) == 0 || resp.NextAfterID <= afterID {
+			return out, nil
+		}
+		afterID = resp.NextAfterID
 	}
-	return out, nil
+}
+
+type eventsPageResp struct {
+	Events        []EventLogEntry `json:"events"`
+	NextAfterID   int64           `json:"next_after_id"`
+	ResetRequired bool            `json:"reset_required"`
+	ResetAfterID  int64           `json:"reset_after_id,omitempty"`
+}
+
+func (c *Client) listEventsPage(ctx context.Context, projectID, afterID int64) (eventsPageResp, error) {
+	path := fmt.Sprintf("/api/v1/projects/%d/events?limit=1000", projectID)
+	if afterID > 0 {
+		path += fmt.Sprintf("&after_id=%d", afterID)
+	}
+	var resp eventsPageResp
+	err := c.do(ctx, http.MethodGet, path, nil, &resp)
+	return resp, err
 }
 
 // ListLinks returns the links tab data for one issue.

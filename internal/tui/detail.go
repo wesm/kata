@@ -606,15 +606,21 @@ func jumpDetailCmd(number int64) tea.Cmd {
 // FromNumber when the link is incoming (ToNumber matches the current
 // issue) so Enter takes the user to the other end of the relation.
 func (dm detailModel) jumpTarget() (int64, bool) {
+	current := int64(0)
+	if dm.issue != nil {
+		current = dm.issue.Number
+	}
+	rejectCurrent := func(target int64, ok bool) (int64, bool) {
+		if !ok || (current != 0 && target == current) {
+			return 0, false
+		}
+		return target, true
+	}
 	switch dm.activeTab {
 	case tabEvents:
-		return eventJumpTarget(dm.events, dm.tabCursor)
+		return rejectCurrent(eventJumpTarget(dm.events, dm.tabCursor))
 	case tabLinks:
-		current := int64(0)
-		if dm.issue != nil {
-			current = dm.issue.Number
-		}
-		return linkJumpTarget(dm.links, dm.tabCursor, current)
+		return rejectCurrent(linkJumpTarget(dm.links, dm.tabCursor, current))
 	}
 	return 0, false
 }
