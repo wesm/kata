@@ -230,6 +230,109 @@ func TestDisclosureGlyph(t *testing.T) {
 	}
 }
 
+// TestNavTreeSlot_ChildGuides verifies that child rows render explicit
+// connectors inside the compact nav gutter. The old folded-gutter render
+// gave leaf children only blank space, making a single child hard to
+// distinguish from an unrelated sibling row below.
+func TestNavTreeSlot_ChildGuides(t *testing.T) {
+	applyColorMode(colorAuto, io.Discard)
+	parent := queueRow{depth: 0, hasChildren: true, expanded: true}
+	got := stripANSI(navTreeSlot(parent))
+	if got != "▾" {
+		t.Fatalf("expanded parent navTreeSlot = %q, want ▾", got)
+	}
+	intermediate := queueRow{depth: 1, lastChild: false}
+	got = stripANSI(navTreeSlot(intermediate))
+	if got != "├─" {
+		t.Fatalf("intermediate child navTreeSlot = %q, want ├─", got)
+	}
+	last := queueRow{depth: 1, lastChild: true}
+	got = stripANSI(navTreeSlot(last))
+	if got != "└─" {
+		t.Fatalf("last child navTreeSlot = %q, want └─", got)
+	}
+
+	deep := queueRow{depth: 2, lastChild: true}
+	got = stripANSI(navTreeSlot(deep))
+	if got != "…└" {
+		t.Fatalf("depth-2 last child navTreeSlot = %q, want …└", got)
+	}
+
+	childParent := queueRow{depth: 1, hasChildren: true, expanded: true, lastChild: false}
+	got = stripANSI(navTreeSlot(childParent))
+	if got != "├▾" {
+		t.Fatalf("expanded child parent navTreeSlot = %q, want ├▾", got)
+	}
+	collapsedLastChildParent := queueRow{depth: 1, hasChildren: true, expanded: false, lastChild: true}
+	got = stripANSI(navTreeSlot(collapsedLastChildParent))
+	if got != "└▸" {
+		t.Fatalf("collapsed last-child parent navTreeSlot = %q, want └▸", got)
+	}
+	deepParent := queueRow{depth: 2, hasChildren: true, expanded: true, lastChild: true}
+	got = stripANSI(navTreeSlot(deepParent))
+	if got != "…▾" {
+		t.Fatalf("expanded depth-2 child parent navTreeSlot = %q, want …▾", got)
+	}
+
+	useNoColor(t)
+	got = navTreeSlot(queueRow{depth: 1, lastChild: false})
+	if got != "+-" {
+		t.Fatalf("no-color intermediate child = %q, want +-", got)
+	}
+	got = navTreeSlot(queueRow{depth: 1, lastChild: true})
+	if got != `\-` {
+		t.Fatalf(`no-color last child = %q, want \-`, got)
+	}
+	got = navTreeSlot(queueRow{depth: 2, lastChild: true})
+	if got != `.\` {
+		t.Fatalf(`no-color depth-2 last child = %q, want .\`, got)
+	}
+	if strings.ContainsRune(got, '…') {
+		t.Fatalf("no-color depth-2 contains U+2026: %q", got)
+	}
+}
+
+// TestGroupBanding_ParentChildShareBand verifies that an expanded
+// parent and its expanded children render with the same banding class.
+func TestGroupBanding_ParentChildShareBand(t *testing.T) {
+	visible := []queueRow{
+		{depth: 0}, // root A
+		{depth: 1}, // child of A
+		{depth: 1}, // child of A
+		{depth: 0}, // root B
+		{depth: 0}, // root C
+		{depth: 1}, // child of C
+	}
+	bands := groupBanding(visible)
+	if len(bands) != len(visible) {
+		t.Fatalf("len = %d, want %d", len(bands), len(visible))
+	}
+	if bands[0] != bands[1] || bands[1] != bands[2] {
+		t.Fatalf("group A rows differ: %v", bands[:3])
+	}
+	if bands[0] == bands[3] {
+		t.Fatalf("root A and root B should flip bands; got %v / %v", bands[0], bands[3])
+	}
+	if bands[3] == bands[4] {
+		t.Fatalf("consecutive roots B/C should flip bands; got %v / %v", bands[3], bands[4])
+	}
+	if bands[4] != bands[5] {
+		t.Fatalf("root C and its child should share band; got %v / %v", bands[4], bands[5])
+	}
+
+	_, _, windowStart := windowQueueRows(visible, 3, 3)
+	windowBands := bands[windowStart : windowStart+3]
+	if windowStart != 2 {
+		t.Fatalf("windowStart = %d, want 2", windowStart)
+	}
+	if windowBands[0] != bands[0] {
+		t.Fatalf("child row band changed at viewport top: window %v full %v", windowBands, bands)
+	}
+	if windowBands[1] != bands[3] {
+		t.Fatalf("root B band should remain absolute after slicing: window %v full %v", windowBands, bands)
+	}
+}
+
 func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) {
 	useNoColor(t)
 	parentNum := int64(1)
@@ -370,5 +473,56 @@ func TestRenderListInfoLine_TruncationNotice(t *testing.T) {
 	want := "showing first 2000 issues; refine filters"
 	if !strings.Contains(got, want) {
 		t.Fatalf("truncation notice missing %q in %q", want, got)
+	}
+}
+
+func TestListTableHeaders_UsesSingleNavGutter(t *testing.T) {
+	wide := listTableHeaders(false)
+	if len(wide) != 8 {
+		t.Fatalf("wide headers len = %d, want 8 (%v)", len(wide), wide)
+	}
+	if wide[0] != "" || wide[1] != "#" || wide[2] != "prio" {
+		t.Fatalf("wide headers should start with compact nav, #, then prio: %v", wide)
+	}
+
+	narrow := listTableHeaders(true)
+	if len(narrow) != 7 {
+		t.Fatalf("narrow headers len = %d, want 7 (%v)", len(narrow), narrow)
+	}
+	if narrow[0] != "" || narrow[1] != "#" || narrow[2] != "prio" {
+		t.Fatalf("narrow headers should start with compact nav, #, then prio: %v", narrow)
+	}
+}
+
+func TestBuildRows_FoldsSelectionContextAndDisclosureIntoNavCell(t *testing.T) {
+	applyColorMode(colorNone, io.Discard)
+	rows := buildRows([]queueRow{
+		{
+			issue:       Issue{Number: 1, Status: "open", Title: "context parent"},
+			hasChildren: true,
+			expanded:    true,
+			context:     true,
+		},
+		{issue: Issue{Number: 2, Status: "open", Title: "context leaf"}, context: true},
+		{
+			issue:       Issue{Number: 3, Status: "open", Title: "context child parent"},
+			depth:       1,
+			hasChildren: true,
+			context:     true,
+			lastChild:   true,
+		},
+	}, 0, 20, false, viewChrome{})
+
+	if len(rows[0]) != 8 {
+		t.Fatalf("wide row column count = %d, want 8 (%v)", len(rows[0]), rows[0])
+	}
+	if rows[0][0] != "▶~-" {
+		t.Fatalf("selected context parent nav = %q, want %q", rows[0][0], "▶~-")
+	}
+	if rows[1][0] != " ~ " {
+		t.Fatalf("unselected context leaf nav = %q, want %q", rows[1][0], " ~ ")
+	}
+	if rows[2][0] != ` ~+` {
+		t.Fatalf(`unselected context child parent nav = %q, want " ~+"`, rows[2][0])
 	}
 }

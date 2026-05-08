@@ -430,10 +430,12 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 	if displayCursor < 0 {
 		displayCursor = 0
 	}
-	visible, vCursor := windowQueueRows(queueRows, displayCursor, height)
+	visible, vCursor, windowStart := windowQueueRows(queueRows, displayCursor, height)
 	cols := listColumnWidths(width, narrow)
 	rows := buildRows(visible, vCursor, cols.title, narrow, chrome)
 	headers := listTableHeaders(narrow)
+	bands := groupBanding(queueRows)
+	visibleBands := bands[windowStart : windowStart+len(visible)]
 	t := table.New().
 		Border(lipgloss.HiddenBorder()).
 		BorderTop(false).
@@ -458,7 +460,7 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 			if row >= 0 && row < len(visible) && visible[row].context {
 				return s.Inherit(subtleStyle)
 			}
-			if row >= 0 && row%2 == 1 {
+			if row >= 0 && row < len(visibleBands) && visibleBands[row] {
 				return s.Inherit(altRowStyle)
 			}
 			return s.Inherit(normalRowStyle)
@@ -468,12 +470,14 @@ func (lm listModel) renderBody(width, height int, chrome viewChrome) string {
 
 // listTableHeaders returns the column-header label slice for the
 // list table. Wide (default) mode renders the prio + owner columns;
-// narrow (M6 split-mode list pane) drops owner.
+// narrow (M6 split-mode list pane) drops owner. The first blank
+// header is the compact nav gutter: selection, context, and disclosure
+// share one cell group instead of spending three separate columns.
 func listTableHeaders(narrow bool) []string {
 	if narrow {
-		return []string{"", "", "", "#", "prio", "status", "title", "kids", "updated"}
+		return []string{"", "#", "prio", "status", "title", "kids", "updated"}
 	}
-	return []string{"", "", "", "#", "prio", "status", "title", "kids", "owner", "updated"}
+	return []string{"", "#", "prio", "status", "title", "kids", "owner", "updated"}
 }
 
 // tableHeaderRow renders just the column-header line at the given
@@ -492,61 +496,52 @@ func tableHeaderRow(width int, narrow bool) string {
 }
 
 // listColWidths holds the per-column cell widths the list table renders
-// at. Fixed columns (cursor / # / prio / status / owner / updated) take
+// at. Fixed columns (nav / # / prio / status / owner / updated) take
 // what they need; the title column flexes to fill the rest of the
 // terminal with a 20-cell floor so titles stay readable on narrow
 // terminals.
 type listColWidths struct {
-	cursor, context, tree, num, prio, status, title, children, owner, updated int
+	nav, num, prio, status, title, children, owner, updated int
 }
 
 // byIndex maps a table column index to its width. The narrow flag
-// shifts the updated column down by one (owner dropped) so the table's
-// per-column StyleFunc still picks the right width.
+// shifts columns after title left by one because owner is dropped.
 func (c listColWidths) byIndex(col int, narrow bool) int {
 	if narrow {
 		switch col {
 		case 0:
-			return c.cursor
+			return c.nav
 		case 1:
-			return c.context
-		case 2:
-			return c.tree
-		case 3:
 			return c.num
-		case 4:
+		case 2:
 			return c.prio
-		case 5:
+		case 3:
 			return c.status
-		case 6:
+		case 4:
 			return c.title
-		case 7:
+		case 5:
 			return c.children
-		case 8:
+		case 6:
 			return c.updated
 		}
 		return 0
 	}
 	switch col {
 	case 0:
-		return c.cursor
+		return c.nav
 	case 1:
-		return c.context
-	case 2:
-		return c.tree
-	case 3:
 		return c.num
-	case 4:
+	case 2:
 		return c.prio
-	case 5:
+	case 3:
 		return c.status
-	case 6:
+	case 4:
 		return c.title
-	case 7:
+	case 5:
 		return c.children
-	case 8:
+	case 6:
 		return c.owner
-	case 9:
+	case 7:
 		return c.updated
 	}
 	return 0
@@ -561,11 +556,9 @@ func (c listColWidths) byIndex(col int, narrow bool) int {
 // titles readable inside the 68-cell list pane.
 func listColumnWidths(termWidth int, narrow bool) listColWidths {
 	c := listColWidths{
-		cursor:  2, // "▶" + padding
-		context: 2, // "~" + padding
-		tree:    4, // disclosure + shallow indent
-		num:     6, // "#9999"
-		prio:    5, // "prio" header / "P0" cell + padding
+		nav:  4, // selection/context/disclosure
+		num:  6, // "#9999"
+		prio: 5, // "prio" header / "P0" cell + padding
 		// status width fits "[deleted]" (9 chars) plus PaddingRight(1).
 		status: 10,
 		// children width fits "99/999" (6 chars) plus PaddingRight(1).
@@ -577,7 +570,7 @@ func listColumnWidths(termWidth int, narrow bool) listColWidths {
 		// floor at the 80-col supported minimum (60 + 20 = 80).
 		updated: 9,
 	}
-	fixed := c.cursor + c.context + c.tree + c.num + c.prio + c.status + c.children + c.updated
+	fixed := c.nav + c.num + c.prio + c.status + c.children + c.updated
 	if !narrow {
 		fixed += c.owner
 	}
@@ -591,14 +584,15 @@ func listColumnWidths(termWidth int, narrow bool) listColWidths {
 // windowQueueRows returns the contiguous slice of queue rows that includes
 // the cursor row and fits within budget. The cursor index in the
 // returned slice (vCursor) is the local position so the table renderer
-// can highlight the right row.
-func windowQueueRows(rows []queueRow, cursor, budget int) ([]queueRow, int) {
+// can highlight the right row. The returned start index lets callers
+// slice any row-aligned metadata computed from the full queue.
+func windowQueueRows(rows []queueRow, cursor, budget int) ([]queueRow, int, int) {
 	n := len(rows)
 	if n == 0 {
-		return rows, 0
+		return rows, 0, 0
 	}
 	start, end := windowBounds(n, cursor, budget)
-	return rows[start:end], cursor - start
+	return rows[start:end], cursor - start, start
 }
 
 // windowBounds returns the [start, end) slice indices of the visible
@@ -810,19 +804,20 @@ func joinNonEmpty(parts []string) string {
 	return strings.Join(out, "\n")
 }
 
-// buildRows projects issues to the six-column shape the table renders
-// (five-column when narrow drops the owner). titleW is the budget for
-// the (flexed) title column — the renderer truncates titles longer
-// than that with an ellipsis. Owner is truncated at 12 cells so the
-// column never overflows its 14-cell width. Title and owner are
+// buildRows projects issues to the compact table shape. titleW is the
+// budget for the (flexed) title column — the renderer truncates titles
+// longer than that with an ellipsis. Owner is truncated at 12 cells so
+// the column never overflows its 14-cell width. Title and owner are
 // agent-authored so both run through sanitizeForDisplay before
 // truncation.
 //
 // Cursor glyph is `▶` (msgvault pattern) — more visible than `›` in
-// terminals that render fonts at low pixel density.
+// terminals that render fonts at low pixel density. It shares the nav
+// gutter with the rare context marker and tree disclosure so idle
+// context/tree columns do not burn horizontal space.
 //
 // narrow=true (M6 split-mode list pane) drops the owner cell so the
-// row aligns with the five-header table.
+// row aligns with the narrow-header table.
 func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool, chrome viewChrome) [][]string {
 	if titleW < 20 {
 		titleW = 20
@@ -832,9 +827,7 @@ func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool, chrome vie
 		iss := qr.issue
 		title := titleForRow(iss, chrome, titleW)
 		row := []string{
-			selMarker(i == cursor),
-			contextMarker(qr.context),
-			treeCell(qr),
+			navCell(qr, i == cursor),
 			fmt.Sprintf("#%d", iss.Number),
 			priorityCell(iss.Priority),
 			statusChip(iss),
@@ -882,16 +875,148 @@ func projectPrefix(projectID int64, byID map[int64]string) string {
 	return fmt.Sprintf("[#%d] ", projectID)
 }
 
-func contextMarker(context bool) string {
-	if context {
-		return "~"
+// groupBanding returns one boolean per queue row — true means the
+// row renders with altRowStyle, false with normalRowStyle. A "group"
+// is a root plus its expanded descendants; every row in the group
+// shares one banding class so an expanded parent and its children read
+// as one banded block. Without this, the every-other-row stripe slices
+// straight through a single-child group and the parent/child link
+// dissolves visually.
+//
+// The first root in the queue is normal (matches the prior renderer's
+// row-0-is-normal invariant); the next root flips to alt; and so on.
+// Callers slice the returned band list for the current viewport so the
+// band assigned to a group stays stable while the list scrolls.
+func groupBanding(visible []queueRow) []bool {
+	bands := make([]bool, len(visible))
+	rootAlt := true // first depth==0 row flips this to false (= normalRowStyle)
+	for i, qr := range visible {
+		if qr.depth == 0 {
+			rootAlt = !rootAlt
+		}
+		bands[i] = rootAlt
 	}
-	return ""
+	return bands
 }
 
-func treeCell(row queueRow) string {
-	indent := strings.Repeat(" ", min(row.depth, 3))
-	return truncate(indent+disclosureGlyph(row.hasChildren, row.expanded), 3)
+func navCell(row queueRow, selected bool) string {
+	tree := navTreeSlot(row)
+	if selected {
+		if row.context {
+			return "▶" + contextTreeSlot(row)
+		}
+		return "▶" + tree
+	}
+	if row.context {
+		return " " + contextTreeSlot(row)
+	}
+	return " " + tree
+}
+
+// navTreeSlot renders the tree-guide portion of the compact nav gutter.
+// Roots get a disclosure glyph (or blank if they have no children);
+// child rows get a two-cell guide so leaf children remain visually tied
+// to their expanded parent even though the old tree column was folded
+// into the nav gutter.
+func navTreeSlot(row queueRow) string {
+	if row.depth == 0 {
+		return disclosureGlyph(row.hasChildren, row.expanded)
+	}
+	if row.hasChildren {
+		return childDisclosureGuide(row)
+	}
+	if row.depth >= 2 {
+		return deepChildGuide(row.lastChild)
+	}
+	return childGuide(row.lastChild)
+}
+
+// contextTreeSlot keeps the context marker visible while preserving one
+// cell of tree signal inside the three-cell nav gutter. The full two-cell
+// child guide is used for non-context rows; context rows trade the guide's
+// horizontal stroke for the `~` marker because the gutter cannot fit all
+// three signals plus selection.
+func contextTreeSlot(row queueRow) string {
+	if row.depth == 0 {
+		return "~" + disclosureGlyph(row.hasChildren, row.expanded)
+	}
+	if row.hasChildren {
+		return "~" + disclosureGlyph(true, row.expanded)
+	}
+	if row.depth >= 2 {
+		return "~" + depthPrefix()
+	}
+	if row.lastChild {
+		return "~" + lastChildStem()
+	}
+	return "~" + intermediateChildStem()
+}
+
+// childDisclosureGuide keeps child parent rows distinguishable from leaf
+// children in the compact two-cell tree slot by combining the branch/depth
+// signal with the row's expanded/collapsed disclosure glyph.
+func childDisclosureGuide(row queueRow) string {
+	if row.depth >= 2 {
+		return depthPrefix() + disclosureGlyph(true, row.expanded)
+	}
+	return childStem(row.lastChild) + disclosureGlyph(true, row.expanded)
+}
+
+// childGuide returns the two-cell guide for a child row. The last child
+// of a parent gets `└─`; earlier siblings get `├─`. ASCII fallbacks keep
+// colorNone snapshots stable.
+func childGuide(lastChild bool) string {
+	if activeColorMode == colorNone {
+		if lastChild {
+			return `\-`
+		}
+		return "+-"
+	}
+	if lastChild {
+		return "└─"
+	}
+	return "├─"
+}
+
+// deepChildGuide marks depth ≥ 2 within the compact two-cell tree slot.
+// The full PR #27 tree column had room for `…└─`; the folded nav gutter
+// only has two cells, so keep the depth marker plus the branch stem.
+func deepChildGuide(lastChild bool) string {
+	if lastChild {
+		return depthPrefix() + lastChildStem()
+	}
+	return depthPrefix() + intermediateChildStem()
+}
+
+// depthPrefix returns the one-cell prefix used to mark depth ≥ 2 child
+// rows. Plain `.` under colorNone keeps NO_COLOR snapshots ASCII-only;
+// color modes use `…` to match truncate's ellipsis convention.
+func depthPrefix() string {
+	if activeColorMode == colorNone {
+		return "."
+	}
+	return "…"
+}
+
+func lastChildStem() string {
+	if activeColorMode == colorNone {
+		return `\`
+	}
+	return "└"
+}
+
+func childStem(lastChild bool) string {
+	if lastChild {
+		return lastChildStem()
+	}
+	return intermediateChildStem()
+}
+
+func intermediateChildStem() string {
+	if activeColorMode == colorNone {
+		return "+"
+	}
+	return "├"
 }
 
 func disclosureGlyph(hasChildren, expanded bool) string {
@@ -915,15 +1040,6 @@ func childCountCell(counts *ChildCounts) string {
 		return ""
 	}
 	return fmt.Sprintf("%d/%d", counts.Open, counts.Total)
-}
-
-// selMarker is the per-row arrow glyph; ' ' for unselected so the
-// column width stays stable.
-func selMarker(selected bool) string {
-	if selected {
-		return "▶"
-	}
-	return " "
 }
 
 // priorityCell renders the priority column for the list table. Renders
