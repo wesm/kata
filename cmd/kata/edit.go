@@ -114,7 +114,7 @@ func newEditCmd() *cobra.Command {
 				return err
 			}
 		}
-		linksDelta, err := buildLinksDelta(cmd, ctx, baseURL, pid,
+		linksDelta, err := buildLinksDelta(ctx, cmd, baseURL, pid,
 			parentNum, blocks, blockedBy, related,
 			removeParentNum, removeBlocks, removeBlockedBy, removeRelated)
 		if err != nil {
@@ -195,8 +195,9 @@ func newEditCmd() *cobra.Command {
 // payload, then runs client-side conflict checks so an obviously-broken
 // delta never reaches the daemon.
 func buildLinksDelta(
+	ctx context.Context,
 	cmd *cobra.Command,
-	ctx context.Context, baseURL string, projectID int64,
+	baseURL string, projectID int64,
 	parentNum int64,
 	blocks, blockedBy, related []string,
 	removeParentNum int64,

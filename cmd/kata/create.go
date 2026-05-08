@@ -17,13 +17,13 @@ import (
 func newCreateCmd() *cobra.Command {
 	var src BodySources
 	var (
-		labels          []string
-		parentRefSlice  []string
-		blocks          []string
-		blockedBy       []string
-		related         []string
-		owner           string
-		priority        int
+		labels         []string
+		parentRefSlice []string
+		blocks         []string
+		blockedBy      []string
+		related        []string
+		owner          string
+		priority       int
 	)
 	cmd := &cobra.Command{
 		Use:   "create <title>",

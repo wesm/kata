@@ -210,11 +210,12 @@ func TestEdit_LinkFlagsAcceptIssueRefs(t *testing.T) {
 	}
 	assert.True(t, sawParent, "parent link by UID-ref must persist")
 
-	// UID prefix on --remove-parent must also resolve. ULIDs are
-	// timestamp-prefixed so consecutive seeds share the leading bytes; we
-	// use a generous 16-char prefix to stay above the daemon's 8-char floor
-	// while staying clear of the ambiguity threshold for adjacent issues.
-	prefix := b.Issue.UID[:16]
+	// UID prefix on --remove-parent must also resolve. ULIDs minted in the
+	// same millisecond share their timestamp prefix and can share random-byte
+	// runs too, so derive a prefix that's actually unambiguous across the
+	// project's seeded UIDs rather than guessing at a fixed length.
+	other := fetchIssueViaHTTP(t, env, pid, 1)
+	prefix := unambiguousUIDPrefix(t, b.Issue.UID, []string{other.Issue.UID})
 	runCLI(t, env, dir, "edit", "1", "--remove-parent", prefix)
 	got = fetchIssueViaHTTP(t, env, pid, 1)
 	for _, l := range got.Links {
@@ -244,7 +245,8 @@ func TestEdit_RemoveByUIDPrefixWorksAfterPeerSoftDeleted(t *testing.T) {
 	// Capture #2's UID prefix BEFORE removal — show with --include-deleted.
 	deleted := fetchDeletedIssueViaHTTP(t, env, pid, 2)
 	require.NotEmpty(t, deleted.Issue.UID, "deleted #2 must still have a UID")
-	prefix := deleted.Issue.UID[:16]
+	subject := fetchIssueViaHTTP(t, env, pid, 1)
+	prefix := unambiguousUIDPrefix(t, deleted.Issue.UID, []string{subject.Issue.UID})
 
 	// --remove-blocks <uid-prefix> must succeed against the soft-deleted peer.
 	runCLI(t, env, dir, "edit", "1", "--remove-blocks", prefix)

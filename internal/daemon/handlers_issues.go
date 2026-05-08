@@ -454,7 +454,6 @@ func linksDeltaNonEmpty(d *api.LinksDelta) bool {
 		len(d.RemoveBlocks) > 0 || len(d.RemoveBlockedBy) > 0 || len(d.RemoveRelated) > 0
 }
 
-
 func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string) (db.Issue, error) {
 	// ULIDs are spec-defined as case-insensitive. Uppercase the ref
 	// before validation/lookup so a user typing the lowercase form

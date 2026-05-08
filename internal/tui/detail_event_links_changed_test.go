@@ -55,8 +55,8 @@ func TestLinksChangedDesc(t *testing.T) {
 		{
 			name: "mixed",
 			payload: map[string]any{
-				"parent_set":   float64(2),
-				"blocks_added": []any{float64(50)},
+				"parent_set":      float64(2),
+				"blocks_added":    []any{float64(50)},
 				"related_removed": []any{float64(9)},
 			},
 			want: "links: +parent #2, +blocks #50, -related #9",

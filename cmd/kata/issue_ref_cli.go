@@ -34,7 +34,7 @@ func resolveIssueRefForCommandWithOptions(cmd *cobra.Command, ref string, includ
 	return ctx, baseURL, pid, issue, nil
 }
 
-// resolveRefToNumber resolves one issue-ref string to its project-scoped
+// resolveRefToNumberOpts resolves one issue-ref string to its project-scoped
 // issue number. Used by relationship flags on `kata create` and `kata edit`
 // so they accept the same shapes as positional issue-ref args (#N, N, UID,
 // or UID prefix). Numeric refs short-circuit without a daemon round-trip;
@@ -47,14 +47,6 @@ func resolveIssueRefForCommandWithOptions(cmd *cobra.Command, ref string, includ
 // remove paths use: the link row is real, and the user can still ask to
 // clean it up even when the peer issue has been soft-deleted. The remove
 // flags pass true; the add flags (which require a live target) pass false.
-func resolveRefToNumber(ctx context.Context, baseURL string, projectID int64, ref, flagName string) (int64, error) {
-	return resolveRefToNumberOpts(ctx, baseURL, projectID, ref, flagName, false)
-}
-
-func resolveRefToNumberAllowingDeleted(ctx context.Context, baseURL string, projectID int64, ref, flagName string) (int64, error) {
-	return resolveRefToNumberOpts(ctx, baseURL, projectID, ref, flagName, true)
-}
-
 func resolveRefToNumberOpts(ctx context.Context, baseURL string, projectID int64, ref, flagName string, includeDeleted bool) (int64, error) {
 	if strings.TrimSpace(ref) == "" {
 		return 0, &cliError{
@@ -70,17 +62,10 @@ func resolveRefToNumberOpts(ctx context.Context, baseURL string, projectID int64
 	return r.Number, nil
 }
 
-// resolveRefSliceToNumbers maps every entry of refs through resolveRefToNumber.
+// resolveRefSliceToNumbers maps every entry of refs through resolveRefToNumberOpts.
 // Returns the slice in the original order. Empty refs is OK (nil out, nil err).
 func resolveRefSliceToNumbers(ctx context.Context, baseURL string, projectID int64, refs []string, flagName string) ([]int64, error) {
 	return resolveRefSliceToNumbersOpts(ctx, baseURL, projectID, refs, flagName, false, false)
-}
-
-// resolveRefSliceToNumbersAllowingDeleted is the soft-delete-tolerant
-// variant used for --remove-* flags so an agent can still tear down a
-// stale link to a soft-deleted peer.
-func resolveRefSliceToNumbersAllowingDeleted(ctx context.Context, baseURL string, projectID int64, refs []string, flagName string) ([]int64, error) {
-	return resolveRefSliceToNumbersOpts(ctx, baseURL, projectID, refs, flagName, true, false)
 }
 
 // resolveRefSliceToNumbersIdempotentRemove is the variant the

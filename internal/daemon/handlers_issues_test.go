@@ -198,7 +198,7 @@ func TestEditIssue_LinksDelta_AddBlocks(t *testing.T) {
 	// Verify the link persisted: GET issue 1 and inspect its links list.
 	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	require.Equal(t, 200, getResp.StatusCode)
 	var show struct {
 		Links []struct {
@@ -242,7 +242,7 @@ func TestEditIssue_LinksDelta_AddBlockedBy(t *testing.T) {
 	// Persistence: GET issue 1, expect a blocks link FROM 2 TO 1.
 	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	var show struct {
 		Links []struct {
 			Type       string `json:"type"`
@@ -383,7 +383,7 @@ func TestShowIssue_LinkPeerSoftDeletedReturns200(t *testing.T) {
 	// link row even though its issue row is hidden.
 	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	showBody, err := io.ReadAll(getResp.Body)
 	require.NoError(t, err)
 	require.Equalf(t, 200, getResp.StatusCode, "show survivor must not 500: %s", string(showBody))
@@ -424,7 +424,7 @@ func TestShowIssue_ParentPeerSoftDeletedReturns200(t *testing.T) {
 
 	getResp, err := http.Get(ts.URL + issueURL(pid, 2, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	showBody, err := io.ReadAll(getResp.Body)
 	require.NoError(t, err)
 	require.Equalf(t, 200, getResp.StatusCode, "child show must not 500 with soft-deleted parent: %s", string(showBody))
@@ -466,7 +466,7 @@ func TestEditIssue_LinksDelta_SetParent_RejectsCycle(t *testing.T) {
 	// #1 must still have no parent (rollback semantics).
 	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	var show struct {
 		Parent any `json:"parent,omitempty"`
 	}
@@ -771,7 +771,7 @@ func TestEditIssue_Priority_SetViaPATCH(t *testing.T) {
 
 	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	var show struct {
 		Issue struct {
 			Priority *int64 `json:"priority"`
@@ -799,7 +799,7 @@ func TestEditIssue_Priority_ClearViaPATCH(t *testing.T) {
 
 	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	var show struct {
 		Issue struct {
 			Priority *int64 `json:"priority"`
@@ -998,7 +998,7 @@ func highestEventID(t *testing.T, ts *httptest.Server, pid int64) int64 {
 	t.Helper()
 	resp, err := http.Get(ts.URL + fmt.Sprintf("/api/v1/projects/%d/events?after_id=0&limit=1000", pid)) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var b struct {
 		Events []eventTransport `json:"events"`
 	}
@@ -1014,7 +1014,7 @@ func eventsAfter(t *testing.T, ts *httptest.Server, pid int64, after int64) []ev
 	t.Helper()
 	resp, err := http.Get(ts.URL + fmt.Sprintf("/api/v1/projects/%d/events?after_id=%d&limit=1000", pid, after)) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var b struct {
 		Events []eventTransport `json:"events"`
 	}
@@ -1045,7 +1045,7 @@ func TestEditIssue_Atomic_RollsBackOnLinkFailure(t *testing.T) {
 	// Title must NOT have changed; no link to #2 either. The whole edit rolls back.
 	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
-	defer getResp.Body.Close()
+	defer func() { _ = getResp.Body.Close() }()
 	var show struct {
 		Issue struct {
 			Title string `json:"title"`

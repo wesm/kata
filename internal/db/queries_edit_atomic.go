@@ -113,9 +113,9 @@ func (e *LinkTargetNotFoundError) Unwrap() error { return ErrNotFound }
 // one transaction. Either every requested mutation succeeds or none do.
 //
 // Events emitted (post-commit broadcast is the caller's responsibility):
-//   - issue.updated  if any of Title/Body/Owner actually changed
+//   - issue.updated  if changed of Title/Body/Owner actually changed
 //   - issue.priority_set or issue.priority_cleared if priority actually changed
-//   - issue.links_changed if any link op actually changed (single aggregated)
+//   - issue.links_changed if changed link op actually changed (single aggregated)
 //
 // Idempotent no-ops do not emit their event.
 func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (EditIssueAtomicResult, error) {
@@ -180,13 +180,13 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 			return EditIssueAtomicResult{}, fmt.Errorf("update issue fields: %w", err)
 		}
 		evt, err := d.insertEventTx(ctx, tx, eventInsert{
-			ProjectID:       issue.ProjectID,
+			ProjectID:   issue.ProjectID,
 			ProjectName: projectName,
-			IssueID:         &issue.ID,
-			IssueNumber:     &issue.Number,
-			Type:            "issue.updated",
-			Actor:           p.Actor,
-			Payload:         "{}",
+			IssueID:     &issue.ID,
+			IssueNumber: &issue.Number,
+			Type:        "issue.updated",
+			Actor:       p.Actor,
+			Payload:     "{}",
 		})
 		if err != nil {
 			return EditIssueAtomicResult{}, err
@@ -213,13 +213,13 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 				return EditIssueAtomicResult{}, err
 			}
 			evt, err := d.insertEventTx(ctx, tx, eventInsert{
-				ProjectID:       issue.ProjectID,
+				ProjectID:   issue.ProjectID,
 				ProjectName: projectName,
-				IssueID:         &issue.ID,
-				IssueNumber:     &issue.Number,
-				Type:            eventType,
-				Actor:           p.Actor,
-				Payload:         payload,
+				IssueID:     &issue.ID,
+				IssueNumber: &issue.Number,
+				Type:        eventType,
+				Actor:       p.Actor,
+				Payload:     payload,
 			})
 			if err != nil {
 				return EditIssueAtomicResult{}, err
@@ -252,7 +252,7 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 		}
 		evt, err := d.insertEventTx(ctx, tx, eventInsert{
 			ProjectID:       issue.ProjectID,
-			ProjectName: projectName,
+			ProjectName:     projectName,
 			IssueID:         &issue.ID,
 			IssueNumber:     &issue.Number,
 			RelatedIssueID:  peerID,
@@ -286,9 +286,9 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 
 // applyLinksDeltaTx is the per-TX worker that performs every link mutation.
 // Returns true when at least one row in `links` was inserted or deleted.
-// Touches the issue's updated_at exactly once at the end if any link changed.
+// Touches the issue's updated_at exactly once at the end if changed link changed.
 func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p EditIssueAtomicParams, changes *AtomicEditChanges) (bool, error) {
-	any := false
+	changed := false
 
 	// set_parent: replaces an existing parent if present. No-op when the
 	// existing parent already points at the requested target. Cycle check
@@ -296,20 +296,20 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 	if p.SetParent != nil {
 		target, err := lookupIssueByNumberTx(ctx, tx, issue.ProjectID, *p.SetParent)
 		if errors.Is(err, ErrNotFound) {
-			return any, &LinkTargetNotFoundError{Number: *p.SetParent}
+			return changed, &LinkTargetNotFoundError{Number: *p.SetParent}
 		}
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if target.ID == issue.ID {
-			return any, ErrSelfLink
+			return changed, ErrSelfLink
 		}
 		if err := assertNoParentCycleTx(ctx, tx, issue.ID, target.ID); err != nil {
-			return any, err
+			return changed, err
 		}
 		existing, perr := lookupParentOfTx(ctx, tx, issue.ID)
 		if perr != nil && !errors.Is(perr, ErrNotFound) {
-			return any, perr
+			return changed, perr
 		}
 		hasExisting := !errors.Is(perr, ErrNotFound)
 		if !hasExisting || existing.ToIssueID != target.ID {
@@ -323,15 +323,15 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 				// describe the removal.
 				oldParent, lerr := lookupIssueByIDTxIncludingDeleted(ctx, tx, existing.ToIssueID)
 				if lerr != nil {
-					return any, lerr
+					return changed, lerr
 				}
 				res, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, existing.ID)
 				if err != nil {
-					return any, fmt.Errorf("delete existing parent: %w", err)
+					return changed, fmt.Errorf("delete existing parent: %w", err)
 				}
 				rows, err := res.RowsAffected()
 				if err != nil {
-					return any, fmt.Errorf("delete existing parent rows affected: %w", err)
+					return changed, fmt.Errorf("delete existing parent rows affected: %w", err)
 				}
 				// rows == 0 means a concurrent transaction already
 				// removed the link we expected to delete. Don't claim
@@ -355,16 +355,16 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 				// which is a real mutation; keep ParentRemoved. If we
 				// didn't record a removal, the call is a pure no-op.
 				if recordedRemoval {
-					any = true
+					changed = true
 				}
 			case err != nil:
-				return any, err
+				return changed, err
 			default:
 				n := *p.SetParent
 				uid := target.UID
 				changes.ParentSet = &n
 				changes.ParentSetUID = &uid
-				any = true
+				changed = true
 			}
 		}
 	}
@@ -373,28 +373,28 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 	if p.RemoveParent != nil {
 		existing, perr := lookupParentOfTx(ctx, tx, issue.ID)
 		if errors.Is(perr, ErrNotFound) {
-			return any, ErrParentMismatch
+			return changed, ErrParentMismatch
 		}
 		if perr != nil {
-			return any, perr
+			return changed, perr
 		}
 		// Soft-delete-tolerant: the parent peer may have been soft-deleted
 		// since this issue was last edited; the link row still exists and
 		// the user can still ask to clean it up.
 		parentIssue, err := lookupIssueByIDTxIncludingDeleted(ctx, tx, existing.ToIssueID)
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if parentIssue.Number != *p.RemoveParent {
-			return any, ErrParentMismatch
+			return changed, ErrParentMismatch
 		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, existing.ID)
 		if err != nil {
-			return any, fmt.Errorf("delete parent: %w", err)
+			return changed, fmt.Errorf("delete parent: %w", err)
 		}
 		rows, err := res.RowsAffected()
 		if err != nil {
-			return any, fmt.Errorf("delete parent rows affected: %w", err)
+			return changed, fmt.Errorf("delete parent rows affected: %w", err)
 		}
 		// rows == 0 means a concurrent edit removed the parent link we
 		// thought we'd just verified. The strict assertion ("the parent
@@ -402,49 +402,49 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 		// 409 the no-parent case produces, so the user knows their view
 		// of the world was stale.
 		if rows == 0 {
-			return any, ErrParentMismatch
+			return changed, ErrParentMismatch
 		}
 		n := *p.RemoveParent
 		uid := parentIssue.UID
 		changes.ParentRemoved = &n
 		changes.ParentRemovedUID = &uid
-		any = true
+		changed = true
 	}
 
 	// add_blocks: URL issue → N (type=blocks).
 	for _, n := range p.AddBlocks {
 		added, targetUID, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "blocks", p.Actor, false)
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if added {
 			changes.BlocksAdded = append(changes.BlocksAdded, n)
 			changes.BlocksAddedUIDs = append(changes.BlocksAddedUIDs, targetUID)
-			any = true
+			changed = true
 		}
 	}
 	// add_blocked_by: N → URL issue (type=blocks, reversed).
 	for _, n := range p.AddBlockedBy {
 		added, targetUID, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "blocks", p.Actor, true)
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if added {
 			changes.BlockedByAdded = append(changes.BlockedByAdded, n)
 			changes.BlockedByAddedUIDs = append(changes.BlockedByAddedUIDs, targetUID)
-			any = true
+			changed = true
 		}
 	}
 	// add_related: URL issue ↔ N (type=related, canonicalized).
 	for _, n := range p.AddRelated {
 		added, targetUID, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "related", p.Actor, false)
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if added {
 			changes.RelatedAdded = append(changes.RelatedAdded, n)
 			changes.RelatedAddedUIDs = append(changes.RelatedAddedUIDs, targetUID)
-			any = true
+			changed = true
 		}
 	}
 
@@ -452,45 +452,45 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 	for _, n := range p.RemoveBlocks {
 		removed, targetUID, err := removeEdgeTx(ctx, tx, issue, n, "blocks", false)
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if removed {
 			changes.BlocksRemoved = append(changes.BlocksRemoved, n)
 			changes.BlocksRemovedUIDs = append(changes.BlocksRemovedUIDs, targetUID)
-			any = true
+			changed = true
 		}
 	}
 	for _, n := range p.RemoveBlockedBy {
 		removed, targetUID, err := removeEdgeTx(ctx, tx, issue, n, "blocks", true)
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if removed {
 			changes.BlockedByRemoved = append(changes.BlockedByRemoved, n)
 			changes.BlockedByRemovedUIDs = append(changes.BlockedByRemovedUIDs, targetUID)
-			any = true
+			changed = true
 		}
 	}
 	for _, n := range p.RemoveRelated {
 		removed, targetUID, err := removeEdgeTx(ctx, tx, issue, n, "related", false)
 		if err != nil {
-			return any, err
+			return changed, err
 		}
 		if removed {
 			changes.RelatedRemoved = append(changes.RelatedRemoved, n)
 			changes.RelatedRemovedUIDs = append(changes.RelatedRemovedUIDs, targetUID)
-			any = true
+			changed = true
 		}
 	}
 
-	if any {
+	if changed {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE issues SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
 			issue.ID); err != nil {
-			return any, fmt.Errorf("touch issue: %w", err)
+			return changed, fmt.Errorf("touch issue: %w", err)
 		}
 	}
-	return any, nil
+	return changed, nil
 }
 
 // ProjectIDFor returns the issue's project ID — a tiny helper so the link-op
@@ -660,28 +660,16 @@ func lookupIssueByNumberTxOpts(ctx context.Context, tx *sql.Tx, projectID, numbe
 	return scanIssue(row)
 }
 
-// lookupIssueByIDTx fetches one issue by id within a TX. Excludes
-// soft-deleted issues for the default path (matches every lifecycle
-// helper). lookupIssueByIDTxIncludingDeleted is the soft-delete-tolerant
-// variant used when reading the peer of an existing link.
-func lookupIssueByIDTx(ctx context.Context, tx *sql.Tx, id int64) (Issue, error) {
-	return lookupIssueByIDTxOpts(ctx, tx, id, false)
-}
-
+// lookupIssueByIDTxIncludingDeleted fetches one issue by id within a TX,
+// including soft-deleted rows. Used when reading the peer of an existing
+// link, where the link row is still valid even if the peer issue has
+// been soft-deleted.
 func lookupIssueByIDTxIncludingDeleted(ctx context.Context, tx *sql.Tx, id int64) (Issue, error) {
-	return lookupIssueByIDTxOpts(ctx, tx, id, true)
-}
-
-func lookupIssueByIDTxOpts(ctx context.Context, tx *sql.Tx, id int64, includeDeleted bool) (Issue, error) {
-	const base = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
+	const q = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at
 		FROM issues i JOIN projects p ON p.id = i.project_id
 		WHERE i.id = ?`
-	q := base + ` AND i.deleted_at IS NULL`
-	if includeDeleted {
-		q = base
-	}
 	row := tx.QueryRowContext(ctx, q, id)
 	return scanIssue(row)
 }
@@ -716,7 +704,7 @@ var ErrParentCycle = errors.New("parent cycle")
 // already prevent) cannot wedge the transaction.
 //
 // Runs inside the same TX as the rest of the link delta so the check sees
-// any prior mutations the same edit has staged (e.g. a remove_parent on
+// changed prior mutations the same edit has staged (e.g. a remove_parent on
 // the new parent, which would already be visible after that branch ran).
 func assertNoParentCycleTx(ctx context.Context, tx *sql.Tx, editingID, newParentID int64) error {
 	const maxDepth = 1024
