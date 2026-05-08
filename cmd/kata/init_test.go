@@ -33,6 +33,43 @@ func TestInit_FreshGitRepoBindsViaRemote(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, ".kata.toml"))
 }
 
+// TestInit_RejectsProjectSelectorFlag pins that `kata --project foo init`
+// (and `kata init --project foo`, via persistent-flag inheritance) is a
+// usage error, not a silent no-op. The global --project flag is a
+// selector for existing projects; init creates the binding and uses
+// --identity for the identity-to-set, so the two must not be mixed.
+func TestInit_RejectsProjectSelectorFlag(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	_, err := runCmdOutput(t, nil, "--workspace", dir, "--project", "kata", "init")
+	ce := requireCLIError(t, err, ExitUsage)
+	assert.Contains(t, ce.Message, "--project")
+	assert.Contains(t, ce.Message, "--identity")
+}
+
+// TestInit_AcceptsIdentityFlag confirms the renamed flag still threads
+// the identity through to the daemon request. Locks the wire shape:
+// the daemon receives project_identity from --identity, just as it
+// previously received it from the old --project flag.
+func TestInit_AcceptsIdentityFlag(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/wesm/kata.git")
+
+	daemonStub := newFakeDaemon(t)
+
+	resetFlags(t)
+	_, err := callInit(context.Background(), daemonStub.srv.URL, dir,
+		callInitOpts{Identity: "github.com/example/foo", Name: "foo"})
+	require.NoError(t, err)
+
+	req := daemonStub.request()
+	require.NotNil(t, req)
+	assert.Equal(t, "github.com/example/foo", req["project_identity"])
+}
+
 func TestInit_AddsLocalToGitignoreWhenAbsent(t *testing.T) {
 	env := testenv.New(t)
 	dir := t.TempDir()
@@ -231,7 +268,7 @@ func TestInit_RemoteClient_FromSubdir(t *testing.T) {
 }
 
 // TestInit_RemoteClient_ConflictDetectedLocally asserts that a
-// client-side .kata.toml conflict with --project (without --replace)
+// client-side .kata.toml conflict with --identity (without --replace)
 // fails before any daemon round-trip, so a remote daemon never sees a
 // stale identity. The error must also carry the structured
 // "project_binding_conflict" code so --json consumers can branch on
@@ -254,7 +291,7 @@ name     = "kata"
 	t.Cleanup(func() { flags.JSON = false })
 
 	_, err := callInit(context.Background(), daemonStub.srv.URL, dir,
-		callInitOpts{Project: "github.com/wesm/other"})
+		callInitOpts{Identity: "github.com/wesm/other"})
 	require.Error(t, err)
 	var ce *cliError
 	require.ErrorAs(t, err, &ce)

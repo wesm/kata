@@ -139,7 +139,7 @@ needed. In a git workspace, the default project identity is derived from the
 remote URL. For a non-git workspace or an explicit shared identity:
 
 ```sh
-kata init --project github.com/example/product --name product
+kata init --identity github.com/example/product --name product
 ```
 
 Create and inspect issues:

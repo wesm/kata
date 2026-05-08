@@ -47,6 +47,18 @@ Use kata as the shared issue ledger for this workspace.
 10. Do not run delete or purge unless the user explicitly asks for that exact
     destructive action and issue number.
 
+11. To target a project other than the one bound to the current workspace,
+    pass --project <selector> on any command. The selector accepts a
+    project id, name, identity, or alias, and bypasses workspace-based
+    resolution. The project must already exist; --project never creates one
+    (kata init is the only path that creates a project row).
+
+       kata create --project <name> "fix invoice rounding"
+       kata list --project 7 --json
+
+    --project is rejected by kata init (which uses --identity for the
+    binding it creates).
+
 For long-running agents, poll events:
 
    kata events --after 0 --limit 100 --json

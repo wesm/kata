@@ -108,7 +108,7 @@ Given a start path:
 2. **Else, alias lookup.** If `G` exists, compute `alias_identity` and look up `project_aliases`. On match, resolve to that project; update `last_seen_at`/`root_path`.
 3. **Else, fail.** Return `project_not_initialized` with hint `run "kata init" in this workspace`.
 
-Outside any git repo and without `.kata.toml`, every command except `kata init --project <X>` fails. kata never silently namespaces issues to "a random cwd."
+Outside any git repo and without `.kata.toml`, every command except `kata init --identity <X>` fails. kata never silently namespaces issues to "a random cwd."
 
 `.kata.toml` parsing and `alias_identity` derivation are performed daemon-side from the `start_path` the CLI sends — there is one source of truth for resolution semantics. The CLI never constructs project identities; it sends paths.
 
@@ -714,7 +714,7 @@ The CLI text path treats `reset_required: true` the same way the TUI does on `sy
 - `kata events --after-id N --json` is the primary agent polling primitive; returns `next_after_id` for the next call. Timestamps (`--since`) are the human path. If the polling response sets `reset_required: true`, the agent must drop any cached state and resume polling from `next_after_id` (= the new baseline). See §4.11.
 - `kata show` and relationship-command issue references accept `#N`, bare number `N`, full issue UID, or a unique UID prefix of at least 8 characters. Numbers remain project-scoped display labels; UIDs are the stable cross-cutover identity. Other lifecycle commands are still number-first until their parsers are moved onto the shared resolver.
 - `kata export` / `kata import` are the supported schema-evolution and backup/restore path. JSONL exports preserve the source schema version exactly; imports into a newer binary apply deterministic fill rules, including UID generation for legacy records, inside a fresh database before validation and swap.
-- **Project binding is workspace-driven, not flag-driven.** Agents do not pass `--project <identity>` on writes. They run from a workspace whose `.kata.toml` declares the binding. If `.kata.toml` is missing, write commands fail with `project_not_initialized` and a hint to run `kata init`. **Do not** auto-create a project — that is exactly how agents end up writing into the wrong namespace.
+- **Project binding is workspace-driven by default.** Agents normally run from a workspace whose `.kata.toml` declares the binding; that is the path that gets validated by alias and resolves predictably. If `.kata.toml` is missing, write commands fail with `project_not_initialized` and a hint to run `kata init`. **Do not** auto-create a project from a flag — that is exactly how agents end up writing into the wrong namespace. The global `--project <selector>` flag exists for cross-project work against an *existing* project; it never creates one. `kata init` remains the only path that creates a `projects` row.
 
 ### 5.2 Identity (actor)
 
@@ -764,7 +764,7 @@ JSON mode:
 $ kata create "fix login bug"
 error: kata project is not bound to this workspace
 hint: run `kata init` (auto-derives identity from git remote) or
-      `kata init --project <identity>` to attach to an existing project
+      `kata init --identity <identity>` to attach to an existing project
 ```
 
 ### 5.5 Confirmation for destructive ops
@@ -812,15 +812,15 @@ Agent skill activation isn't fully deterministic. Two backup commands:
 
 ## 6. CLI Surface
 
-Universal flags on every command: `--json`, `--quiet`/`-q`, `--as <name>`, `--workspace <path>` (overrides cwd as the workspace root used for resolution; the value is a path, not a project identity). `--all-projects` for cross-project reads where applicable.
+Universal flags on every command: `--json`, `--quiet`/`-q`, `--as <name>`, `--workspace <path>` (overrides cwd as the workspace root used for resolution; the value is a path, not a project identity). `--all-projects` for cross-project reads where applicable. `--project <selector>` selects an existing project by id, name, identity, or alias and bypasses workspace-based resolution; rejected by `kata init` (which uses `--identity` to set the binding). The selector is a convenience for cross-project work, not a substitute for `.kata.toml` — it never creates a project.
 
-Note: there is no public `--project-id <N>` flag for agent-facing commands. Agents resolve through `.kata.toml`; the TUI and internal client may carry `project_id` end-to-end after a single `/projects/resolve` call but the value is never exposed as a CLI argument.
+Note: `--project-id <N>` exists on `kata events` and `kata digest` for legacy numeric scoping; new code should prefer `--project <selector>`. Agents resolving through `.kata.toml` need neither flag; the TUI and internal client may carry `project_id` end-to-end after a single `/projects/resolve` call but that internal value is distinct from the user-facing flags.
 
 ### 6.1 Command map
 
 | Group | Command | Notes |
 |---|---|---|
-| Init | `kata init [--project <identity>] [--name <name>] [--replace] [--reassign]` | Fresh-clone flow: with no flags, reads existing `.kata.toml` if present; else derives identity from git remote. Creates/upserts the project, attaches the workspace alias, writes `.kata.toml` if missing. The **only** path that creates project rows. Idempotent. |
+| Init | `kata init [--identity <identity>] [--name <name>] [--replace] [--reassign]` | Fresh-clone flow: with no flags, reads existing `.kata.toml` if present; else derives identity from git remote. Creates/upserts the project, attaches the workspace alias, writes `.kata.toml` if missing. The **only** path that creates project rows. Idempotent. The global `--project` selector is rejected here. |
 | Lifecycle | `kata create <title> [--body* / --idempotency-key K / --force-new / --label L / --owner O / --parent N / --blocks N]` | `--label` repeated only (no CSV). Initial labels/links/owner go into the `issue.created` event payload. Fails with `project_not_initialized` if no `.kata.toml` and no matching alias. |
 | | `kata show <issue-ref> [--include-events] [--include-deleted]` | Default: issue + comments + links + labels. `<issue-ref>` is `#N`, `N`, full UID, or unique UID prefix. |
 | | `kata list [--status / --label / --owner / --author / --workspace / --all-projects / --updated-since / --limit / --search]` | Default: this project, `status=open`, `updated_at DESC`, limit 50. |

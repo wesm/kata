@@ -18,7 +18,7 @@ import (
 
 // initOptions holds the flags specific to `kata init`.
 type initOptions struct {
-	Project  string
+	Identity string
 	Name     string
 	Replace  bool
 	Reassign bool
@@ -26,7 +26,7 @@ type initOptions struct {
 
 // callInitOpts is the parameter bag passed to callInit.
 type callInitOpts struct {
-	Project  string
+	Identity string
 	Name     string
 	Replace  bool
 	Reassign bool
@@ -112,13 +112,24 @@ func newInitCmd() *cobra.Command {
 
 Writes a committed .kata.toml that binds the workspace to a project
 identity. The daemon derives the identity from a git remote when one
-is present; pass --project to override, or --name to set the
+is present; pass --identity to override, or --name to set the
 human-readable name.
+
+The global --project selector flag (used by other commands to target
+an existing project) is rejected here: init creates the binding
+rather than selecting one, so the two cannot be combined.
 
 Also adds .kata.local.toml to .gitignore so a developer's per-machine
 overrides (e.g., a remote daemon URL via [server] url = "...") never
 get committed.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(flags.Project) != "" {
+				return &cliError{
+					Message:  "kata init does not accept the --project selector; use --identity to set the project identity",
+					Kind:     kindUsage,
+					ExitCode: ExitUsage,
+				}
+			}
 			baseURL, err := ensureDaemon(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("daemon: %w", err)
@@ -136,7 +147,7 @@ get committed.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Project, "project", "", "project identity (default: derived from git remote)")
+	cmd.Flags().StringVar(&opts.Identity, "identity", "", "project identity to bind (default: derived from git remote)")
 	cmd.Flags().StringVar(&opts.Name, "name", "", "human name for the project (default: last path segment)")
 	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "overwrite .kata.toml binding when it conflicts")
 	cmd.Flags().BoolVar(&opts.Reassign, "reassign", false, "move an existing alias to this project")
@@ -218,7 +229,7 @@ func localDerive(startPath string, opts callInitOpts) (localInit, error) {
 			return localInit{}, err
 		}
 	}
-	choice, err := config.PickInitIdentity(disc, tomlCfg, opts.Project, opts.Name, opts.Replace)
+	choice, err := config.PickInitIdentity(disc, tomlCfg, opts.Identity, opts.Name, opts.Replace)
 	if err != nil {
 		return localInit{}, err
 	}
@@ -316,8 +327,8 @@ func runIdentityInit(ctx context.Context, baseURL string, in localInit, opts cal
 // places .gitignore beside it.
 func runStartPathInit(ctx context.Context, baseURL, startPath string, opts callInitOpts) (string, error) {
 	reqBody := map[string]any{"start_path": startPath}
-	if opts.Project != "" {
-		reqBody["project_identity"] = opts.Project
+	if opts.Identity != "" {
+		reqBody["project_identity"] = opts.Identity
 	}
 	if opts.Name != "" {
 		reqBody["name"] = opts.Name
