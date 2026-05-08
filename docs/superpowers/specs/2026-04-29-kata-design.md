@@ -67,7 +67,7 @@ Clients discover the daemon by:
 
 Cleanup of stale files via `ListAllRuntimes` + `/ping` liveness probe.
 
-### 2.4 Project identity & alias resolution
+### 2.4 Project resolution & aliases
 
 A **project** is the issue namespace. `projects.next_issue_number` owns the issue numbering for one or more workspaces.
 
@@ -193,12 +193,10 @@ Timestamp columns are typed `DATETIME` (not `TEXT`) so `modernc.org/sqlite v1.49
 CREATE TABLE projects (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   uid               TEXT NOT NULL UNIQUE,
-  identity          TEXT UNIQUE NOT NULL,
-  name              TEXT NOT NULL,
+  name              TEXT NOT NULL UNIQUE,
   created_at        DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   next_issue_number INTEGER NOT NULL DEFAULT 1,
   CHECK (length(uid) = 26),
-  CHECK (length(trim(identity)) > 0),
   CHECK (length(trim(name)) > 0)
 );
 
@@ -755,8 +753,8 @@ JSON mode:
 ```
 $ kata create "fix login bug"
 error: kata project is not bound to this workspace
-hint: run `kata init` (auto-derives identity from git remote) or
-      `kata init --project <identity>` to attach to an existing project
+hint: run `kata init` (auto-derives the project name from git remote) or
+      `kata init --project <name>` to attach to an existing project
 ```
 
 ### 5.5 Confirmation for destructive ops
@@ -1066,7 +1064,7 @@ Hook stdin is JSON, capped at 256KB. Large text fields (`issue.title`, `issue.bo
 
 ```
 KATA_HOOK_VERSION, KATA_EVENT_ID, KATA_EVENT_TYPE, KATA_ACTOR, KATA_CREATED_AT,
-KATA_PROJECT_ID, KATA_PROJECT_IDENTITY, KATA_ISSUE_NUMBER,
+KATA_PROJECT_ID, KATA_PROJECT_NAME, KATA_ISSUE_NUMBER,
 KATA_ALIAS_IDENTITY, KATA_ROOT_PATH                   # alias-scoped; absent for admin-emitted events
 ```
 
@@ -1226,7 +1224,7 @@ Pre-commit via `prek` (matches roborev/middleman): runs `make lint` with `always
 - Bulk endpoints.
 - Per-issue SSE subscriptions (clients filter).
 - Remote webhooks.
-- Diagnostic admin path for explicit-identity project registration.
+- Diagnostic admin path for project registration outside `kata init`.
 - Auto-create project on first read/write. (The strict policy is intentional; `kata init` is the only path.)
 
 **CLI:**
