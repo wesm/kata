@@ -122,20 +122,49 @@ func newShowCmd() *cobra.Command {
 					return err
 				}
 				for _, l := range b.Links {
-					other := l.ToNumber
-					dir := "→"
-					// If show is for the link's "to" side, point the arrow back so
-					// the rendering reads naturally regardless of direction.
-					if l.FromNumber != b.Issue.Number {
-						other = l.FromNumber
-						dir = "←"
-					}
-					if _, err := fmt.Fprintf(out, "%s %s #%d\n", l.Type, dir, other); err != nil {
+					label, other := linkLabelFromPOV(l.Type, b.Issue.Number, l.FromNumber, l.ToNumber)
+					if _, err := fmt.Fprintf(out, "%s: #%d\n", label, other); err != nil {
 						return err
 					}
 				}
 			}
 			return nil
 		},
+	}
+}
+
+// linkLabelFromPOV returns the label and the OTHER endpoint number,
+// framed from the viewing issue's point of view. The display matches
+// the relationship-flag vocabulary on `kata create` / `kata edit`:
+// "parent" / "child" for the parent slot (parent points up, child
+// points down), "blocks" / "blocked-by" for the directed blocks
+// edge, and "related" for the symmetric one. This reads unambiguously
+// without arrows: `child: #5` says "this issue's child is #5", which
+// is what the previous `parent ← #5` rendering tried to convey via
+// arrow direction.
+func linkLabelFromPOV(linkType string, viewerNumber, fromNumber, toNumber int64) (label string, other int64) {
+	if fromNumber == viewerNumber {
+		// Viewer is the link's source.
+		switch linkType {
+		case "parent":
+			return "parent", toNumber
+		case "blocks":
+			return "blocks", toNumber
+		case "related":
+			return "related", toNumber
+		default:
+			return linkType, toNumber
+		}
+	}
+	// Viewer is the link's target — relabel to reflect the inverse.
+	switch linkType {
+	case "parent":
+		return "child", fromNumber
+	case "blocks":
+		return "blocked-by", fromNumber
+	case "related":
+		return "related", fromNumber
+	default:
+		return linkType, fromNumber
 	}
 }

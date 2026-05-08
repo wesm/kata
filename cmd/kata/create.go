@@ -17,11 +17,13 @@ import (
 func newCreateCmd() *cobra.Command {
 	var src BodySources
 	var (
-		labels   []string
-		parent   int64
-		blocks   []int64
-		owner    string
-		priority int
+		labels          []string
+		parentRefSlice  []string
+		blocks          []string
+		blockedBy       []string
+		related         []string
+		owner           string
+		priority        int
 	)
 	cmd := &cobra.Command{
 		Use:   "create <title>",
@@ -34,8 +36,18 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&src.File, "body-file", "", "read body from file")
 	cmd.Flags().BoolVar(&src.Stdin, "body-stdin", false, "read body from stdin")
 	cmd.Flags().StringSliceVar(&labels, "label", nil, "initial label (repeatable)")
-	cmd.Flags().Int64Var(&parent, "parent", 0, "initial parent link target (issue number)")
-	cmd.Flags().Int64SliceVar(&blocks, "blocks", nil, "initial blocks link target (issue number, repeatable)")
+	// --parent is at-most-one. We accept it as a slice so duplicate flags
+	// produce a parseable error (singletonRefValue) instead of cobra's
+	// silent last-wins on StringVar; collapseSingletonRef rejects multiple
+	// distinct values explicitly.
+	cmd.Flags().Var(newRefSliceValue(&parentRefSlice), "parent",
+		"initial parent (must finish before this issue starts; ≤1; ref: #N, N, UID, or 8+ char prefix)")
+	cmd.Flags().Var(newRefSliceValue(&blocks), "blocks",
+		"this issue blocks <ref> (this must finish before <ref> can; repeatable)")
+	cmd.Flags().Var(newRefSliceValue(&blockedBy), "blocked-by",
+		"this issue is blocked by <ref> (<ref> must finish before this; repeatable)")
+	cmd.Flags().Var(newRefSliceValue(&related), "related",
+		"this issue is related to <ref> (symmetric, no ordering; repeatable)")
 	cmd.Flags().StringVar(&owner, "owner", "", "initial owner")
 	cmd.Flags().IntVar(&priority, "priority", 0, "initial priority (0..4; 0 = highest)")
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "send Idempotency-Key header for safe retry")
@@ -98,12 +110,40 @@ func newCreateCmd() *cobra.Command {
 		if len(labels) > 0 {
 			req["labels"] = labels
 		}
+		// Resolve every link-target ref to its issue number before building
+		// the wire payload. Refs accept the same forms as `kata show`:
+		// numeric (#N or N), full UID, or 8+ char UID prefix. Numeric refs
+		// resolve client-side; UID refs roundtrip to the daemon.
 		var links []map[string]any
+		var parentNum int64
 		if cmd.Flags().Changed("parent") {
-			links = append(links, map[string]any{"type": "parent", "to_number": parent})
+			n, err := resolveSingletonRefToNumber(ctx, baseURL, projectID, parentRefSlice, "--parent", false)
+			if err != nil {
+				return err
+			}
+			parentNum = n
+			links = append(links, map[string]any{"type": "parent", "to_number": n})
 		}
-		for _, b := range blocks {
-			links = append(links, map[string]any{"type": "blocks", "to_number": b})
+		blocksNums, err := resolveRefSliceToNumbers(ctx, baseURL, projectID, blocks, "--blocks")
+		if err != nil {
+			return err
+		}
+		for _, n := range blocksNums {
+			links = append(links, map[string]any{"type": "blocks", "to_number": n})
+		}
+		blockedByNums, err := resolveRefSliceToNumbers(ctx, baseURL, projectID, blockedBy, "--blocked-by")
+		if err != nil {
+			return err
+		}
+		for _, n := range blockedByNums {
+			links = append(links, map[string]any{"type": "blocks", "to_number": n, "incoming": true})
+		}
+		relatedNums, err := resolveRefSliceToNumbers(ctx, baseURL, projectID, related, "--related")
+		if err != nil {
+			return err
+		}
+		for _, n := range relatedNums {
+			links = append(links, map[string]any{"type": "related", "to_number": n})
 		}
 		if len(links) > 0 {
 			req["links"] = links
@@ -125,9 +165,62 @@ func newCreateCmd() *cobra.Command {
 		if status >= 400 {
 			return apiErrFromBody(status, bs)
 		}
-		return printMutation(cmd, bs)
+		// The /issues create response doesn't carry a `changes` block (it
+		// lives on the PATCH path). Synthesize one from the resolved
+		// initial-link numbers so human-mode `kata create` echoes a
+		// `links: +parent #N, +blocks #M, ...` summary, mirroring the
+		// per-link diff a `kata edit` PATCH produces. Reverse direction
+		// (`--blocked-by` adding to `blocked_by_added` rather than
+		// `blocks_added`) preserves the user's POV.
+		applied := initialLinksAsChanges(parentNum, blocksNums, blockedByNums, relatedNums)
+		return printMutationWithApplied(cmd, bs, applied)
 	}
 	return cmd
+}
+
+// initialLinksAsChanges builds a synthetic mutationChanges from the
+// resolved initial-link numbers so create's human output can mirror
+// edit's `links: +parent #N` diff format. parentNum is 0 when no
+// `--parent` was passed; the other slices may be nil/empty. Returns
+// nil when no link flags were used.
+//
+// Dedupes each slice before storing so a request like
+// `--blocks 2 --blocks 2` summarizes as a single `+blocks #2`,
+// matching the daemon's CreateIssue path which dedupes initial links
+// before persisting. Without this, the human-mode summary would
+// over-report what actually landed.
+func initialLinksAsChanges(parentNum int64, blocks, blockedBy, related []int64) *mutationChanges {
+	if parentNum == 0 && len(blocks) == 0 && len(blockedBy) == 0 && len(related) == 0 {
+		return nil
+	}
+	c := &mutationChanges{}
+	if parentNum != 0 {
+		n := parentNum
+		c.ParentSet = &n
+	}
+	c.BlocksAdded = dedupeInt64s(blocks)
+	c.BlockedByAdded = dedupeInt64s(blockedBy)
+	c.RelatedAdded = dedupeInt64s(related)
+	return c
+}
+
+// dedupeInt64s returns a copy of in with duplicate entries dropped,
+// preserving first-occurrence order. Returns nil for empty input so
+// the caller's omitempty JSON tags do the right thing.
+func dedupeInt64s(in []int64) []int64 {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(in))
+	out := make([]int64, 0, len(in))
+	for _, n := range in {
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
 }
 
 func validateCreateLabels(labels []string) error {
@@ -200,14 +293,31 @@ func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, er
 // printMutation formats a mutation response (issue create/edit/close/reopen)
 // according to the active output mode: JSON envelope, quiet (issue number
 // only), or human-readable one-liner.
+//
+// In human mode, when the response carries a `changes` block (kata edit
+// with link/priority mutations), append a per-line summary so the caller
+// can see what landed without parsing JSON. A request whose `changed`
+// flag is false renders an explicit "(no changes applied)" tail so a
+// no-op edit doesn't look identical to a successful one.
 func printMutation(cmd *cobra.Command, bs []byte) error {
+	return printMutationWithApplied(cmd, bs, nil)
+}
+
+// printMutationWithApplied is printMutation with an optional fallback
+// `changes` block. When the response itself doesn't carry one (the
+// /issues create path doesn't), pass `applied` describing the
+// requested mutations so human-mode output still echoes a `links: ...`
+// summary. The wire payload (JSON-mode output) is left unchanged —
+// the `applied` argument only seeds the human-mode renderer.
+func printMutationWithApplied(cmd *cobra.Command, bs []byte, applied *mutationChanges) error {
 	var b struct {
 		Issue struct {
 			Number int64  `json:"number"`
 			Title  string `json:"title"`
 			Status string `json:"status"`
 		} `json:"issue"`
-		Changed bool `json:"changed"`
+		Changed bool             `json:"changed"`
+		Changes *mutationChanges `json:"changes,omitempty"`
 	}
 	if err := json.Unmarshal(bs, &b); err != nil {
 		return err
@@ -224,7 +334,87 @@ func printMutation(cmd *cobra.Command, bs []byte) error {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), b.Issue.Number)
 		return err
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d %s [%s]\n",
-		b.Issue.Number, textsafe.Line(b.Issue.Title), b.Issue.Status)
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d %s [%s]",
+		b.Issue.Number, textsafe.Line(b.Issue.Title), b.Issue.Status); err != nil {
+		return err
+	}
+	changes := b.Changes
+	changed := b.Changed
+	if changes == nil && applied != nil && b.Changed {
+		// Create-path fallback: the wire response lacks a changes block,
+		// but the caller passed the resolved initial-link state. Only
+		// fall back when the daemon also flagged the response as
+		// changed=true — an idempotent-reuse response (changed=false,
+		// returned when an Idempotency-Key matched a prior create)
+		// must not synthesize a "links: ..." summary because nothing
+		// was applied THIS call. The original create's links surfaced
+		// in its OWN response.
+		changes = applied
+	}
+	if summary := summarizeChanges(changes, changed); summary != "" {
+		if _, err := fmt.Fprint(cmd.OutOrStdout(), " "+summary); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintln(cmd.OutOrStdout())
 	return err
+}
+
+// mutationChanges mirrors the wire `changes` block produced by `kata edit`
+// for link mutations. Decoded so the human-mode renderer can summarize
+// what happened without round-tripping the full payload.
+type mutationChanges struct {
+	ParentSet        *int64  `json:"parent_set,omitempty"`
+	ParentRemoved    *int64  `json:"parent_removed,omitempty"`
+	BlocksAdded      []int64 `json:"blocks_added,omitempty"`
+	BlocksRemoved    []int64 `json:"blocks_removed,omitempty"`
+	BlockedByAdded   []int64 `json:"blocked_by_added,omitempty"`
+	BlockedByRemoved []int64 `json:"blocked_by_removed,omitempty"`
+	RelatedAdded     []int64 `json:"related_added,omitempty"`
+	RelatedRemoved   []int64 `json:"related_removed,omitempty"`
+}
+
+// summarizeChanges renders a human-mode tail for the printMutation
+// one-liner. Returns "" when this response has no link information to
+// surface (e.g. plain title-edit, plain create, comment, close).
+func summarizeChanges(c *mutationChanges, changed bool) string {
+	if c == nil {
+		return ""
+	}
+	parts := make([]string, 0, 8)
+	if c.ParentSet != nil && c.ParentRemoved != nil {
+		parts = append(parts, fmt.Sprintf("parent #%d→#%d", *c.ParentRemoved, *c.ParentSet))
+	} else if c.ParentSet != nil {
+		parts = append(parts, fmt.Sprintf("+parent #%d", *c.ParentSet))
+	} else if c.ParentRemoved != nil {
+		parts = append(parts, fmt.Sprintf("-parent #%d", *c.ParentRemoved))
+	}
+	for _, n := range c.BlocksAdded {
+		parts = append(parts, fmt.Sprintf("+blocks #%d", n))
+	}
+	for _, n := range c.BlocksRemoved {
+		parts = append(parts, fmt.Sprintf("-blocks #%d", n))
+	}
+	for _, n := range c.BlockedByAdded {
+		parts = append(parts, fmt.Sprintf("+blocked_by #%d", n))
+	}
+	for _, n := range c.BlockedByRemoved {
+		parts = append(parts, fmt.Sprintf("-blocked_by #%d", n))
+	}
+	for _, n := range c.RelatedAdded {
+		parts = append(parts, fmt.Sprintf("+related #%d", n))
+	}
+	for _, n := range c.RelatedRemoved {
+		parts = append(parts, fmt.Sprintf("-related #%d", n))
+	}
+	if len(parts) == 0 {
+		// `changes` was present but every entry was an idempotent no-op.
+		// Make the no-op explicit so callers don't confuse it with a
+		// successful mutation.
+		if !changed {
+			return "(no changes applied)"
+		}
+		return ""
+	}
+	return "links: " + strings.Join(parts, ", ")
 }

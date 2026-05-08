@@ -29,6 +29,81 @@ func TestFingerprint_CanonicalizesWhitespace(t *testing.T) {
 	assert.Equal(t, a, b, "internal whitespace runs and trimming must collapse")
 }
 
+// TestFingerprint_BlocksVsBlockedByDiffer pins that --blocks N and
+// --blocked-by N produce distinct fingerprints. Without an Incoming
+// discriminator in the canonical link record, retried creates with the
+// same idempotency key but flipped direction would silently reuse the
+// wrong issue.
+func TestFingerprint_BlocksVsBlockedByDiffer(t *testing.T) {
+	out := db.Fingerprint("fix race", "body", nil, nil,
+		[]db.InitialLink{{Type: "blocks", ToNumber: 7, Incoming: false}}, nil)
+	in := db.Fingerprint("fix race", "body", nil, nil,
+		[]db.InitialLink{{Type: "blocks", ToNumber: 7, Incoming: true}}, nil)
+	assert.NotEqual(t, out, in,
+		"--blocks N and --blocked-by N must hash differently")
+}
+
+// TestFingerprint_OutgoingBlocksByteLayoutStable pins that the
+// Incoming=false common case stays byte-for-byte identical to the
+// pre-Incoming layout (omitempty drops the field). Pre-Incoming
+// idempotency events must continue to match new fingerprints for
+// outgoing-only requests.
+func TestFingerprint_OutgoingBlocksByteLayoutStable(t *testing.T) {
+	defaulted := db.Fingerprint("t", "b", nil, nil,
+		[]db.InitialLink{{Type: "blocks", ToNumber: 5}}, nil)
+	explicit := db.Fingerprint("t", "b", nil, nil,
+		[]db.InitialLink{{Type: "blocks", ToNumber: 5, Incoming: false}}, nil)
+	assert.Equal(t, defaulted, explicit,
+		"omitempty must keep Incoming=false byte-for-byte identical to omitted")
+}
+
+// TestFingerprintLegacy_DiffersOnDuplicates pins that the legacy hash
+// preserves duplicate link entries (the pre-kata#1 behavior), so the
+// daemon's lookup path can match idempotency events that were stored
+// before dedupe-in-Fingerprint landed.
+func TestFingerprintLegacy_DiffersOnDuplicates(t *testing.T) {
+	dup := db.FingerprintLegacy("fix", "b", nil, nil,
+		[]db.InitialLink{
+			{Type: "related", ToNumber: 2},
+			{Type: "related", ToNumber: 2},
+		}, nil)
+	clean := db.FingerprintLegacy("fix", "b", nil, nil,
+		[]db.InitialLink{
+			{Type: "related", ToNumber: 2},
+		}, nil)
+	assert.NotEqual(t, dup, clean,
+		"legacy form must hash duplicates differently from the deduped form")
+}
+
+// TestFingerprint_DedupesLinksBeforeHashing pins that fingerprint
+// canonicalization matches what CreateIssue persists. Without dedupe-
+// before-hash, an idempotent retry of `kata create --related 2 --related 2`
+// against an existing entry with `--related 2` would trip
+// idempotency_mismatch even though the persisted state is identical.
+func TestFingerprint_DedupesLinksBeforeHashing(t *testing.T) {
+	withDups := db.Fingerprint("fix", "b", nil, nil,
+		[]db.InitialLink{
+			{Type: "related", ToNumber: 2},
+			{Type: "related", ToNumber: 2},
+		}, nil)
+	clean := db.Fingerprint("fix", "b", nil, nil,
+		[]db.InitialLink{
+			{Type: "related", ToNumber: 2},
+		}, nil)
+	assert.Equal(t, withDups, clean,
+		"duplicate link entries must canonicalize the same way as the persisted set")
+
+	// related's Incoming=true is normalized to false by dedupeLinks
+	// (related is symmetric); the fingerprint must reflect that.
+	withInverse := db.Fingerprint("fix", "b", nil, nil,
+		[]db.InitialLink{
+			{Type: "related", ToNumber: 2},
+			{Type: "related", ToNumber: 2, Incoming: true},
+		}, nil)
+	assert.Equal(t, clean, withInverse,
+		"related Incoming=true canonicalizes to the same row as Incoming=false")
+}
+
 func TestFingerprint_DiffersOnDifferentInputs(t *testing.T) {
 	base := db.Fingerprint("a", "b", nil, nil, nil, nil)
 	priority := int64(1)

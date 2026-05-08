@@ -78,9 +78,17 @@ func (f ListFilter) values() url.Values {
 }
 
 // CreateInitialLinkBody requests a link created atomically with a new issue.
+//
+// Incoming reverses direction for type=blocks: when true, the new issue is
+// the link's "to" side (i.e. the new issue is BLOCKED BY the named target
+// — the `kata create --blocked-by N` shape). Default (false) leaves the
+// new issue as the link's "from" side (`--blocks N`). Rejected by the
+// daemon for type=parent (no inverse parent direction is exposed) and
+// meaningless for type=related (which is symmetric).
 type CreateInitialLinkBody struct {
 	Type     string `json:"type"`
 	ToNumber int64  `json:"to_number"`
+	Incoming bool   `json:"incoming,omitempty"`
 }
 
 // CreateIssueBody is the input to CreateIssue. IdempotencyKey rides the

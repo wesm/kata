@@ -219,6 +219,132 @@ func (d *DB) appendBlockNumbersForChunk(
 	return nil
 }
 
+// BlockedByNumbersByIssues returns issue ID -> issue numbers that block
+// that issue. Inverse of BlockNumbersByIssues: for each issue X, the
+// returned numbers are the issues whose outgoing `blocks` link points
+// at X. Used by `kata list --json` to surface every relationship type
+// per row, not just outgoing blocks.
+func (d *DB) BlockedByNumbersByIssues(
+	ctx context.Context, projectID int64, issueIDs []int64,
+) (map[int64][]int64, error) {
+	out := map[int64][]int64{}
+	if len(issueIDs) == 0 {
+		return out, nil
+	}
+	for i := 0; i < len(issueIDs); i += relationshipChunkSize {
+		end := i + relationshipChunkSize
+		if end > len(issueIDs) {
+			end = len(issueIDs)
+		}
+		if err := d.appendBlockedByNumbersForChunk(ctx, projectID, issueIDs[i:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) appendBlockedByNumbersForChunk(
+	ctx context.Context, projectID int64, chunk []int64, out map[int64][]int64,
+) error {
+	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
+	query := `SELECT l.to_issue_id, blocker.number
+	          FROM links l
+	          JOIN issues blocker ON blocker.id = l.from_issue_id
+	          JOIN issues blocked ON blocked.id = l.to_issue_id
+	          WHERE l.project_id = ?
+	            AND blocker.project_id = ?
+	            AND blocked.project_id = ?
+	            AND l.type = 'blocks'
+	            AND blocker.deleted_at IS NULL
+	            AND l.to_issue_id IN (` + placeholders + `)
+	          ORDER BY l.to_issue_id ASC, blocker.number ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("blocked-by numbers by issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var blockedID, blockerNumber int64
+		if err := rows.Scan(&blockedID, &blockerNumber); err != nil {
+			return fmt.Errorf("scan blocked-by numbers by issues: %w", err)
+		}
+		out[blockedID] = append(out[blockedID], blockerNumber)
+	}
+	return rows.Err()
+}
+
+// RelatedNumbersByIssues returns issue ID -> issue numbers symmetrically
+// related to that issue. Related links are stored canonically as (from <
+// to), so for any viewer X the peers may sit on either side; the query
+// projects both directions.
+func (d *DB) RelatedNumbersByIssues(
+	ctx context.Context, projectID int64, issueIDs []int64,
+) (map[int64][]int64, error) {
+	out := map[int64][]int64{}
+	if len(issueIDs) == 0 {
+		return out, nil
+	}
+	for i := 0; i < len(issueIDs); i += relationshipChunkSize {
+		end := i + relationshipChunkSize
+		if end > len(issueIDs) {
+			end = len(issueIDs)
+		}
+		if err := d.appendRelatedNumbersForChunk(ctx, projectID, issueIDs[i:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) appendRelatedNumbersForChunk(
+	ctx context.Context, projectID int64, chunk []int64, out map[int64][]int64,
+) error {
+	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
+	// Project both directions so a viewer on either canonical end sees
+	// the other endpoint. Live-only join on the peer side mirrors what
+	// the blocks queries do for soft-delete tolerance.
+	query := `SELECT viewer_id, peer_number FROM (
+	            SELECT l.from_issue_id AS viewer_id, peer.number AS peer_number
+	              FROM links l
+	              JOIN issues self ON self.id = l.from_issue_id
+	              JOIN issues peer ON peer.id = l.to_issue_id
+	             WHERE l.project_id = ?
+	               AND self.project_id = ?
+	               AND peer.project_id = ?
+	               AND l.type = 'related'
+	               AND peer.deleted_at IS NULL
+	               AND l.from_issue_id IN (` + placeholders + `)
+	            UNION ALL
+	            SELECT l.to_issue_id AS viewer_id, peer.number AS peer_number
+	              FROM links l
+	              JOIN issues self ON self.id = l.to_issue_id
+	              JOIN issues peer ON peer.id = l.from_issue_id
+	             WHERE l.project_id = ?
+	               AND self.project_id = ?
+	               AND peer.project_id = ?
+	               AND l.type = 'related'
+	               AND peer.deleted_at IS NULL
+	               AND l.to_issue_id IN (` + placeholders + `)
+	          ) ORDER BY viewer_id ASC, peer_number ASC`
+	// Each chunk's args are reused for both halves of the UNION.
+	combined := make([]any, 0, len(args)*2)
+	combined = append(combined, args...)
+	combined = append(combined, args...)
+	rows, err := d.QueryContext(ctx, query, combined...)
+	if err != nil {
+		return fmt.Errorf("related numbers by issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var viewerID, peerNumber int64
+		if err := rows.Scan(&viewerID, &peerNumber); err != nil {
+			return fmt.Errorf("scan related numbers by issues: %w", err)
+		}
+		out[viewerID] = append(out[viewerID], peerNumber)
+	}
+	return rows.Err()
+}
+
 // ChildCountsByParents returns direct-child open/total counts keyed by parent
 // issue ID inside projectID.
 func (d *DB) ChildCountsByParents(
@@ -321,8 +447,8 @@ func relationshipChunkPlaceholders(projectID int64, chunk []int64) (string, []an
 }
 
 // LinksByIssue returns every link involving issueID (either endpoint), ordered
-// by id ASC. Used to build the show-issue response and to back `kata unlink`'s
-// list-then-delete flow.
+// by id ASC. Used to build the show-issue response and to back the
+// list-then-delete flow used by `kata edit --remove-*`.
 func (d *DB) LinksByIssue(ctx context.Context, issueID int64) ([]Link, error) {
 	rows, err := d.QueryContext(ctx,
 		linkSelect+` WHERE from_issue_id = ? OR to_issue_id = ? ORDER BY id ASC`,

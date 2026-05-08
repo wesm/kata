@@ -159,15 +159,170 @@ func decodeEventReceived(f frame) eventReceivedMsg {
 	}
 	if p.Type == "issue.created" && len(p.Payload) > 0 {
 		out.link = parentLinkFromCreatedPayload(p.Payload, out.issueNumber, out.issueUID)
+		// Beyond the first parent link (rendered into out.link for the
+		// parent-specific refetch path), the issue.created payload may
+		// reference non-parent peers via --blocks / --blocked-by /
+		// --related. Surface every peer through the same linksChanged.Refs
+		// slice issue.links_changed uses, so an open detail pane on a
+		// peer issue refetches when someone else creates an issue that
+		// links to it.
+		if refs, refUIDs := createdPeerRefsFromPayload(p.Payload); len(refs) > 0 {
+			lc := &linksChangedParents{Refs: refs}
+			if anyNonEmpty(refUIDs) {
+				lc.RefUIDs = refUIDs
+			}
+			out.linksChanged = lc
+		}
+	}
+	if p.Type == "issue.links_changed" && len(p.Payload) > 0 {
+		out.linksChanged = parentEndpointsFromLinksChangedPayload(p.Payload)
 	}
 	return out
+}
+
+// createdPeerRefsFromPayload walks the `links` array of an issue.created
+// payload and returns every referenced peer (number + UID). Unlike
+// parentLinkFromCreatedPayload (which extracts only the first parent
+// for the dedicated parent-pane refresh path), this picks up
+// blocks / blocked_by / related peers so any open detail pane on
+// the OTHER end of a create-time link refetches promptly.
+//
+// Returns parallel-indexed slices: peerNumbers[i] and peerUIDs[i]
+// describe the same link. A peer UID of "" means the payload
+// omitted to_issue_uid (pre-kata#1 shape) — match by number only.
+func createdPeerRefsFromPayload(payload []byte) (peerNumbers []int64, peerUIDs []string) {
+	var body struct {
+		Links []struct {
+			Type       string `json:"type"`
+			ToNumber   int64  `json:"to_number"`
+			ToIssueUID string `json:"to_issue_uid,omitempty"`
+		} `json:"links"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, nil
+	}
+	if len(body.Links) == 0 {
+		return nil, nil
+	}
+	peerNumbers = make([]int64, 0, len(body.Links))
+	peerUIDs = make([]string, 0, len(body.Links))
+	for _, l := range body.Links {
+		if l.ToNumber > 0 {
+			peerNumbers = append(peerNumbers, l.ToNumber)
+			peerUIDs = append(peerUIDs, l.ToIssueUID)
+		}
+	}
+	return peerNumbers, peerUIDs
+}
+
+// parentEndpointsFromLinksChangedPayload extracts every peer issue
+// referenced by an issue.links_changed payload. parent_set and
+// parent_removed are surfaced as dedicated fields (the parent slot
+// needs both endpoints to refresh on a replace); blocks / blocked_by /
+// related adds and removes are flattened into Refs/RefUIDs so the
+// detail-refetch logic also invalidates panes on the OTHER end of
+// those mutations.
+//
+// RefUIDs runs parallel to Refs (same length, same order). When the
+// payload carries the *_uids arrays (post-kata#1), the parallel index
+// pairs (Refs[i], RefUIDs[i]) describe the same peer; UID-aware
+// matching prefers UIDs to defeat number collisions across counter
+// resets. Pre-kata#1 events that lack the *_uids arrays produce empty
+// strings at every index — consumers fall back to number-only match.
+//
+// Returns nil when the payload has no peer references.
+func parentEndpointsFromLinksChangedPayload(payload []byte) *linksChangedParents {
+	var body struct {
+		ParentSet            *int64   `json:"parent_set,omitempty"`
+		ParentSetUID         *string  `json:"parent_set_uid,omitempty"`
+		ParentRemoved        *int64   `json:"parent_removed,omitempty"`
+		ParentRemovedUID     *string  `json:"parent_removed_uid,omitempty"`
+		BlocksAdded          []int64  `json:"blocks_added,omitempty"`
+		BlocksAddedUIDs      []string `json:"blocks_added_uids,omitempty"`
+		BlocksRemoved        []int64  `json:"blocks_removed,omitempty"`
+		BlocksRemovedUIDs    []string `json:"blocks_removed_uids,omitempty"`
+		BlockedByAdded       []int64  `json:"blocked_by_added,omitempty"`
+		BlockedByAddedUIDs   []string `json:"blocked_by_added_uids,omitempty"`
+		BlockedByRemoved     []int64  `json:"blocked_by_removed,omitempty"`
+		BlockedByRemovedUIDs []string `json:"blocked_by_removed_uids,omitempty"`
+		RelatedAdded         []int64  `json:"related_added,omitempty"`
+		RelatedAddedUIDs     []string `json:"related_added_uids,omitempty"`
+		RelatedRemoved       []int64  `json:"related_removed,omitempty"`
+		RelatedRemovedUIDs   []string `json:"related_removed_uids,omitempty"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil
+	}
+	out := &linksChangedParents{}
+	if body.ParentSet != nil {
+		out.Set = *body.ParentSet
+		if body.ParentSetUID != nil {
+			out.SetUID = *body.ParentSetUID
+		}
+		out.Refs = append(out.Refs, *body.ParentSet)
+		out.RefUIDs = append(out.RefUIDs, deref(body.ParentSetUID))
+	}
+	if body.ParentRemoved != nil {
+		out.Removed = *body.ParentRemoved
+		if body.ParentRemovedUID != nil {
+			out.RemovedUID = *body.ParentRemovedUID
+		}
+		out.Refs = append(out.Refs, *body.ParentRemoved)
+		out.RefUIDs = append(out.RefUIDs, deref(body.ParentRemovedUID))
+	}
+	appendPeers(&out.Refs, &out.RefUIDs, body.BlocksAdded, body.BlocksAddedUIDs)
+	appendPeers(&out.Refs, &out.RefUIDs, body.BlocksRemoved, body.BlocksRemovedUIDs)
+	appendPeers(&out.Refs, &out.RefUIDs, body.BlockedByAdded, body.BlockedByAddedUIDs)
+	appendPeers(&out.Refs, &out.RefUIDs, body.BlockedByRemoved, body.BlockedByRemovedUIDs)
+	appendPeers(&out.Refs, &out.RefUIDs, body.RelatedAdded, body.RelatedAddedUIDs)
+	appendPeers(&out.Refs, &out.RefUIDs, body.RelatedRemoved, body.RelatedRemovedUIDs)
+	if len(out.Refs) == 0 {
+		return nil
+	}
+	// Drop RefUIDs entirely when no UID was carried for any peer — the
+	// payload is the pre-kata#1 shape, and RefUIDs[] of all-empty strings
+	// would mislead the matcher into thinking UIDs were authoritative.
+	if !anyNonEmpty(out.RefUIDs) {
+		out.RefUIDs = nil
+	}
+	return out
+}
+
+// appendPeers extends nums/uids in lockstep. When uids is shorter than
+// nums (pre-kata#1 payload that omits the *_uids field), the missing
+// slots are padded with "" so RefUIDs stays parallel to Refs.
+func appendPeers(refs *[]int64, refUIDs *[]string, nums []int64, uids []string) {
+	for i, n := range nums {
+		*refs = append(*refs, n)
+		var u string
+		if i < len(uids) {
+			u = uids[i]
+		}
+		*refUIDs = append(*refUIDs, u)
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func anyNonEmpty(s []string) bool {
+	for _, v := range s {
+		if v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // parentLinkFromCreatedPayload extracts the first parent link from an
 // issue.created payload's `links` array. Returns nil when the payload
 // has no parent link or fails to parse. fromNumber is the new issue's
 // own number — the payload only stores to_number, so we fill in from
-// at decode time so downstream matchesIssueNumber checks both ends.
+// at decode time so downstream matchesIssue checks both ends.
 func parentLinkFromCreatedPayload(payload []byte, fromNumber int64, fromIssueUID string) *linkPayload {
 	var body struct {
 		Links []struct {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -243,6 +244,160 @@ func TestHandleEventReceived_ParentLinkRefetchesOpenChildDetail(t *testing.T) {
 	})
 	if cmd == nil {
 		t.Fatal("child detail must refetch when its parent link changes")
+	}
+}
+
+// TestHandleEventReceived_LinksChangedRefetchesNewParent covers the
+// `kata edit --parent N` path: an issue.links_changed event with
+// parent_set must refresh the new parent's detail pane when it's open.
+func TestHandleEventReceived_LinksChangedRefetchesNewParent(t *testing.T) {
+	m := sseDetailFixture(7, 42)
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:    "issue.links_changed",
+		projectID:    7,
+		issueNumber:  43,
+		linksChanged: &linksChangedParents{Set: 42},
+	})
+	if cmd == nil {
+		t.Fatal("new-parent detail must refetch when a child sets parent via links_changed")
+	}
+}
+
+// TestHandleEventReceived_LinksChangedRefetchesOldAndNewParents covers
+// the parent-replace case: issue.links_changed carries both parent_set
+// and parent_removed, and either's pane (when open) should refresh.
+func TestHandleEventReceived_LinksChangedRefetchesOldAndNewParents(t *testing.T) {
+	for _, openOn := range []int64{42, 99} {
+		t.Run(fmt.Sprintf("open=%d", openOn), func(t *testing.T) {
+			m := sseDetailFixture(7, openOn)
+			cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+				eventType:    "issue.links_changed",
+				projectID:    7,
+				issueNumber:  43,
+				linksChanged: &linksChangedParents{Set: 42, Removed: 99},
+			})
+			if cmd == nil {
+				t.Fatalf("detail #%d must refetch when its end of a parent transition is touched", openOn)
+			}
+		})
+	}
+}
+
+// TestHandleEventReceived_LinksChangedRefetchesBlocksTarget covers
+// the iteration-11 fix: non-parent link mutations (blocks, blocked_by,
+// related) must also drive an other-endpoint refetch. Without scanning
+// the full Refs slice, a `kata edit X --blocks Y` would refresh X's
+// pane only — Y's pane would stay stale until a manual refresh.
+func TestHandleEventReceived_LinksChangedRefetchesBlocksTarget(t *testing.T) {
+	for _, openOn := range []int64{50, 51} {
+		t.Run(fmt.Sprintf("open=%d", openOn), func(t *testing.T) {
+			m := sseDetailFixture(7, openOn)
+			cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+				eventType:    "issue.links_changed",
+				projectID:    7,
+				issueNumber:  43,
+				linksChanged: &linksChangedParents{Refs: []int64{50, 51}},
+			})
+			if cmd == nil {
+				t.Fatalf("blocks target #%d must refetch on links_changed", openOn)
+			}
+		})
+	}
+}
+
+// TestHandleEventReceived_IssueCreatedRefreshesNonParentPeer covers
+// an iteration-14 finding: a `kata create` with --blocked-by or
+// --related folds those links into the issue.created payload, but
+// the SSE decoder only synthesized a parent-link refresh. Now every
+// peer in the payload's links array goes into linksChanged.Refs so
+// any open pane on the other end refreshes.
+func TestHandleEventReceived_IssueCreatedRefreshesNonParentPeer(t *testing.T) {
+	// Detail pane is on issue #5 — the peer of a `--related 5` create.
+	m := sseDetailFixture(7, 5)
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:    "issue.created",
+		projectID:    7,
+		issueNumber:  43,
+		linksChanged: &linksChangedParents{Refs: []int64{5}},
+	})
+	if cmd == nil {
+		t.Fatal("peer detail must refetch when another issue creates a link to it")
+	}
+}
+
+// TestHandleEventReceived_LinksChangedUIDMismatchSameNumber pins
+// UID-aware peer matching: after `kata reset-counter`, project-scoped
+// numbers can be reused across issue UIDs. An event that references
+// peer UID-B at number 5 must NOT refresh an open detail pane on
+// UID-A at number 5 even though the numbers collide. Without UID
+// awareness, Refs={5} would falsely match the watched UID-A pane.
+func TestHandleEventReceived_LinksChangedUIDMismatchSameNumber(t *testing.T) {
+	m := sseDetailFixture(7, 5)
+	m.detail.issue.UID = "01UID-A"
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:   "issue.links_changed",
+		projectID:   7,
+		issueNumber: 43,
+		linksChanged: &linksChangedParents{
+			Refs:    []int64{5},
+			RefUIDs: []string{"01UID-B"},
+		},
+	})
+	if cmd != nil {
+		t.Fatal("must not refetch when peer UID mismatches even on number collision")
+	}
+}
+
+// TestHandleEventReceived_LinksChangedUIDMatchesAuthoritatively pairs
+// with the mismatch test above: when the event carries the watched
+// detail's UID, the pane refreshes regardless of whether the
+// number-keyed Refs slice contains the detail's number.
+func TestHandleEventReceived_LinksChangedUIDMatchesAuthoritatively(t *testing.T) {
+	m := sseDetailFixture(7, 5)
+	m.detail.issue.UID = "01UID-B"
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:    "issue.links_changed",
+		projectID:    7,
+		issueNumber:  43,
+		linksChanged: &linksChangedParents{RefUIDs: []string{"01UID-B"}},
+	})
+	if cmd == nil {
+		t.Fatal("must refetch when peer UID matches detail UID")
+	}
+}
+
+// TestHandleEventReceived_LinksChangedFallsBackToNumberWhenNoUIDs
+// covers the legacy-event path: an issue.links_changed payload
+// without the *_uids fields (e.g. an event written before kata#1)
+// still drives a refetch via the number-only Refs slice.
+func TestHandleEventReceived_LinksChangedFallsBackToNumberWhenNoUIDs(t *testing.T) {
+	m := sseDetailFixture(7, 50)
+	m.detail.issue.UID = "01UID-DETAIL"
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:    "issue.links_changed",
+		projectID:    7,
+		issueNumber:  43,
+		linksChanged: &linksChangedParents{Refs: []int64{50}},
+	})
+	if cmd == nil {
+		t.Fatal("must refetch by number when event carries no peer UIDs")
+	}
+}
+
+// TestHandleEventReceived_LinksChangedChildSelfRefetches covers
+// `kata edit --remove-parent N`: the child issue's own detail must
+// refresh because issueNumber == openNumber (the parent_removed payload
+// is informational; the URL issue match drives the refetch).
+func TestHandleEventReceived_LinksChangedChildSelfRefetches(t *testing.T) {
+	m := sseDetailFixture(7, 43)
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		eventType:    "issue.links_changed",
+		projectID:    7,
+		issueNumber:  43,
+		linksChanged: &linksChangedParents{Removed: 99},
+	})
+	if cmd == nil {
+		t.Fatal("child detail must refetch on parent removal via links_changed")
 	}
 }
 

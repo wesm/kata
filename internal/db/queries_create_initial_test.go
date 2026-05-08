@@ -151,6 +151,42 @@ func TestCreateIssue_DuplicateInitialLinksAreDeduped(t *testing.T) {
 	assert.Len(t, payload.Links, 1)
 }
 
+// TestCreateIssue_RelatedIncomingNormalizes covers a roborev-flagged
+// case from kata#1: the API documents Incoming=true on related links as
+// a no-op (related is symmetric), but the runtime previously treated
+// (related, N, false) and (related, N, true) as distinct entries —
+// both targeting the same canonical (smaller-id, larger-id) row, so the
+// second insert blew up on the UNIQUE index. This pins that the second
+// entry collapses cleanly to a no-op.
+func TestCreateIssue_RelatedIncomingNormalizes(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	peer := makeIssue(t, ctx, d, p.ID, "peer", "tester")
+
+	child, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "child", Author: "tester",
+		Links: []db.InitialLink{
+			{Type: "related", ToNumber: peer.Number, Incoming: false},
+			{Type: "related", ToNumber: peer.Number, Incoming: true},
+		},
+	})
+	require.NoError(t, err, "related Incoming=true must collapse to the same link, not error")
+
+	links, err := d.LinksByIssue(ctx, child.ID)
+	require.NoError(t, err)
+	assert.Len(t, links, 1, "exactly one related link should be persisted")
+
+	payload := unmarshalPayload[struct {
+		Links []struct {
+			Type     string `json:"type"`
+			ToNumber int64  `json:"to_number"`
+			Incoming bool   `json:"incoming,omitempty"`
+		} `json:"links"`
+	}](t, evt.Payload)
+	require.Len(t, payload.Links, 1)
+	assert.Equal(t, "related", payload.Links[0].Type)
+	assert.False(t, payload.Links[0].Incoming, "related entries must report incoming=false in the payload")
+}
+
 func TestCreateIssue_EmptyStringOwnerNormalizesToNil(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 

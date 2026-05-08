@@ -1749,7 +1749,7 @@ func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 	}
 	pid := m.detail.scopePID
 	num := m.detail.issue.Number
-	if !msg.matchesIssueNumber(num) {
+	if !msg.matchesIssue(num, m.detail.issue.UID) {
 		return nil
 	}
 	gen := m.detail.gen
@@ -1761,12 +1761,69 @@ func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 	)
 }
 
-func (msg eventReceivedMsg) matchesIssueNumber(number int64) bool {
+// matchesIssue reports whether the event names the watched issue.
+// number / uid describe the open detail pane; uid is "" when the
+// caller has no UID handy (legacy callsites). UID-aware matching for
+// linksChanged peers prefers UIDs when the event carries them, since
+// project-scoped numbers can collide across `kata reset-counter`.
+// Numbers remain authoritative for the URL issue match (msg.issueNumber)
+// and the parent link endpoints, which are project-fresh by construction.
+func (msg eventReceivedMsg) matchesIssue(number int64, uid string) bool {
 	if msg.issueNumber != 0 && msg.issueNumber == number {
 		return true
 	}
-	from, to, ok := msg.parentLinkEndpoints()
-	return ok && (from == number || to == number)
+	if from, to, ok := msg.parentLinkEndpoints(); ok && (from == number || to == number) {
+		return true
+	}
+	// issue.links_changed surfaces every peer (parent set/removed plus
+	// blocks/blocked_by/related adds and removes). Set/Removed and Refs
+	// are checked so unit tests that construct linksChangedParents
+	// without running it through the parser stay valid (Refs is the
+	// parser's flattened view; Set/Removed is the parent-specific view).
+	if msg.linksChanged != nil {
+		// UID-authoritative path: when the event carries any peer UID,
+		// match exclusively on UID. A pre-reset event whose number
+		// happens to collide with the watched detail must not refresh
+		// it; only a UID match should drive the refetch.
+		if hasAnyPeerUID(msg.linksChanged) {
+			if uid == "" {
+				return false
+			}
+			if msg.linksChanged.SetUID == uid || msg.linksChanged.RemovedUID == uid {
+				return true
+			}
+			for _, u := range msg.linksChanged.RefUIDs {
+				if u == uid {
+					return true
+				}
+			}
+			return false
+		}
+		// Fallback: pre-kata#1 events without *_uid / *_uids fields.
+		if msg.linksChanged.Set == number || msg.linksChanged.Removed == number {
+			return true
+		}
+		for _, n := range msg.linksChanged.Refs {
+			if n == number {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasAnyPeerUID reports whether the linksChanged shape carries at
+// least one peer UID, indicating UID-authoritative matching applies.
+func hasAnyPeerUID(lc *linksChangedParents) bool {
+	if lc.SetUID != "" || lc.RemovedUID != "" {
+		return true
+	}
+	for _, u := range lc.RefUIDs {
+		if u != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // parentLinkEndpoints returns the (from, to) pair when the event is

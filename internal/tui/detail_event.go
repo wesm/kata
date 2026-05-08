@@ -39,6 +39,7 @@ var eventDescribers = map[string]eventDescriber{
 	"issue.unlabeled":        payloadDesc("unlabeled", "label"),
 	"issue.linked":           func(e EventLogEntry) string { return "linked " + linkPayloadDesc(e) },
 	"issue.unlinked":         func(e EventLogEntry) string { return "unlinked " + linkPayloadDesc(e) },
+	"issue.links_changed":    linksChangedDesc,
 	"issue.assigned":         payloadDesc("assigned", "owner"),
 	"issue.unassigned":       staticDesc("unassigned"),
 	"issue.priority_set":     prioritySetDesc,
@@ -46,6 +47,86 @@ var eventDescribers = map[string]eventDescriber{
 	"issue.updated":          staticDesc("updated"),
 	"issue.soft_deleted":     staticDesc("deleted"),
 	"issue.restored":         staticDesc("restored"),
+}
+
+// linksChangedDesc renders the aggregated issue.links_changed event from
+// the PATCH path (`kata edit`) into a one-line summary that surfaces every
+// add/remove direction. Each segment reads as "<verb> <type>:#<n>", so a
+// single edit that swaps a parent and adds a related might render as
+// "links: parent #5→#10, +related #7".
+func linksChangedDesc(e EventLogEntry) string {
+	if e.Payload == nil {
+		return "links changed"
+	}
+	parts := make([]string, 0, 8)
+	if from, to, ok := payloadParentReplace(e); ok {
+		parts = append(parts, fmt.Sprintf("parent #%d→#%d", from, to))
+	} else if to, ok := payloadInt(e, "parent_set"); ok {
+		parts = append(parts, fmt.Sprintf("+parent #%d", to))
+	} else if from, ok := payloadInt(e, "parent_removed"); ok {
+		parts = append(parts, fmt.Sprintf("-parent #%d", from))
+	}
+	parts = append(parts, linksChangedDirParts(e, "blocks_added", "+blocks")...)
+	parts = append(parts, linksChangedDirParts(e, "blocks_removed", "-blocks")...)
+	parts = append(parts, linksChangedDirParts(e, "blocked_by_added", "+blocked_by")...)
+	parts = append(parts, linksChangedDirParts(e, "blocked_by_removed", "-blocked_by")...)
+	parts = append(parts, linksChangedDirParts(e, "related_added", "+related")...)
+	parts = append(parts, linksChangedDirParts(e, "related_removed", "-related")...)
+	if len(parts) == 0 {
+		return "links unchanged"
+	}
+	return "links: " + strings.Join(parts, ", ")
+}
+
+// payloadParentReplace returns (from, to) when both parent_removed and
+// parent_set are present in one event — the parent-replace case. Returns
+// ok=false when only one (or neither) is present, so callers can render
+// the +parent / -parent variants instead.
+func payloadParentReplace(e EventLogEntry) (from, to int64, ok bool) {
+	t, hasTo := payloadInt(e, "parent_set")
+	f, hasFrom := payloadInt(e, "parent_removed")
+	if hasTo && hasFrom {
+		return f, t, true
+	}
+	return 0, 0, false
+}
+
+// linksChangedDirParts extracts an int slice payload field (blocks_added,
+// related_removed, etc.) and renders one segment per entry using the given
+// verb-prefixed label (e.g. "+blocks #5").
+func linksChangedDirParts(e EventLogEntry, key, label string) []string {
+	nums := payloadIntSlice(e, key)
+	if len(nums) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(nums))
+	for _, n := range nums {
+		out = append(out, fmt.Sprintf("%s #%d", label, n))
+	}
+	return out
+}
+
+// payloadIntSlice reads a numeric-array field out of the event payload.
+// Missing keys, non-array values, and a nil payload all return nil.
+func payloadIntSlice(e EventLogEntry, key string) []int64 {
+	if e.Payload == nil {
+		return nil
+	}
+	raw, ok := e.Payload[key]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int64, 0, len(arr))
+	for _, v := range arr {
+		if n, ok := numberFromAny(v); ok {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // prioritySetDesc renders "priority set to N" or "priority N → M" when the

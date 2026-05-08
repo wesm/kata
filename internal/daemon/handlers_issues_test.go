@@ -2,6 +2,8 @@ package daemon_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -108,11 +110,954 @@ func TestIssues_PatchEditTitleAndBody(t *testing.T) {
 	assert.Contains(t, string(bs), `"title":"new"`)
 }
 
+// TestEditIssue_FieldOnlyResponseOmitsChanges pins the wire contract that
+// `changes` is only present on responses to relationship-bearing PATCHes.
+// A title-only edit must not serialize a `changes` key at all (older
+// clients keyed off its presence to detect link mutations).
+func TestEditIssue_FieldOnlyResponseOmitsChanges(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "x", "title": "old"})
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""),
+		map[string]any{"actor": "x", "title": "new"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(bs, &raw))
+	_, present := raw["changes"]
+	assert.False(t, present, "field-only PATCH must not serialize a `changes` key, got: %s", string(bs))
+}
+
+// TestEditIssue_EmptyLinksDeltaResponseOmitsChanges pins the wire
+// contract for the edge case where a client sends `links_delta: {}`
+// (the field is present but no mutation requested). The response
+// must NOT include `changes`, matching the field-only PATCH shape —
+// the gate is "did the request actually ask for a link op", not
+// "is the links_delta field non-nil". Otherwise older clients keying
+// off the presence of `changes` would falsely classify these PATCHes
+// as relationship mutations.
+func TestEditIssue_EmptyLinksDeltaResponseOmitsChanges(t *testing.T) {
+	h, pid := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	_, _ = postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "x", "title": "old"})
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "x",
+		"title":       "new",
+		"links_delta": map[string]any{},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(bs, &raw))
+	_, present := raw["changes"]
+	assert.False(t, present, "empty links_delta must not serialize a `changes` key, got: %s", string(bs))
+}
+
 func TestCreateIssue_BlankActorIs400(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	resp, bs := postJSON(t, h.ts.(*httptest.Server), issuesURL(pid),
 		map[string]any{"actor": "   ", "title": "x"})
 	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
+}
+
+// TestEditIssue_LinksDelta_AddBlocks pins the smallest end-to-end behavior of
+// the new PATCH-with-links shape: a single `add_blocks` entry in `links_delta`
+// creates the corresponding link and reports it back in the response's
+// `changes` block. This is the foundation the larger atomic PATCH builds on.
+func TestEditIssue_LinksDelta_AddBlocks(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	// Create a second issue so we have a target to block.
+	resp, bs := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "blocked target"})
+	require.Equalf(t, 200, resp.StatusCode, "create #2: %s", string(bs))
+
+	resp, bs = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"add_blocks": []int64{2},
+		},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Issue struct {
+			Number int64 `json:"number"`
+		} `json:"issue"`
+		Changes struct {
+			BlocksAdded []int64 `json:"blocks_added"`
+		} `json:"changes"`
+		Changed bool `json:"changed"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Equal(t, int64(1), out.Issue.Number)
+	assert.True(t, out.Changed, "changed flag should be true")
+	assert.Equal(t, []int64{2}, out.Changes.BlocksAdded)
+
+	// Verify the link persisted: GET issue 1 and inspect its links list.
+	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	require.Equal(t, 200, getResp.StatusCode)
+	var show struct {
+		Links []struct {
+			Type       string `json:"type"`
+			FromNumber int64  `json:"from_number"`
+			ToNumber   int64  `json:"to_number"`
+		} `json:"links"`
+	}
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
+	require.Len(t, show.Links, 1)
+	assert.Equal(t, "blocks", show.Links[0].Type)
+	assert.Equal(t, int64(1), show.Links[0].FromNumber)
+	assert.Equal(t, int64(2), show.Links[0].ToNumber)
+}
+
+// TestEditIssue_LinksDelta_AddBlockedBy verifies the inverse-direction add:
+// `add_blocked_by: [N]` on URL issue X stores a `blocks` link from N to X
+// (i.e. N blocks X). The Changes block reports it under blocked_by_added.
+func TestEditIssue_LinksDelta_AddBlockedBy(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "blocker"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"add_blocked_by": []int64{2},
+		},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			BlockedByAdded []int64 `json:"blocked_by_added"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Equal(t, []int64{2}, out.Changes.BlockedByAdded)
+
+	// Persistence: GET issue 1, expect a blocks link FROM 2 TO 1.
+	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	var show struct {
+		Links []struct {
+			Type       string `json:"type"`
+			FromNumber int64  `json:"from_number"`
+			ToNumber   int64  `json:"to_number"`
+		} `json:"links"`
+	}
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
+	require.Len(t, show.Links, 1)
+	assert.Equal(t, "blocks", show.Links[0].Type)
+	assert.Equal(t, int64(2), show.Links[0].FromNumber)
+	assert.Equal(t, int64(1), show.Links[0].ToNumber)
+}
+
+// TestEditIssue_LinksDelta_AddRelated covers the symmetric link type. The
+// related link is canonical-ordered server-side; the Changes block reports
+// the target as the agent passed it (issue number from the operating issue's
+// POV), regardless of canonical storage order.
+func TestEditIssue_LinksDelta_AddRelated(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "other"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"add_related": []int64{2},
+		},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			RelatedAdded []int64 `json:"related_added"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Equal(t, []int64{2}, out.Changes.RelatedAdded)
+}
+
+// TestEditIssue_LinksDelta_SetParent sets the parent slot. With no existing
+// parent, set_parent inserts a parent link. Changes reports parent_set.
+func TestEditIssue_LinksDelta_SetParent(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "parent"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	parentNum := int64(2)
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"set_parent": parentNum,
+		},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			ParentSet *int64 `json:"parent_set"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	require.NotNil(t, out.Changes.ParentSet)
+	assert.Equal(t, parentNum, *out.Changes.ParentSet)
+}
+
+// TestEditIssue_LinksDelta_RemoveBlocksAfterPeerSoftDeleted pins that
+// soft-deleting one end of a link does NOT prevent the other end from
+// removing the link via `kata edit --remove-blocks N`. The link row is
+// real and the user can still ask to clean it up; the peer's open/
+// closed/deleted state is irrelevant for addressing the link.
+func TestEditIssue_LinksDelta_RemoveBlocksAfterPeerSoftDeleted(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "peer"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// #1 blocks #2.
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"add_blocks": []int64{2}},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Soft-delete #2.
+	delResp := postWithHeader(t, ts, issueURL(pid, 2, "actions/delete"),
+		map[string]string{"X-Kata-Confirm": "DELETE #2"},
+		map[string]any{"actor": "tester"})
+	require.Equalf(t, 200, delResp.status, "delete: %s", string(delResp.body))
+
+	// Now remove the link from #1's side. Without soft-delete-tolerance,
+	// the per-target lookup returned ErrNotFound and the remove silently
+	// no-op'd, leaving the link orphaned.
+	rmResp, rmBs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_blocks": []int64{2}},
+	})
+	require.Equalf(t, 200, rmResp.StatusCode, "remove: %s", string(rmBs))
+	var out struct {
+		Changes struct {
+			BlocksRemoved []int64 `json:"blocks_removed"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(rmBs, &out))
+	assert.Equal(t, []int64{2}, out.Changes.BlocksRemoved,
+		"the link to a soft-deleted peer must still be removable")
+}
+
+// TestShowIssue_LinkPeerSoftDeletedReturns200 pins that GET on an
+// issue whose linked peer is soft-deleted still returns the surviving
+// issue successfully. Iteration-22 surfaced that the show path was
+// thought to be using a deleted-tolerant lookup; this test makes the
+// promise explicit so a future regression can't silently reintroduce
+// a 500.
+func TestShowIssue_LinkPeerSoftDeletedReturns200(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "peer"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// #1 blocks #2.
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"add_blocks": []int64{2}},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Soft-delete #2.
+	delResp := postWithHeader(t, ts, issueURL(pid, 2, "actions/delete"),
+		map[string]string{"X-Kata-Confirm": "DELETE #2"},
+		map[string]any{"actor": "tester"})
+	require.Equalf(t, 200, delResp.status, "delete: %s", string(delResp.body))
+
+	// Show #1 — the surviving end. Must succeed (200) and surface the
+	// link to the soft-deleted peer; the peer's number rides on the
+	// link row even though its issue row is hidden.
+	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	showBody, err := io.ReadAll(getResp.Body)
+	require.NoError(t, err)
+	require.Equalf(t, 200, getResp.StatusCode, "show survivor must not 500: %s", string(showBody))
+	var out struct {
+		Issue struct {
+			Number int64 `json:"number"`
+		} `json:"issue"`
+		Links []struct {
+			Type     string `json:"type"`
+			ToNumber int64  `json:"to_number"`
+		} `json:"links"`
+	}
+	require.NoError(t, json.Unmarshal(showBody, &out))
+	assert.Equal(t, int64(1), out.Issue.Number)
+	require.Len(t, out.Links, 1, "link to soft-deleted peer must still appear")
+	assert.Equal(t, "blocks", out.Links[0].Type)
+	assert.Equal(t, int64(2), out.Links[0].ToNumber)
+}
+
+// TestShowIssue_ParentPeerSoftDeletedReturns200 pins the same property
+// for the parent slot: a child whose parent is soft-deleted must still
+// render through GET. Companion of the link-peer test above.
+func TestShowIssue_ParentPeerSoftDeletedReturns200(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	// #1 already exists. Make #2, set #2's parent to #1, then soft-delete #1.
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "child"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = patchJSON(t, ts, issueURL(pid, 2, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"set_parent": int64(1)},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+	delResp := postWithHeader(t, ts, issueURL(pid, 1, "actions/delete"),
+		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+		map[string]any{"actor": "tester"})
+	require.Equalf(t, 200, delResp.status, "delete: %s", string(delResp.body))
+
+	getResp, err := http.Get(ts.URL + issueURL(pid, 2, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	showBody, err := io.ReadAll(getResp.Body)
+	require.NoError(t, err)
+	require.Equalf(t, 200, getResp.StatusCode, "child show must not 500 with soft-deleted parent: %s", string(showBody))
+	var out struct {
+		Parent *struct {
+			Number int64 `json:"number"`
+		} `json:"parent"`
+	}
+	require.NoError(t, json.Unmarshal(showBody, &out))
+	require.NotNil(t, out.Parent, "soft-deleted parent must still surface in show")
+	assert.Equal(t, int64(1), out.Parent.Number)
+}
+
+// TestEditIssue_LinksDelta_SetParent_RejectsCycle pins that set_parent
+// rejects an edit that would create a parent cycle. Builds a graph where
+// #2 is a descendant of #1 (#2's parent = #1) and asks #1 to set its
+// parent to #2; the edit must fail with 400 validation, leaving the
+// existing parent state untouched.
+func TestEditIssue_LinksDelta_SetParent_RejectsCycle(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "child"})
+	require.Equal(t, 200, resp.StatusCode)
+	// #2's parent = #1 (so #1 is an ancestor of #2).
+	resp, _ = patchJSON(t, ts, issueURL(pid, 2, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"set_parent": int64(1)},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Now ask #1 to set its parent to #2 — that would create the cycle
+	// #1 → #2 → #1.
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"set_parent": int64(2)},
+	})
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
+
+	// #1 must still have no parent (rollback semantics).
+	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	var show struct {
+		Parent any `json:"parent,omitempty"`
+	}
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
+	assert.Nil(t, show.Parent, "#1's parent must remain unset after the cycle rejection")
+}
+
+// TestEditIssue_LinksDelta_SetParent_ReplaceRecordsBoth pins that
+// replacing an existing parent surfaces BOTH parent_set (new) and
+// parent_removed (old) in the changes block. Without this, consumers
+// of issue.links_changed and the digest accounting see a parent
+// replace as a pure add and lose track of the prior parent.
+func TestEditIssue_LinksDelta_SetParent_ReplaceRecordsBoth(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "old-parent"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "new-parent"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Set #1's parent to #2.
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"set_parent": int64(2)},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Replace: set parent to #3. The change payload must list both #3
+	// (set) and #2 (removed).
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"set_parent": int64(3)},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			ParentSet     *int64 `json:"parent_set"`
+			ParentRemoved *int64 `json:"parent_removed"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	require.NotNil(t, out.Changes.ParentSet, "parent_set must be present on replace")
+	assert.Equal(t, int64(3), *out.Changes.ParentSet)
+	require.NotNil(t, out.Changes.ParentRemoved, "parent_removed must be present on replace")
+	assert.Equal(t, int64(2), *out.Changes.ParentRemoved)
+}
+
+// TestEditIssue_LinksDelta_RemoveParent_StrictSuccess removes the parent
+// link when the asserted current parent matches reality.
+func TestEditIssue_LinksDelta_RemoveParent_StrictSuccess(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "parent"})
+	require.Equal(t, 200, resp.StatusCode)
+	// Set issue 1's parent to 2 first.
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"set_parent": int64(2)},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Remove asserting #2. Must succeed.
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_parent": int64(2)},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			ParentRemoved *int64 `json:"parent_removed"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	require.NotNil(t, out.Changes.ParentRemoved)
+	assert.Equal(t, int64(2), *out.Changes.ParentRemoved)
+}
+
+// TestEditIssue_LinksDelta_RemoveParent_MismatchIs409 fails loudly when the
+// asserted parent does not match the current parent. This is the optimistic-
+// concurrency safety check that protects agents acting on stale state.
+func TestEditIssue_LinksDelta_RemoveParent_MismatchIs409(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "parent"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "wrong-parent"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"set_parent": int64(2)},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Assert #3 even though current parent is #2 → 409.
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_parent": int64(3)},
+	})
+	assertAPIError(t, resp.StatusCode, bs, 409, "parent_mismatch")
+}
+
+// TestEditIssue_LinksDelta_RemoveBlocks removes a `blocks` link from the
+// URL issue to the target. Idempotent: removing a missing link is a no-op
+// (handled by a separate test).
+func TestEditIssue_LinksDelta_RemoveBlocks(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "blocked"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"add_blocks": []int64{2}},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_blocks": []int64{2}},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			BlocksRemoved []int64 `json:"blocks_removed"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Equal(t, []int64{2}, out.Changes.BlocksRemoved)
+}
+
+// TestEditIssue_LinksDelta_RemoveBlocks_NonexistentTargetIsNoop pins
+// the contract that the idempotent --remove-blocks /-blocked-by /
+// -related path treats "target issue doesn't exist" the same as
+// "edge doesn't exist": both succeed as no-ops. The desired end state
+// — "no link from this issue to N" — already holds when there is no
+// N at all. This matches the symmetry the CLI documents under
+// "(idempotent)". Strict --remove-parent retains its loud-failure
+// semantics; that path asserts a fact about the current parent and
+// is covered by the parent-mismatch test elsewhere.
+func TestEditIssue_LinksDelta_RemoveBlocks_NonexistentTargetIsNoop(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_blocks": []int64{99}},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "remove against missing target must succeed: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			BlocksRemoved []int64 `json:"blocks_removed"`
+		} `json:"changes"`
+		Changed bool `json:"changed"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Empty(t, out.Changes.BlocksRemoved, "no edge → no change reported")
+	assert.False(t, out.Changed, "missing-target idempotent remove must not flip changed")
+}
+
+// TestEditIssue_LinksDelta_RemoveBlocks_IdempotentNoop succeeds and reports
+// no changes when the link doesn't exist.
+func TestEditIssue_LinksDelta_RemoveBlocks_IdempotentNoop(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "other"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_blocks": []int64{2}},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			BlocksRemoved []int64 `json:"blocks_removed"`
+		} `json:"changes"`
+		Changed bool `json:"changed"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Empty(t, out.Changes.BlocksRemoved)
+	assert.False(t, out.Changed, "no-op remove should not flip changed")
+}
+
+// TestEditIssue_LinksDelta_RemoveBlockedBy removes the inverse-direction
+// link: a `blocks` link FROM the target TO the URL issue.
+func TestEditIssue_LinksDelta_RemoveBlockedBy(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "blocker"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"add_blocked_by": []int64{2}},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_blocked_by": []int64{2}},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			BlockedByRemoved []int64 `json:"blocked_by_removed"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Equal(t, []int64{2}, out.Changes.BlockedByRemoved)
+}
+
+// TestEditIssue_LinksDelta_RemoveRelated removes a related link.
+// Storage canonicalization is invisible to the caller.
+func TestEditIssue_LinksDelta_RemoveRelated(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "other"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"add_related": []int64{2}},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"remove_related": []int64{2}},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changes struct {
+			RelatedRemoved []int64 `json:"related_removed"`
+		} `json:"changes"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.Equal(t, []int64{2}, out.Changes.RelatedRemoved)
+}
+
+// TestEditIssue_LinksDelta_ConflictAddRemoveSameTarget rejects a delta that
+// asks to both add and remove the same (type, target) pair in one call.
+// Caught client-side-of-DB before any link mutation runs.
+func TestEditIssue_LinksDelta_ConflictAddRemoveSameTarget(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "target"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"add_blocks":    []int64{2},
+			"remove_blocks": []int64{2},
+		},
+	})
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
+}
+
+// TestEditIssue_LinksDelta_ConflictParentBoth rejects set_parent + remove_parent
+// in the same call.
+func TestEditIssue_LinksDelta_ConflictParentBoth(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "p"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"set_parent":    int64(2),
+			"remove_parent": int64(2),
+		},
+	})
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
+}
+
+// TestEditIssue_LinksDelta_SelfLinkRejected rejects an add that targets the
+// URL issue itself.
+func TestEditIssue_LinksDelta_SelfLinkRejected(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":       "tester",
+		"links_delta": map[string]any{"add_blocks": []int64{1}},
+	})
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
+}
+
+// TestEditIssue_Priority_SetViaPATCH sets priority via PATCH with set_priority
+// instead of the legacy priority action endpoint.
+func TestEditIssue_Priority_SetViaPATCH(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":        "tester",
+		"set_priority": int64(1),
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	var show struct {
+		Issue struct {
+			Priority *int64 `json:"priority"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
+	require.NotNil(t, show.Issue.Priority)
+	assert.Equal(t, int64(1), *show.Issue.Priority)
+}
+
+// TestEditIssue_Priority_ClearViaPATCH clears priority via clear_priority=true.
+func TestEditIssue_Priority_ClearViaPATCH(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":        "tester",
+		"set_priority": int64(2),
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":          "tester",
+		"clear_priority": true,
+	})
+	require.Equalf(t, 200, resp.StatusCode, "clear: %s", string(bs))
+
+	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	var show struct {
+		Issue struct {
+			Priority *int64 `json:"priority"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
+	assert.Nil(t, show.Issue.Priority)
+}
+
+// TestEditIssue_Priority_BothFlagsRejected rejects passing both set_priority
+// and clear_priority in one call.
+func TestEditIssue_Priority_BothFlagsRejected(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":          "tester",
+		"set_priority":   int64(2),
+		"clear_priority": true,
+	})
+	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
+}
+
+// TestEditIssue_FieldsUnchanged_NoOp covers an iteration-11 finding:
+// a PATCH that includes a field flag whose value already matches the
+// row must NOT emit issue.updated, must NOT bump updated_at, and must
+// NOT report changed=true. Without this, a request like
+// `kata edit X --title "(current title)" --remove-blocks Y` fires
+// hooks/digest activity for a non-mutation, breaking the
+// idempotency contract the patch establishes.
+func TestEditIssue_FieldsUnchanged_NoOp(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+
+	cursor := highestEventID(t, ts, pid)
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"title": "x", // matches the seed title from bootstrapProjectWithIssue
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Changed bool `json:"changed"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	assert.False(t, out.Changed,
+		"a no-op title (already current) must not flip changed=true")
+
+	events := eventsAfter(t, ts, pid, cursor)
+	for _, e := range events {
+		assert.NotEqualf(t, "issue.updated", e.Type,
+			"a no-op title must not emit issue.updated")
+	}
+}
+
+// TestEditIssue_AggregatedEvent_PayloadCarriesUIDs pins that the
+// aggregated payload includes stable UIDs for every referenced peer in
+// addition to the user-friendly numbers. UIDs are required for the
+// purge cleanup query to identify peers safely after a project's number
+// sequence has been reset (numbers can collide across resets; UIDs
+// cannot).
+func TestEditIssue_AggregatedEvent_PayloadCarriesUIDs(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "parent"})
+	require.Equal(t, 200, resp.StatusCode)
+	resp, _ = postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "block-target"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	cursor := highestEventID(t, ts, pid)
+	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"set_parent": int64(2),
+			"add_blocks": []int64{3},
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	events := eventsAfter(t, ts, pid, cursor)
+	var sawUIDs bool
+	for _, e := range events {
+		if e.Type != "issue.links_changed" {
+			continue
+		}
+		payload := e.PayloadString()
+		// Both UID fields must be present alongside the numeric forms.
+		assert.Contains(t, payload, `"parent_set":2`)
+		assert.Contains(t, payload, `"parent_set_uid":`)
+		assert.Contains(t, payload, `"blocks_added":[3]`)
+		assert.Contains(t, payload, `"blocks_added_uids":[`)
+		sawUIDs = true
+	}
+	require.True(t, sawUIDs, "issue.links_changed event must include UID-keyed fields")
+}
+
+// TestEditIssue_Response_ExposesAllEvents covers an iteration-13 roborev
+// finding: a PATCH that touches multiple event classes (e.g. priority +
+// links) used to expose only the LAST emitted event in the response,
+// silently hiding the priority transition from any client that read
+// `event` rather than the events stream. The response now carries
+// `events: []` with every emitted event in order; `event` is retained
+// pointing at the final entry as a back-compat alias.
+func TestEditIssue_Response_ExposesAllEvents(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "target"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor":        "tester",
+		"set_priority": int64(1),
+		"links_delta":  map[string]any{"add_blocks": []int64{2}},
+	})
+	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
+
+	var out struct {
+		Event *struct {
+			Type string `json:"type"`
+		} `json:"event"`
+		Events []struct {
+			Type string `json:"type"`
+		} `json:"events"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	require.GreaterOrEqualf(t, len(out.Events), 2, "events must include both transitions: %s", string(bs))
+
+	types := make([]string, 0, len(out.Events))
+	for _, e := range out.Events {
+		types = append(types, e.Type)
+	}
+	assert.Contains(t, types, "issue.priority_set")
+	assert.Contains(t, types, "issue.links_changed")
+	require.NotNil(t, out.Event)
+	assert.Equal(t, types[len(types)-1], out.Event.Type,
+		"event compatibility alias must point at the last emitted event")
+}
+
+// TestEditIssue_AggregatedEvent_OnePerEdit verifies that one PATCH with
+// multiple link mutations produces exactly one issue.links_changed event
+// (not one event per link). The payload lists every applied add and remove.
+func TestEditIssue_AggregatedEvent_OnePerEdit(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	for i := 0; i < 4; i++ {
+		resp, _ := postJSON(t, ts, issuesURL(pid),
+			map[string]any{"actor": "tester", "title": fmt.Sprintf("t%d", i)})
+		require.Equal(t, 200, resp.StatusCode)
+	}
+
+	// Snapshot the highest-known event ID before the PATCH so we can read
+	// only the events emitted by the edit under test.
+	cursorBefore := highestEventID(t, ts, pid)
+
+	resp, _ := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"links_delta": map[string]any{
+			"add_blocks":     []int64{2, 3},
+			"add_blocked_by": []int64{4},
+			"add_related":    []int64{5},
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode)
+
+	events := eventsAfter(t, ts, pid, cursorBefore)
+	var linkEventCount int
+	var sawAggregated bool
+	for _, e := range events {
+		switch e.Type {
+		case "issue.links_changed":
+			sawAggregated = true
+			payload := e.PayloadString()
+			assert.Contains(t, payload, `"blocks_added":[2,3]`)
+			assert.Contains(t, payload, `"blocked_by_added":[4]`)
+			assert.Contains(t, payload, `"related_added":[5]`)
+		case "issue.linked", "issue.unlinked":
+			linkEventCount++
+		}
+	}
+	assert.True(t, sawAggregated, "one issue.links_changed event must be emitted")
+	assert.Zero(t, linkEventCount, "no per-link issue.linked/issue.unlinked events on PATCH path")
+}
+
+// eventTransport is the minimal projection we read from the events list
+// endpoint for assertion purposes. Payload arrives as a JSON object on
+// the wire (see api.EventOut), so we hold it as RawMessage and convert
+// to string only for substring assertions.
+type eventTransport struct {
+	ID      int64           `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func (e eventTransport) PayloadString() string { return string(e.Payload) }
+
+// highestEventID returns the largest event ID currently visible for the
+// project; subsequent eventsAfter calls use this as the cursor.
+func highestEventID(t *testing.T, ts *httptest.Server, pid int64) int64 {
+	t.Helper()
+	resp, err := http.Get(ts.URL + fmt.Sprintf("/api/v1/projects/%d/events?after_id=0&limit=1000", pid)) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var b struct {
+		Events []eventTransport `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	if len(b.Events) == 0 {
+		return 0
+	}
+	return b.Events[len(b.Events)-1].ID
+}
+
+// eventsAfter returns every event for the project with ID > after.
+func eventsAfter(t *testing.T, ts *httptest.Server, pid int64, after int64) []eventTransport {
+	t.Helper()
+	resp, err := http.Get(ts.URL + fmt.Sprintf("/api/v1/projects/%d/events?after_id=%d&limit=1000", pid, after)) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var b struct {
+		Events []eventTransport `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&b))
+	return b.Events
+}
+
+// TestEditIssue_Atomic_RollsBackOnLinkFailure verifies that a delta
+// containing both a valid field change and a link op that fails (here:
+// add_blocks targeting a missing issue → 404) leaves the issue completely
+// unchanged. The field change must NOT land.
+func TestEditIssue_Atomic_RollsBackOnLinkFailure(t *testing.T) {
+	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	resp, _ := postJSON(t, ts, issuesURL(pid),
+		map[string]any{"actor": "tester", "title": "neighbor"})
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Edit #1 with both a title change AND a link to a nonexistent #99.
+	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+		"actor": "tester",
+		"title": "must-not-stick",
+		"links_delta": map[string]any{
+			"add_blocks": []int64{2, 99}, // 99 is missing → must fail
+		},
+	})
+	require.GreaterOrEqualf(t, resp.StatusCode, 400, "missing target must fail: %s", string(bs))
+
+	// Title must NOT have changed; no link to #2 either. The whole edit rolls back.
+	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	var show struct {
+		Issue struct {
+			Title string `json:"title"`
+		} `json:"issue"`
+		Links []struct {
+			Type string `json:"type"`
+		} `json:"links"`
+	}
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
+	assert.NotEqual(t, "must-not-stick", show.Issue.Title,
+		"title change must roll back when a same-call link op fails")
+	assert.Empty(t, show.Links, "no link should have been committed")
 }
 
 func TestEditIssue_BlankActorIs400(t *testing.T) {

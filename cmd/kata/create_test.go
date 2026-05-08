@@ -65,6 +65,43 @@ func TestCreate_WithInitialLabelsAndParent(t *testing.T) {
 	assert.True(t, sawBlocks, "blocks link from #3 to #2 must be persisted")
 }
 
+// TestCreate_WithBlockedByAndRelated covers the new repeatable link flags
+// added by the relationship-flag consolidation. `--blocked-by N` records
+// "this new issue is blocked by N" — i.e. the link runs FROM N TO the new
+// issue. `--related N` records the symmetric tie.
+func TestCreate_WithBlockedByAndRelated(t *testing.T) {
+	env, dir := setupCLIEnv(t)
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "blocker") // #1
+	createIssue(t, env, pid, "peer")    // #2
+
+	out := runCLI(t, env, dir, "create", "child",
+		"--blocked-by", "1",
+		"--related", "2",
+	)
+	assert.Contains(t, out, "child")
+
+	b := fetchIssueViaHTTP(t, env, pid, 3)
+
+	var sawBlockedBy, sawRelated bool
+	for _, l := range b.Links {
+		switch l.Type {
+		case "blocks":
+			if l.FromNumber == 1 && l.ToNumber == 3 {
+				sawBlockedBy = true
+			}
+		case "related":
+			// Related is canonical-ordered server-side; either ordering
+			// is correct so long as the endpoints are 2 and 3.
+			if (l.FromNumber == 2 && l.ToNumber == 3) || (l.FromNumber == 3 && l.ToNumber == 2) {
+				sawRelated = true
+			}
+		}
+	}
+	assert.True(t, sawBlockedBy, "blocks link from #1 to #3 (i.e. blocked-by) must be persisted")
+	assert.True(t, sawRelated, "related link between #2 and #3 must be persisted")
+}
+
 func TestCreate_WithIdempotencyKeyReusesOnRepeat(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 
@@ -78,6 +115,32 @@ func TestCreate_WithIdempotencyKeyReusesOnRepeat(t *testing.T) {
 	second := runCLI(t, env, dir, "--quiet", "create",
 		"first issue", "--idempotency-key", "K1")
 	assert.Equal(t, "1", second, "same key + fingerprint must return existing issue number")
+}
+
+// TestCreate_IdempotentReuseHumanModeOmitsLinksSummary pins that a
+// create whose Idempotency-Key matched a prior issue (changed=false)
+// does NOT print a synthetic `links: +parent #X` summary in human
+// mode — nothing was mutated on this call, so reporting "links
+// applied" would mislead the operator. The original create's
+// response was the source of truth for what landed.
+func TestCreate_IdempotentReuseHumanModeOmitsLinksSummary(t *testing.T) {
+	env, dir := setupCLIEnv(t)
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	createIssue(t, env, pid, "parent")
+
+	// First create with a parent link.
+	first := runCLI(t, env, dir, "create",
+		"child", "--parent", "1", "--idempotency-key", "K2")
+	assert.Contains(t, first, "links: +parent #1",
+		"sanity: the original create echoes the link summary")
+
+	// Second call with the same key → daemon returns the existing issue
+	// with changed=false. The synthesized links summary must NOT print.
+	resetFlags(t)
+	second := runCLI(t, env, dir, "create",
+		"child", "--parent", "1", "--idempotency-key", "K2")
+	assert.NotContains(t, second, "links:",
+		"idempotent reuse must not synthesize a links summary: %q", second)
 }
 
 func TestCreate_ForceNewBypassesLookalike(t *testing.T) {

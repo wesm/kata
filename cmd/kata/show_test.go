@@ -23,16 +23,18 @@ func TestShow_RendersLabelsAndLinksSections(t *testing.T) {
 	// Exact section headers and comma-joined label rendering.
 	assert.Contains(t, out, "--- labels ---")
 	assert.Contains(t, out, "bug, priority:high")
-	// Links section: child is the link's "from" side, so the arrow points
-	// outward (→) toward parent #1.
+	// Links section: viewer #2 is on the "from" side of (from=2 parent to=1)
+	// so it reads "parent: #1" — its parent is #1.
 	assert.Contains(t, out, "--- links ---")
-	assert.Contains(t, out, "parent → #1")
+	assert.Contains(t, out, "parent: #1")
 }
 
-// TestShow_LinkArrowReversesOnToSide verifies that when show runs against
-// the link's "to" side, the rendered arrow flips (←) so the line still reads
-// from the perspective of the issue being shown.
-func TestShow_LinkArrowReversesOnToSide(t *testing.T) {
+// TestShow_LinkLabelInvertsOnToSide verifies that when show runs against
+// the link's "to" side, the rendered LABEL inverts to read from the
+// viewer's perspective: the parent slot's "to" end is the parent of
+// the "from" end, so from #1's POV (parent of #2), the link reads
+// "child: #2" rather than the previous arrow-based "parent ← #2".
+func TestShow_LinkLabelInvertsOnToSide(t *testing.T) {
 	env, dir, pid := setupCLIWorkspace(t)
 	createIssue(t, env, pid, "parent") // #1
 	createIssue(t, env, pid, "child")  // #2
@@ -40,7 +42,8 @@ func TestShow_LinkArrowReversesOnToSide(t *testing.T) {
 	createLinkViaHTTP(t, env, pid, 2, "parent", 1)
 
 	out := runCLI(t, env, dir, "show", "1")
-	assert.Contains(t, out, "parent ← #2", "to-side show must reverse the arrow")
+	assert.Contains(t, out, "child: #2",
+		"showing the parent issue must label the link as `child` from its POV")
 }
 
 func TestShow_AcceptsHashFullUIDAndUniquePrefix(t *testing.T) {

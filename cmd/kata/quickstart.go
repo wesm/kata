@@ -40,13 +40,22 @@ Use kata as the shared issue ledger for this workspace.
    kata show --project foo 12 --json
    kata comment 12 --body "Found another reproduction path." --json
    kata label add 12 safari --json
-   kata block 12 18 --json
+   kata edit 12 --blocks 18 --json
 
-8. Use relationships deliberately:
+8. Use relationships deliberately. They live as flags on create + edit and
+   are framed from the operating issue's POV — no argument-order traps:
 
-   parent  = this issue is part of a larger issue
-   blocks  = the first issue must be resolved before the second can proceed
-   related = useful context, but not ordering
+   parent      = this issue is a sub-task of a larger issue
+   blocks      = this issue must be resolved before the target can proceed
+   blocked_by  = the target must be resolved before this issue can proceed
+   related     = useful context, but not ordering
+
+   kata create "fix auth flow" --parent 4 --blocked-by 7 --related 3 --json
+   kata edit 12 --remove-blocks 18 --related 9 --json
+
+   --remove-parent N is strict: it must equal the current parent or fail
+   loudly. Read parent before asserting a removal. The other --remove-* flags
+   are idempotent (no-op when the link is already gone).
 
 9. Close only when the work is actually complete:
 

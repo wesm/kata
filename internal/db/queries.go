@@ -398,9 +398,16 @@ var ErrNoFields = errors.New("no fields to update")
 
 // InitialLink describes one of the optional links created in the same TX as
 // the issue itself. The to_number is resolved within the same project.
+//
+// Default direction (Incoming=false): the new issue is the link's "from"
+// side. Incoming=true reverses for type=blocks so the new issue is the
+// "to" side (i.e. it is blocked by ToNumber). Rejected for type=parent
+// (no inverse parent direction is exposed); meaningless for type=related
+// which is symmetric.
 type InitialLink struct {
 	Type     string // "parent" | "blocks" | "related"
 	ToNumber int64
+	Incoming bool
 }
 
 // CreateIssueParams carries inputs for CreateIssue.
@@ -457,7 +464,15 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	// back the whole TX, which is acceptable for an all-or-nothing create.
 	for _, l := range links {
 		switch l.Type {
-		case "parent", "blocks", "related":
+		case "parent":
+			if l.Incoming {
+				// No inverse parent direction is exposed: a child-side link
+				// is filed from the child's POV via type=parent. Reject the
+				// nonsensical "this issue is the parent of N" form rather
+				// than silently swap directions.
+				return Issue{}, Event{}, ErrInitialLinkInvalidType
+			}
+		case "blocks", "related":
 		default:
 			return Issue{}, Event{}, ErrInitialLinkInvalidType
 		}
@@ -516,25 +531,37 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	// Initial links — resolve to_number → to_issue_id within the same project,
-	// excluding soft-deleted targets. The schema's same-project trigger
-	// enforces the cross-project check, but we'd rather surface a typed
-	// not-found than a generic constraint failure.
+	// Initial links — resolve to_number → (to_issue_id, to_issue_uid)
+	// within the same project, excluding soft-deleted targets. The
+	// schema's same-project trigger enforces the cross-project check,
+	// but we'd rather surface a typed not-found than a generic constraint
+	// failure. The peer UID is captured here and folded into the
+	// issue.created event payload for stable peer identity across
+	// counter resets.
+	resolvedTargetUIDs := make([]string, 0, len(links))
 	for _, l := range links {
-		var toIssueID int64
+		var (
+			toIssueID  int64
+			toIssueUID string
+		)
 		err := tx.QueryRowContext(ctx,
-			`SELECT id FROM issues
+			`SELECT id, uid FROM issues
 			 WHERE project_id = ? AND number = ? AND deleted_at IS NULL`,
-			p.ProjectID, l.ToNumber).Scan(&toIssueID)
+			p.ProjectID, l.ToNumber).Scan(&toIssueID, &toIssueUID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrInitialLinkTargetNotFound
 		}
 		if err != nil {
 			return Issue{}, Event{}, fmt.Errorf("resolve initial link target: %w", err)
 		}
+		resolvedTargetUIDs = append(resolvedTargetUIDs, toIssueUID)
 		// Canonical ordering is a storage concern: the payload still reports
 		// the caller's to_number unchanged, so the wire shape isn't affected.
 		fromID, toID := issueID, toIssueID
+		if l.Incoming && l.Type == "blocks" {
+			// "this issue is blocked by N" → link runs FROM N TO new issue.
+			fromID, toID = toIssueID, issueID
+		}
 		if l.Type == "related" && fromID > toID {
 			fromID, toID = toID, fromID
 		}
@@ -546,7 +573,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	payload := buildCreatedPayload(labels, links, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
+	payload := buildCreatedPayload(labels, links, resolvedTargetUIDs, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
 
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:   p.ProjectID,
@@ -577,10 +604,17 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 // buildCreatedPayload returns the issue.created event payload as JSON. Empty
 // initial state → "{}". Otherwise emits keys for whichever components are set,
 // preserving determinism (sorted labels) so events are byte-stable.
-func buildCreatedPayload(labels []string, links []InitialLink, owner *string, priority *int64, idempotencyKey, idempotencyFingerprint string) string {
+//
+// targetUIDs is parallel to links (same length and order). Each link's
+// to_issue_uid is captured at insertion time so the payload can identify
+// peers stably across `kata reset-counter` (numbers can be reused;
+// UIDs cannot). Pass nil/empty when no links are being recorded.
+func buildCreatedPayload(labels []string, links []InitialLink, targetUIDs []string, owner *string, priority *int64, idempotencyKey, idempotencyFingerprint string) string {
 	type linkOut struct {
-		Type     string `json:"type"`
-		ToNumber int64  `json:"to_number"`
+		Type       string `json:"type"`
+		ToNumber   int64  `json:"to_number"`
+		ToIssueUID string `json:"to_issue_uid,omitempty"`
+		Incoming   bool   `json:"incoming,omitempty"`
 	}
 	type out struct {
 		Labels                 []string  `json:"labels,omitempty"`
@@ -595,12 +629,18 @@ func buildCreatedPayload(labels []string, links []InitialLink, owner *string, pr
 		o.Labels = labels
 	}
 	if len(links) > 0 {
-		// Layout-coupled with InitialLink: identical fields and order. If
-		// InitialLink ever gains a field that linkOut shouldn't expose, replace
-		// this conversion with explicit field assignment.
 		o.Links = make([]linkOut, 0, len(links))
-		for _, l := range links {
-			o.Links = append(o.Links, linkOut(l))
+		for i, l := range links {
+			var uid string
+			if i < len(targetUIDs) {
+				uid = targetUIDs[i]
+			}
+			o.Links = append(o.Links, linkOut{
+				Type:       l.Type,
+				ToNumber:   l.ToNumber,
+				ToIssueUID: uid,
+				Incoming:   l.Incoming,
+			})
 		}
 	}
 	if owner != nil {
@@ -629,24 +669,40 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
-// dedupeLinks removes repeated (type, to_number) entries while preserving
-// first-occurrence order. Used by CreateIssue to avoid hitting the schema's
-// links UNIQUE on duplicate initial links and to keep the issue.created
-// event payload aligned with what was actually inserted.
+// dedupeLinks removes repeated (type, to_number, incoming) entries while
+// preserving first-occurrence order. Used by CreateIssue to avoid hitting
+// the schema's links UNIQUE on duplicate initial links and to keep the
+// issue.created event payload aligned with what was actually inserted.
+//
+// Incoming is part of the key because (type=blocks, to=5, incoming=false)
+// and (type=blocks, to=5, incoming=true) describe distinct links: the new
+// issue blocking #5 vs. the new issue being blocked by #5.
+//
+// For type=related the link is symmetric and canonical-ordered by storage,
+// so an inbound and outbound entry for the same target produce the same
+// row. We normalize Incoming → false for related entries before keying so
+// (related, 5, false) and (related, 5, true) collapse to one — without
+// this, the second insert would hit the schema's UNIQUE and surface as
+// a 500 instead of the documented no-op.
 func dedupeLinks(in []InitialLink) []InitialLink {
 	type key struct {
 		Type     string
 		ToNumber int64
+		Incoming bool
 	}
 	seen := make(map[key]struct{}, len(in))
 	out := make([]InitialLink, 0, len(in))
 	for _, l := range in {
-		k := key(l)
+		normalized := l
+		if l.Type == "related" {
+			normalized.Incoming = false
+		}
+		k := key{Type: normalized.Type, ToNumber: normalized.ToNumber, Incoming: normalized.Incoming}
 		if _, ok := seen[k]; ok {
 			continue
 		}
 		seen[k] = struct{}{}
-		out = append(out, l)
+		out = append(out, normalized)
 	}
 	return out
 }

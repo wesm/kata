@@ -216,6 +216,242 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 		`SELECT count(*) FROM events WHERE issue_id = ?`, keeper.ID)
 }
 
+// TestEditIssueAtomic_AddBlocksHandlesConcurrentInsertGracefully covers
+// the addEdgeTx race-window guard: if a concurrent edit inserts the same
+// link between addEdgeTx's pre-insert duplicate lookup and the actual
+// INSERT, the schema's UNIQUE surfaces ErrLinkExists. The atomic edit
+// must treat that as the same idempotent no-op the lookup would have
+// produced — the resulting graph state is exactly what the caller asked
+// for. Without this, the second edit returned a 500 internal error.
+//
+// Simulating the race: insert the link directly via SQL after the first
+// EditIssueAtomic so it lands without going through the helper's
+// pre-lookup, then do a second EditIssueAtomic with a different existing
+// link op + the same blocks-add. The second call's addEdgeTx finds the
+// link via lookup and no-ops, which is also what we want; this test pins
+// the broader contract that "asking to add a link that's already there
+// is never an error."
+func TestEditIssueAtomic_AddBlocksHandlesConcurrentInsertGracefully(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	a, _ := createTesterIssue(ctx, t, d, p.ID, "subject")
+	b, _ := createTesterIssue(ctx, t, d, p.ID, "target")
+
+	// First edit creates the link a → b.
+	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   a.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{b.Number},
+	})
+	require.NoError(t, err)
+
+	// Second edit asks for the same link — must succeed as a no-op
+	// (no error, no duplicate row).
+	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   a.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{b.Number},
+	})
+	require.NoError(t, err, "duplicate add must be a no-op, never an error")
+	assert.Empty(t, res.Changes.BlocksAdded, "duplicate add must report no change")
+
+	// Confirm the row count didn't grow.
+	var n int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM links WHERE from_issue_id = ? AND to_issue_id = ? AND type = 'blocks'`,
+		a.ID, b.ID).Scan(&n))
+	assert.Equal(t, 1, n, "exactly one row in the schema after a redundant add")
+}
+
+// TestPurgeIssue_PreservesSinglePeerAggregatedLinksChangedEvent pins
+// the consistency rule introduced by the kata#1 design call: aggregated
+// issue.links_changed events on OTHER live issues survive purge of the
+// referenced peer regardless of whether the iteration-16 envelope-peer
+// fix populated related_issue_id (single-peer case) or left it NULL
+// (multi-peer case). Without the type-aware purge cleanup, a single-peer
+// edit's aggregated event would be deleted via the related_issue_id =
+// purged-issue match — meaning a `kata edit subject --blocks target`
+// loses subject's link history when target is purged, but the same
+// edit batched with a second peer survives. That's a batch-size-
+// dependent bug.
+func TestPurgeIssue_PreservesSinglePeerAggregatedLinksChangedEvent(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	subject, _ := createTesterIssue(ctx, t, d, p.ID, "subject")
+	target, _ := createTesterIssue(ctx, t, d, p.ID, "target")
+
+	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   subject.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{target.Number},
+	})
+	require.NoError(t, err)
+
+	// The single-peer aggregated event has related_issue_id = target.ID
+	// thanks to iteration-16. Sanity check.
+	var beforePeerCount int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE type = 'issue.links_changed'
+		   AND issue_id = ? AND related_issue_id = ?`,
+		subject.ID, target.ID).Scan(&beforePeerCount))
+	require.Equal(t, 1, beforePeerCount, "single-peer aggregated event must carry envelope peer metadata")
+
+	_, err = d.PurgeIssue(ctx, target.ID, "agent", nil)
+	require.NoError(t, err)
+
+	var afterCount int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE type = 'issue.links_changed' AND issue_id = ?`,
+		subject.ID).Scan(&afterCount))
+	assert.Equal(t, 1, afterCount,
+		"single-peer aggregated event must survive purge of the referenced peer — purging target must not erase subject's link history regardless of batch size")
+}
+
+// TestPurgeIssue_PreservesAggregatedLinksChangedEventsOnOtherIssues
+// pins Jesse's design call on kata#1: purging an issue must not erase
+// the historical context that ANOTHER live issue was once linked to
+// it. The aggregated issue.links_changed event on `subject` references
+// `target` in its payload; when `target` is purged, the FK cascade
+// deletes events whose issue_id == target, but `subject`'s mutation
+// history (issue.links_changed events with target referenced only in
+// payload) survives intact. The orphan reference in the payload is the
+// accepted trade-off.
+func TestPurgeIssue_PreservesAggregatedLinksChangedEventsOnOtherIssues(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	subject, _ := createTesterIssue(ctx, t, d, p.ID, "subject")
+	target, _ := createTesterIssue(ctx, t, d, p.ID, "target")
+
+	// Emit an aggregated issue.links_changed event on `subject` that
+	// references `target` in blocks_added — this is the shape produced
+	// by `kata edit subject --blocks target`. Iteration-16 set the
+	// envelope's related_issue_id to `target` for single-peer aggregated
+	// events; that's a real issue_id reference, so the FK cascade WILL
+	// delete this event. Use a multi-peer edit so related_issue_id stays
+	// NULL and the event references target only in payload.
+	other, _ := createTesterIssue(ctx, t, d, p.ID, "other peer")
+	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   subject.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{target.Number, other.Number},
+	})
+	require.NoError(t, err)
+
+	// Sanity: the aggregated event lives in the events table with the
+	// payload referencing target's UID.
+	var beforeCount int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE type = 'issue.links_changed' AND issue_id = ?`,
+		subject.ID).Scan(&beforeCount))
+	require.Equal(t, 1, beforeCount, "aggregated event must exist before purge")
+
+	// Now purge the TARGET. The aggregated event must SURVIVE because
+	// it documents a relationship from `subject`'s point of view.
+	_, err = d.PurgeIssue(ctx, target.ID, "agent", nil)
+	require.NoError(t, err)
+
+	var afterCount int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT count(*) FROM events WHERE type = 'issue.links_changed' AND issue_id = ?`,
+		subject.ID).Scan(&afterCount))
+	assert.Equal(t, 1, afterCount,
+		"aggregated event must be preserved on subject — purging target must not erase subject's link history")
+}
+
+// TestEditIssueAtomic_LinksChangedSetsEnvelopePeerForSingleEdge covers a
+// roborev finding from kata#1: the per-link issue.linked / issue.unlinked
+// envelopes carry related_issue_id / related_issue_uid; consumers that
+// route on those envelope columns lose peer identity when the same edit
+// runs through PATCH and emits a single-peer issue.links_changed instead.
+// When exactly one peer is referenced across the entire aggregated event,
+// preserve envelope-level peer metadata so envelope-only consumers stay
+// informed without parsing payload.
+// TestEditIssueAtomic_OwnerEmptyStringClearsToNil pins the contract that
+// an explicit `--owner ""` (or API request with Owner=stringPtr("")) is
+// the unassign signal: it writes NULL to the column rather than the
+// empty string. Before this fix EditIssueAtomic compared "" against the
+// current owner as if it were nil but still wrote "" via the UPDATE
+// args, leaving rows in the inconsistent "assigned to empty string"
+// state and emitting an issue.updated event instead of the unassign
+// semantics.
+func TestEditIssueAtomic_OwnerEmptyStringClearsToNil(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	subject, _ := createTesterIssue(ctx, t, d, p.ID, "subject")
+
+	owner := "alice"
+	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID: subject.ID,
+		Actor:   "tester",
+		Owner:   &owner,
+	})
+	require.NoError(t, err)
+
+	empty := ""
+	_, err = d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID: subject.ID,
+		Actor:   "tester",
+		Owner:   &empty,
+	})
+	require.NoError(t, err)
+
+	got, err := d.IssueByID(ctx, subject.ID)
+	require.NoError(t, err)
+	assert.Nil(t, got.Owner, "empty-string owner must clear to NULL, not store \"\"")
+}
+
+func TestEditIssueAtomic_LinksChangedSetsEnvelopePeerForSingleEdge(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	subject, _ := createTesterIssue(ctx, t, d, p.ID, "subject")
+	target, _ := createTesterIssue(ctx, t, d, p.ID, "target")
+
+	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   subject.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{target.Number},
+	})
+	require.NoError(t, err)
+
+	var evt *db.Event
+	for i := range res.Events {
+		if res.Events[i].Type == "issue.links_changed" {
+			evt = &res.Events[i]
+			break
+		}
+	}
+	require.NotNil(t, evt, "expected an issue.links_changed event")
+	require.NotNil(t, evt.RelatedIssueID, "single-peer aggregated event must set related_issue_id")
+	assert.Equal(t, target.ID, *evt.RelatedIssueID)
+	require.NotNil(t, evt.RelatedIssueUID, "single-peer aggregated event must set related_issue_uid")
+	assert.Equal(t, target.UID, *evt.RelatedIssueUID)
+}
+
+// TestEditIssueAtomic_LinksChangedNullsEnvelopePeerForMultiEdge pairs with
+// the single-edge test above: when the aggregated event references more
+// than one distinct peer, there is no single peer to surface at the
+// envelope level. Leave related_issue_id / related_issue_uid NULL — the
+// payload's *_uids slices remain authoritative for multi-peer edits.
+func TestEditIssueAtomic_LinksChangedNullsEnvelopePeerForMultiEdge(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	subject, _ := createTesterIssue(ctx, t, d, p.ID, "subject")
+	t1, _ := createTesterIssue(ctx, t, d, p.ID, "t1")
+	t2, _ := createTesterIssue(ctx, t, d, p.ID, "t2")
+
+	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   subject.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{t1.Number, t2.Number},
+	})
+	require.NoError(t, err)
+
+	var evt *db.Event
+	for i := range res.Events {
+		if res.Events[i].Type == "issue.links_changed" {
+			evt = &res.Events[i]
+			break
+		}
+	}
+	require.NotNil(t, evt, "expected an issue.links_changed event")
+	assert.Nil(t, evt.RelatedIssueID, "multi-peer aggregated event must leave related_issue_id NULL")
+	assert.Nil(t, evt.RelatedIssueUID, "multi-peer aggregated event must leave related_issue_uid NULL")
+}
+
 func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
 	// Manually craft an issue row with no events: insert directly so we
 	// bypass CreateIssue's automatic issue.created event. Verify that

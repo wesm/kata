@@ -19,6 +19,7 @@ var knownEventTypes = map[string]struct{}{
 	"issue.assigned": {}, "issue.unassigned": {},
 	"issue.priority_set": {}, "issue.priority_cleared": {},
 	"issue.soft_deleted": {}, "issue.restored": {},
+	"issue.links_changed": {},
 }
 
 // compileEventMatcher returns the canonical string and a precompiled

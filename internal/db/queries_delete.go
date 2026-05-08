@@ -226,11 +226,20 @@ func purgeCascade(
 	originInstanceUID string,
 ) (int64, error) {
 	// Step 2: capture the events.id range about to be cascade-deleted so the
-	// audit row records what the SSE reset cursor is reserving past.
+	// audit row records what the SSE reset cursor is reserving past. The
+	// where clause matches per-link events (issue.linked / unlinked) via
+	// issue_id / related_issue_id. Aggregated events from the PATCH path
+	// (issue.links_changed) and root issue.created events on OTHER issues
+	// that incidentally reference this issue in their payload are NOT
+	// deleted: per Jesse's design call on kata#1, purging this issue must
+	// not erase the historical context that another issue was once linked
+	// to it. Mutation events that ARE about this issue (issue_id matches)
+	// are still removed.
+	eventsWhere, eventsArgs := purgeEventsCleanupWhere(issue)
 	var minEventID, maxEventID sql.NullInt64
 	if err := c.QueryRowContext(ctx,
-		`SELECT MIN(id), MAX(id) FROM events WHERE issue_id = ? OR related_issue_id = ?`,
-		issue.ID, issue.ID).Scan(&minEventID, &maxEventID); err != nil {
+		`SELECT MIN(id), MAX(id) FROM events WHERE `+eventsWhere,
+		eventsArgs...).Scan(&minEventID, &maxEventID); err != nil {
 		return 0, fmt.Errorf("scan event id range: %w", err)
 	}
 
@@ -252,8 +261,7 @@ func purgeCascade(
 		return 0, fmt.Errorf("count labels: %w", err)
 	}
 	eventCount, err := scanCount(ctx, c,
-		`SELECT count(*) FROM events WHERE issue_id = ? OR related_issue_id = ?`,
-		issue.ID, issue.ID)
+		`SELECT count(*) FROM events WHERE `+eventsWhere, eventsArgs...)
 	if err != nil {
 		return 0, fmt.Errorf("count events: %w", err)
 	}
@@ -264,9 +272,24 @@ func purgeCascade(
 	// they must go before the issues row in step 7. Mutual ordering between
 	// the four below is otherwise free.
 	if _, err := c.ExecContext(ctx,
-		`DELETE FROM events WHERE issue_id = ? OR related_issue_id = ?`,
-		issue.ID, issue.ID); err != nil {
+		`DELETE FROM events WHERE `+eventsWhere, eventsArgs...); err != nil {
 		return 0, fmt.Errorf("delete events: %w", err)
+	}
+	// Detach surviving aggregated issue.links_changed events from the
+	// purged issue: NULL the envelope's related_issue_id (and its UID
+	// counterpart) so the FK constraint passes when the issues row is
+	// deleted in step 7. The payload retains the peer's UID as an
+	// orphan reference — that is the intentional preservation per
+	// kata#1's design call. Iteration-16 set related_issue_id for
+	// single-peer aggregated events; without this UPDATE the FK would
+	// block purge.
+	if _, err := c.ExecContext(ctx,
+		`UPDATE events
+		    SET related_issue_id  = NULL,
+		        related_issue_uid = NULL
+		  WHERE related_issue_id = ? AND type = 'issue.links_changed'`,
+		issue.ID); err != nil {
+		return 0, fmt.Errorf("detach aggregated event peer refs: %w", err)
 	}
 	if _, err := c.ExecContext(ctx,
 		`DELETE FROM comments WHERE issue_id = ?`, issue.ID); err != nil {
@@ -409,4 +432,29 @@ func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64
 		return Issue{}, "", fmt.Errorf("lookup issue including deleted: %w", err)
 	}
 	return i, projectName, nil
+}
+
+// purgeEventsCleanupWhere returns the SQL fragment + bound args that match
+// every event the issue's purge should delete: events whose issue_id IS
+// this issue, plus per-link events (issue.linked / issue.unlinked) whose
+// related_issue_id pointed at this issue.
+//
+// Aggregated issue.links_changed events are excluded from the
+// related_issue_id delete path even though iteration-16 sets
+// related_issue_id for single-peer edits. Without that exclusion a
+// `kata edit subject --blocks target` would lose subject's link history
+// when target is purged, while the same edit batched with a second peer
+// (multi-peer → NULL related_issue_id) would survive — a batch-size-
+// dependent inconsistency. Per Jesse's design call on kata#1, purging
+// an issue must not erase the historical context that another issue
+// was once linked to it; payload-only references and single-peer
+// envelope references are equally protected.
+//
+// Other-issue events that merely reference this issue in their payload
+// (issue.created with an initial-link to this issue, issue.links_changed
+// with this issue in a *_uids slice) are likewise PRESERVED.
+func purgeEventsCleanupWhere(issue Issue) (string, []any) {
+	clause := `(issue_id = ? OR (related_issue_id = ? AND type != 'issue.links_changed'))`
+	args := []any{issue.ID, issue.ID}
+	return clause, args
 }

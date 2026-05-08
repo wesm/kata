@@ -59,21 +59,35 @@ func TestRunEEntered_TrueOnSuccessfulRunE(t *testing.T) {
 	assert.True(t, runEEntered, "PersistentPreRunE should fire before whoami's RunE")
 }
 
-// TestRoot_Plan2VerbsAdvertised pins the new top-level verbs against
-// cmd.Commands() (not raw help substrings) so paired commands like
-// link/unlink can't mask each other's missing registration. A help-string
-// substring match for "link" passes if only "unlink" is registered.
+// TestRoot_Plan2VerbsAdvertised pins the top-level verbs against
+// cmd.Commands() (not raw help substrings) so a missed registration is
+// caught at test time rather than at the help text. The eight dedicated
+// link-editing commands were retired by kata#1; relationships now flow
+// through `kata edit --parent / --blocks / --blocked-by / --related`
+// (and matching --remove-* flags).
 func TestRoot_Plan2VerbsAdvertised(t *testing.T) {
 	registered := rootSubcommands()
 	for _, verb := range []string{
-		"link", "unlink", "parent", "unparent",
-		"block", "unblock", "relate", "unrelate",
 		"label", "labels",
 		"assign", "unassign",
 		"ready",
 	} {
 		_, ok := registered[verb]
 		assert.Truef(t, ok, "root must register subcommand %q", verb)
+	}
+}
+
+// TestRoot_RetiredCommandsAreGone pins the deletion of the 8 dedicated
+// relationship-editing commands. If any of these come back as a registered
+// subcommand, this test surfaces it.
+func TestRoot_RetiredCommandsAreGone(t *testing.T) {
+	registered := rootSubcommands()
+	for _, retired := range []string{
+		"link", "unlink", "parent", "unparent",
+		"block", "unblock", "relate", "unrelate",
+	} {
+		_, ok := registered[retired]
+		assert.Falsef(t, ok, "command %q should have been retired in kata#1", retired)
 	}
 }
 
@@ -254,7 +268,7 @@ func TestNegativePositional_ProducesUsefulError(t *testing.T) {
 	for _, args := range [][]string{
 		{"show", "-1"},
 		{"delete", "-1"},
-		{"link", "-1", "blocks", "3"},
+		{"edit", "-1", "--title", "x"},
 	} {
 		_, err := runCmdOutput(t, nil, args...)
 		require.Errorf(t, err, "args %v should error", args)

@@ -143,6 +143,144 @@ func TestExportNoIncludeDeletedOmitsSoftDeletedIssueDependents(t *testing.T) {
 	}
 }
 
+// TestExportNoIncludeDeletedNullsAggregatedEnvelopePeerOnSoftDelete
+// pins the round-trip property for live-only exports of single-peer
+// aggregated events: when iteration-16's envelope-peer fix sets
+// related_issue_id pointing at a now-soft-deleted peer, the live-only
+// export must emit NULL for that FK because the peer's row is
+// intentionally omitted from the export. Without this scrub, the
+// importer would re-insert the FK and fail on the dangling reference.
+// The payload's *_uids slices retain the orphan UID per kata#1's
+// preservation rule — the wire FK alone is sanitized.
+func TestExportNoIncludeDeletedNullsAggregatedEnvelopePeerOnSoftDelete(t *testing.T) {
+	ctx, d, p := newExportEnv(t)
+	subject := createTesterIssue(ctx, t, d, p.ID, "subject", "")
+	target := createTesterIssue(ctx, t, d, p.ID, "target", "")
+
+	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   subject.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{target.Number},
+	})
+	require.NoError(t, err)
+
+	_, err = d.ExecContext(ctx, `UPDATE issues SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, target.ID)
+	require.NoError(t, err)
+
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: false})
+
+	var aggregated map[string]any
+	for _, rec := range records {
+		if rec["kind"] != "event" {
+			continue
+		}
+		data, _ := rec["data"].(map[string]any)
+		if data["type"] == "issue.links_changed" {
+			aggregated = data
+			break
+		}
+	}
+	require.NotNil(t, aggregated, "expected the aggregated event to survive in the export")
+	assert.Nil(t, aggregated["related_issue_id"],
+		"live-only export must NULL related_issue_id when peer is soft-deleted")
+	assert.Nil(t, aggregated["related_issue_uid"],
+		"live-only export must NULL related_issue_uid when peer is soft-deleted")
+	bs, _ := json.Marshal(aggregated["payload"])
+	assert.Contains(t, string(bs), target.UID,
+		"payload must keep the orphan UID for historical context")
+}
+
+// TestExportNoIncludeDeletedPreservesSinglePeerAggregatedEvent pins
+// export consistency for aggregated issue.links_changed events: the
+// iteration-16 envelope-peer fix sets related_issue_id for single-peer
+// edits, but the live-only export filter must NOT drop them on peer
+// soft-delete. Erasing single-peer events while preserving multi-peer
+// events would make exported history depend on edit batch size, which
+// is just as wrong as the broader history-loss problem.
+func TestExportNoIncludeDeletedPreservesSinglePeerAggregatedEvent(t *testing.T) {
+	ctx, d, p := newExportEnv(t)
+	subject := createTesterIssue(ctx, t, d, p.ID, "subject", "")
+	target := createTesterIssue(ctx, t, d, p.ID, "target", "")
+
+	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   subject.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{target.Number},
+	})
+	require.NoError(t, err)
+
+	_, err = d.ExecContext(ctx, `UPDATE issues SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, target.ID)
+	require.NoError(t, err)
+
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: false})
+
+	var found bool
+	for _, rec := range records {
+		if rec["kind"] != "event" {
+			continue
+		}
+		data, _ := rec["data"].(map[string]any)
+		if data["type"] != "issue.links_changed" {
+			continue
+		}
+		bs, err := json.Marshal(data["payload"])
+		require.NoError(t, err)
+		if assert.Contains(t, string(bs), target.UID,
+			"single-peer aggregated event must survive peer soft-delete in live-only export") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected the single-peer aggregated issue.links_changed event to be exported")
+}
+
+// TestExportNoIncludeDeletedPreservesLinksChangedReferencingDeleted
+// pins Jesse's design call on kata#1: the live-only export of a
+// surviving issue must keep its mutation events intact even when the
+// payload references a now-soft-deleted peer. Erasing that history
+// would lose the context that the surviving issue was once linked to
+// the soft-deleted peer. The export filter only drops events whose
+// issue_id / related_issue_id refer to a soft-deleted issue; payload
+// references are exported with their orphan UIDs intact.
+func TestExportNoIncludeDeletedPreservesLinksChangedReferencingDeleted(t *testing.T) {
+	ctx, d, p := newExportEnv(t)
+	subject := createTesterIssue(ctx, t, d, p.ID, "subject", "")
+	target := createTesterIssue(ctx, t, d, p.ID, "target", "")
+	// Multi-peer edit so the aggregated event's envelope related_issue_id
+	// stays NULL — otherwise iteration-16 sets it to target and the
+	// existing related_issue_id filter drops the event on its own.
+	other := createTesterIssue(ctx, t, d, p.ID, "other peer", "")
+
+	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
+		IssueID:   subject.ID,
+		Actor:     "tester",
+		AddBlocks: []int64{target.Number, other.Number},
+	})
+	require.NoError(t, err)
+
+	_, err = d.ExecContext(ctx, `UPDATE issues SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, target.ID)
+	require.NoError(t, err)
+
+	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: false})
+
+	var found bool
+	for _, rec := range records {
+		if rec["kind"] != "event" {
+			continue
+		}
+		data, _ := rec["data"].(map[string]any)
+		if data["type"] != "issue.links_changed" {
+			continue
+		}
+		bs, err := json.Marshal(data["payload"])
+		require.NoError(t, err)
+		if assert.Contains(t, string(bs), target.UID,
+			"issue.links_changed event must preserve its peer reference even after soft-delete") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected an exported issue.links_changed event referencing the soft-deleted peer")
+}
+
 func openExportTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	d, err := db.Open(context.Background(), filepath.Join(t.TempDir(), "kata.db"))

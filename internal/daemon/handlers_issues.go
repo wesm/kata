@@ -37,7 +37,7 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 
 		links := make([]db.InitialLink, 0, len(in.Body.Links))
 		for _, l := range in.Body.Links {
-			links = append(links, db.InitialLink{Type: l.Type, ToNumber: l.ToNumber})
+			links = append(links, db.InitialLink{Type: l.Type, ToNumber: l.ToNumber, Incoming: l.Incoming})
 		}
 
 		// Validate priority before the idempotency lookup so an out-of-range
@@ -214,7 +214,19 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		OperationID: "editIssue",
 		Method:      "PATCH",
 		Path:        "/api/v1/projects/{project_id}/issues/{number}",
-	}, func(ctx context.Context, in *api.EditIssueRequest) (*api.MutationResponse, error) {
+	}, editIssueHandler(cfg))
+}
+
+// editIssueHandler dispatches a PATCH /issues/{number} call. It applies any
+// title/body/owner change, the priority change, and any LinksDelta mutations
+// in a single daemon transaction. Reports applied link mutations in the
+// response's `changes` block. Either every requested mutation lands or none
+// do.
+//
+// Callers can pass only a links_delta (no title/body/owner) and the request
+// is valid as long as the delta contains at least one mutation.
+func editIssueHandler(cfg ServerConfig) func(context.Context, *api.EditIssueRequest) (*api.EditIssueResponse, error) {
+	return func(ctx context.Context, in *api.EditIssueRequest) (*api.EditIssueResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
@@ -222,56 +234,263 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
-		updated, evt, changed, err := cfg.DB.EditIssue(ctx, db.EditIssueParams{
-			IssueID: issue.ID,
-			Title:   in.Body.Title,
-			Body:    in.Body.Body,
-			Owner:   in.Body.Owner,
-			Actor:   in.Body.Actor,
-		})
-		if errors.Is(err, db.ErrNoFields) {
-			return nil, api.NewError(400, "validation", "no fields to update", "pass at least one of title, body, owner", nil)
+
+		hasFieldChange := in.Body.Title != nil || in.Body.Body != nil || in.Body.Owner != nil
+		hasPriorityChange := in.Body.SetPriority != nil || in.Body.ClearPriority
+		hasLinkChange := in.Body.LinksDelta != nil && linksDeltaNonEmpty(in.Body.LinksDelta)
+		if !hasFieldChange && !hasPriorityChange && !hasLinkChange {
+			return nil, api.NewError(400, "validation", "no fields to update",
+				"pass at least one of title, body, owner, set_priority, clear_priority, or links_delta", nil)
 		}
+		if in.Body.SetPriority != nil && in.Body.ClearPriority {
+			return nil, api.NewError(400, "validation",
+				"cannot set_priority and clear_priority in the same call",
+				"choose one", nil)
+		}
+		if err := validatePriorityRange(in.Body.SetPriority); err != nil {
+			return nil, err
+		}
+		if hasLinkChange {
+			if err := validateLinksDelta(in.Body.LinksDelta); err != nil {
+				return nil, err
+			}
+		}
+
+		params := db.EditIssueAtomicParams{
+			IssueID:       issue.ID,
+			Actor:         in.Body.Actor,
+			Title:         in.Body.Title,
+			Body:          in.Body.Body,
+			Owner:         in.Body.Owner,
+			SetPriority:   in.Body.SetPriority,
+			ClearPriority: in.Body.ClearPriority,
+		}
+		if hasLinkChange {
+			d := in.Body.LinksDelta
+			params.SetParent = d.SetParent
+			params.RemoveParent = d.RemoveParent
+			params.AddBlocks = d.AddBlocks
+			params.AddBlockedBy = d.AddBlockedBy
+			params.AddRelated = d.AddRelated
+			params.RemoveBlocks = d.RemoveBlocks
+			params.RemoveBlockedBy = d.RemoveBlockedBy
+			params.RemoveRelated = d.RemoveRelated
+		}
+
+		result, err := cfg.DB.EditIssueAtomic(ctx, params)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, mapAtomicEditError(err, issue.Number, in.Body.LinksDelta)
 		}
-		if changed && evt != nil {
-			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: evt, ProjectID: in.ProjectID})
-			cfg.Hooks.Enqueue(*evt)
+		// Broadcast all events post-commit. Order matches DB.EditIssueAtomic's
+		// emission order: issue.updated → priority → links_changed.
+		for i := range result.Events {
+			ev := result.Events[i]
+			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &ev, ProjectID: in.ProjectID})
+			cfg.Hooks.Enqueue(ev)
 		}
-		out := &api.MutationResponse{}
-		out.Body.Issue = updated
-		out.Body.Event = evt
-		out.Body.Changed = changed
+
+		out := &api.EditIssueResponse{}
+		out.Body.Issue = result.Issue
+		out.Body.Changed = result.AnyChange
+		// `events` carries every event in emission order so a client can
+		// observe each transition (issue.updated, issue.priority_*,
+		// issue.links_changed) — important for mixed PATCHes where the
+		// priority transition would otherwise be hidden by an event
+		// emitted later. `event` is retained as a compatibility alias
+		// pointing at the LAST event for callers that only expected one.
+		if len(result.Events) > 0 {
+			out.Body.Events = make([]db.Event, len(result.Events))
+			copy(out.Body.Events, result.Events)
+			last := result.Events[len(result.Events)-1]
+			out.Body.Event = &last
+		}
+		// `changes` is only present on relationship-bearing PATCHes — its
+		// presence is the wire signal "this response describes link
+		// mutations." Omit it entirely on field-only / priority-only
+		// edits so older clients keying off its presence keep working.
+		// The gate is "did the request actually ask for a link op", not
+		// "is the links_delta field non-nil" — a `links_delta: {}`
+		// envelope carries no operations and should be treated like the
+		// field-only PATCH it functionally is.
+		if linksDeltaRequestsAnyOp(in.Body.LinksDelta) {
+			out.Body.Changes = &api.LinkChanges{
+				ParentSet:        result.Changes.ParentSet,
+				ParentRemoved:    result.Changes.ParentRemoved,
+				BlocksAdded:      result.Changes.BlocksAdded,
+				BlocksRemoved:    result.Changes.BlocksRemoved,
+				BlockedByAdded:   result.Changes.BlockedByAdded,
+				BlockedByRemoved: result.Changes.BlockedByRemoved,
+				RelatedAdded:     result.Changes.RelatedAdded,
+				RelatedRemoved:   result.Changes.RelatedRemoved,
+			}
+		}
 		return out, nil
-	})
+	}
 }
 
+// linksDeltaRequestsAnyOp reports whether the delta carries at least one
+// requested link operation. Used to decide whether the response should
+// include the `changes` block: a non-nil but empty `links_delta` is
+// treated like a field-only PATCH because no link op was actually asked
+// for. Older clients key off the presence of `changes` to detect
+// relationship mutations, so signal-fidelity matters.
+func linksDeltaRequestsAnyOp(d *api.LinksDelta) bool {
+	if d == nil {
+		return false
+	}
+	return d.SetParent != nil || d.RemoveParent != nil ||
+		len(d.AddBlocks) > 0 || len(d.AddBlockedBy) > 0 || len(d.AddRelated) > 0 ||
+		len(d.RemoveBlocks) > 0 || len(d.RemoveBlockedBy) > 0 || len(d.RemoveRelated) > 0
+}
+
+// isLinkTargetNotFound reports whether err is the typed
+// LinkTargetNotFoundError carrying the offending number for a
+// missing add-edge / set-parent target.
+func isLinkTargetNotFound(err error) bool {
+	var lt *db.LinkTargetNotFoundError
+	return errors.As(err, &lt)
+}
+
+// mapAtomicEditError translates DB-layer errors from EditIssueAtomic into
+// the right API error envelope. Touches only error categories the atomic
+// path can produce.
+func mapAtomicEditError(err error, issueNumber int64, delta *api.LinksDelta) error {
+	switch {
+	case isLinkTargetNotFound(err):
+		var lt *db.LinkTargetNotFoundError
+		errors.As(err, &lt)
+		return api.NewError(404, "issue_not_found",
+			fmt.Sprintf("link target #%d not found", lt.Number), "", nil)
+	case errors.Is(err, db.ErrNotFound):
+		return api.NewError(404, "issue_not_found",
+			"target issue not found", "", nil)
+	case errors.Is(err, db.ErrParentMismatch):
+		assertion := int64(0)
+		if delta != nil && delta.RemoveParent != nil {
+			assertion = *delta.RemoveParent
+		}
+		return api.NewError(409, "parent_mismatch",
+			fmt.Sprintf("issue #%d's current parent does not match asserted #%d", issueNumber, assertion),
+			"read the current parent before asserting a removal", nil)
+	case errors.Is(err, db.ErrSelfLink):
+		return api.NewError(400, "validation", "cannot link an issue to itself", "", nil)
+	case errors.Is(err, db.ErrCrossProjectLink):
+		return api.NewError(400, "validation", "cross-project links are not allowed", "", nil)
+	case errors.Is(err, db.ErrParentCycle):
+		return api.NewError(400, "validation",
+			fmt.Sprintf("set_parent on #%d would create a parent cycle", issueNumber),
+			"the requested parent is a descendant of this issue", nil)
+	case errors.Is(err, db.ErrParentAlreadySet):
+		// Should not surface from the atomic path (set_parent replaces),
+		// but map cleanly if it ever does.
+		return api.NewError(409, "parent_already_set", err.Error(), "", nil)
+	default:
+		return api.NewError(500, "internal", err.Error(), "", nil)
+	}
+}
+
+// validateLinksDelta rejects deltas that are internally contradictory before
+// any mutation runs. Catches:
+//   - set_parent + remove_parent in the same call
+//   - the same (type, target) appearing in both an add list and the matching
+//     remove list (e.g. add_blocks: [50] and remove_blocks: [50])
+//
+// Self-link detection lives in the per-link helpers (where we have the URL
+// issue's number to compare against).
+func validateLinksDelta(d *api.LinksDelta) error {
+	if d == nil {
+		return nil
+	}
+	if d.SetParent != nil && d.RemoveParent != nil {
+		return api.NewError(400, "validation",
+			"links_delta cannot set_parent and remove_parent in the same call",
+			"choose one", nil)
+	}
+	if conflict := firstConflict(d.AddBlocks, d.RemoveBlocks); conflict != 0 {
+		return api.NewError(400, "validation",
+			fmt.Sprintf("links_delta conflict: blocks #%d appears in both add_blocks and remove_blocks", conflict),
+			"", nil)
+	}
+	if conflict := firstConflict(d.AddBlockedBy, d.RemoveBlockedBy); conflict != 0 {
+		return api.NewError(400, "validation",
+			fmt.Sprintf("links_delta conflict: blocked_by #%d appears in both add_blocked_by and remove_blocked_by", conflict),
+			"", nil)
+	}
+	if conflict := firstConflict(d.AddRelated, d.RemoveRelated); conflict != 0 {
+		return api.NewError(400, "validation",
+			fmt.Sprintf("links_delta conflict: related #%d appears in both add_related and remove_related", conflict),
+			"", nil)
+	}
+	return nil
+}
+
+// firstConflict returns the first issue number present in both slices, or 0
+// when there is no overlap. Used by validateLinksDelta.
+func firstConflict(adds, removes []int64) int64 {
+	if len(adds) == 0 || len(removes) == 0 {
+		return 0
+	}
+	seen := make(map[int64]struct{}, len(adds))
+	for _, n := range adds {
+		seen[n] = struct{}{}
+	}
+	for _, n := range removes {
+		if _, ok := seen[n]; ok {
+			return n
+		}
+	}
+	return 0
+}
+
+// linksDeltaNonEmpty reports whether the delta contains at least one
+// add or remove instruction. Callers use this to gate the empty-edit
+// validation error.
+func linksDeltaNonEmpty(d *api.LinksDelta) bool {
+	if d == nil {
+		return false
+	}
+	return d.SetParent != nil || d.RemoveParent != nil ||
+		len(d.AddBlocks) > 0 || len(d.AddBlockedBy) > 0 || len(d.AddRelated) > 0 ||
+		len(d.RemoveBlocks) > 0 || len(d.RemoveBlockedBy) > 0 || len(d.RemoveRelated) > 0
+}
+
+
 func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string) (db.Issue, error) {
-	if uid.Valid(ref) {
-		issue, err := store.IssueByUID(ctx, ref)
+	// ULIDs are spec-defined as case-insensitive. Uppercase the ref
+	// before validation/lookup so a user typing the lowercase form
+	// they got from a copy-paste pipeline isn't told their input is
+	// invalid. The normalized form also feeds the error messages, so
+	// "no match for ABC12345" reads the same regardless of case.
+	normalized := strings.ToUpper(ref)
+	if uid.Valid(normalized) {
+		issue, err := store.IssueByUID(ctx, normalized)
 		if errors.Is(err, db.ErrNotFound) {
-			return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+			return db.Issue{}, api.NewError(404, "issue_not_found",
+				fmt.Sprintf("no issue matches uid %s", normalized), "", nil)
 		}
 		if err != nil {
 			return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		return issue, nil
 	}
-	if len(ref) < minIssueUIDPrefixLen {
+	if len(normalized) < minIssueUIDPrefixLen {
 		return db.Issue{}, api.NewError(400, "prefix_too_short",
-			"uid prefix must be at least 8 characters", "", nil)
+			fmt.Sprintf("uid prefix %q must be at least %d characters", ref, minIssueUIDPrefixLen),
+			"", nil)
 	}
-	if !uid.ValidPrefix(ref) {
-		return db.Issue{}, api.NewError(400, "validation", "uid must be a valid ULID or prefix", "", nil)
+	if !uid.ValidPrefix(normalized) {
+		return db.Issue{}, api.NewError(400, "validation",
+			fmt.Sprintf("%q is not a valid ULID prefix (Crockford base32: 0-9, A-Z excluding I/L/O/U; first char 0-7)", ref),
+			"", nil)
 	}
-	matches, err := store.IssueUIDPrefixMatch(ctx, ref, 20)
+	matches, err := store.IssueUIDPrefixMatch(ctx, normalized, 20)
 	if err != nil {
 		return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	switch len(matches) {
 	case 0:
-		return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		return db.Issue{}, api.NewError(404, "issue_not_found",
+			fmt.Sprintf("no issue matches uid prefix %s", normalized), "", nil)
 	case 1:
 		return matches[0], nil
 	default:
@@ -399,9 +618,23 @@ func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues
 	if err != nil {
 		return nil, err
 	}
+	blockedBy, err := store.BlockedByNumbersByIssues(ctx, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
+	related, err := store.RelatedNumbersByIssues(ctx, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]api.IssueOut, len(issues))
 	for i, iss := range issues {
-		row := api.IssueOut{Issue: iss, Labels: labelsByID[iss.ID], Blocks: blocks[iss.ID]}
+		row := api.IssueOut{
+			Issue:     iss,
+			Labels:    labelsByID[iss.ID],
+			Blocks:    blocks[iss.ID],
+			BlockedBy: blockedBy[iss.ID],
+			Related:   related[iss.ID],
+		}
 		if parentNumber, ok := parentNumbers[iss.ID]; ok {
 			row.ParentNumber = &parentNumber
 		}
@@ -492,7 +725,26 @@ func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIs
 	if in.IdempotencyKey == "" {
 		return "", nil, nil
 	}
+	// Compute both fingerprint forms: the new (deduped) form is what we
+	// write for fresh creates and what most retries should match. The legacy
+	// (non-deduped) form is what idempotency events produced before kata#1's
+	// dedupe-in-Fingerprint change carry. Lookup accepts either so a retry
+	// inside the existing idempotency window after upgrade doesn't trip
+	// idempotency_mismatch on a logically-equivalent request.
+	//
+	// Known asymmetry: if a pre-kata#1 request stored a fingerprint over
+	// duplicate-bearing links (e.g. `[A, A]`) and the post-upgrade retry
+	// sends the same intent in deduped form (`[A]`), neither computed
+	// fingerprint matches the stored hash because the stored hash captured
+	// the duplicate cardinality and we cannot reconstruct it from the
+	// retry alone. Surfaces as 409 idempotency_mismatch; the user resolves
+	// it by sending a fresh key. The window self-heals after 7 days, so
+	// this only affects retries crossing the upgrade boundary within the
+	// window. Storing the count alongside the hash on new writes does not
+	// help pre-upgrade entries, so we accept the gap rather than complicate
+	// the storage shape.
 	fp := db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links, in.Body.Priority)
+	fpLegacy := db.FingerprintLegacy(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links, in.Body.Priority)
 	since := time.Now().Add(-idempotencyWindow)
 	match, err := cfg.DB.LookupIdempotency(ctx, in.ProjectID, in.IdempotencyKey, since)
 	if err != nil {
@@ -501,7 +753,7 @@ func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIs
 	if match == nil {
 		return fp, nil, nil
 	}
-	if match.Fingerprint != fp {
+	if match.Fingerprint != fp && match.Fingerprint != fpLegacy {
 		return "", nil, api.NewError(409, "idempotency_mismatch",
 			"idempotency key matched a prior issue with a different fingerprint",
 			"either use a fresh key, or send the exact same fields as the original",

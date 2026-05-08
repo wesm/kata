@@ -182,15 +182,24 @@ Common issue commands:
 
 ```sh
 kata create <title> [--body TEXT | --body-file PATH | --body-stdin]
-                  [--label LABEL] [--owner NAME]
-                  [--parent N] [--blocks N] [--idempotency-key KEY]
+                  [--label LABEL] [--owner NAME] [--priority 0..4]
+                  [--parent <ref>] [--blocks <ref>] [--blocked-by <ref>]
+                  [--related <ref>] [--idempotency-key KEY] [--force-new]
 kata list [--status open|closed|all] [--limit N]
 kata show <issue-ref>
-kata edit <number> [--title TEXT] [--body TEXT] [--owner NAME]
+kata edit <issue-ref> [--title TEXT] [--body TEXT] [--owner NAME]
+                  [--priority 0..4 | --priority -]
+                  [--parent <ref>] [--blocks <ref>] [--blocked-by <ref>] [--related <ref>]
+                  [--remove-parent <ref>] [--remove-blocks <ref>]
+                  [--remove-blocked-by <ref>] [--remove-related <ref>]
 kata comment <number> [--body TEXT | --body-file PATH | --body-stdin]
 kata close <number> [--reason done|wontfix|duplicate]
 kata reopen <number>
 ```
+
+Refs accept `#N`, `N`, a full ULID, or an 8+ char ULID prefix. The
+relationship flags on `create`/`edit` are documented in detail in
+"Relationships ride on `kata create` and `kata edit`" below.
 
 Labels, ownership, and relationships:
 
@@ -200,19 +209,31 @@ kata label rm <number> <label>
 kata labels
 kata assign <number> <owner>
 kata unassign <number>
-
-kata parent <child-ref> <parent-ref> [--replace]
-kata unparent <child-ref>
-kata block <blocker-ref> <blocked-ref>
-kata unblock <blocker-ref> <blocked-ref>
-kata relate <a-ref> <b-ref>
-kata unrelate <a-ref> <b-ref>
-kata link <from-ref> <parent|blocks|related> <to-ref>
-kata unlink <from-ref> <parent|blocks|related> <to-ref>
 ```
 
-For `show` and relationship commands, an issue ref can be `#N`, `N`, a full
-UID, or a unique UID prefix of at least 8 characters.
+Relationships ride on `kata create` and `kata edit` as repeatable flags,
+all framed from the operating issue's POV:
+
+```sh
+# Add (work on create + edit)
+kata create "..." --parent N --blocks N --blocked-by N --related N
+kata edit   <ref> --parent N --blocks N --blocked-by N --related N
+
+# Remove (edit only)
+kata edit <ref> --remove-parent N        # strict: must equal current parent
+kata edit <ref> --remove-blocks N        # idempotent
+kata edit <ref> --remove-blocked-by N    # idempotent
+kata edit <ref> --remove-related N       # idempotent
+```
+
+`--parent` is at-most-one and replaces any existing parent on `edit`.
+The other flags are repeatable. `--remove-parent N` is strict: it fails
+loudly if the current parent is unset or different from N (an
+optimistic-concurrency check against agents acting on stale state). All
+mutations in a single `edit` call apply atomically.
+
+For `show` and the issue-ref arguments above, an issue ref can be `#N`,
+`N`, a full UID, or a unique UID prefix of at least 8 characters.
 
 Search, readiness, events, and project inspection:
 
@@ -314,7 +335,7 @@ kata create "fix login race" \
 kata show 12 --json
 kata comment 12 --body "Found another reproduction path." --json
 kata label add 12 safari --json
-kata block 12 18 --json
+kata edit 12 --blocks 18 --json
 
 # Close when done
 kata close 12 --reason done --json

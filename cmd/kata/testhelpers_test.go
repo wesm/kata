@@ -424,6 +424,8 @@ func requireCLIError(t *testing.T, err error, expectedCode int) *cliError {
 type IssueResponse struct {
 	Issue struct {
 		Number   int64   `json:"number"`
+		UID      string  `json:"uid"`
+		Title    string  `json:"title"`
 		Owner    *string `json:"owner"`
 		Priority *int64  `json:"priority"`
 	} `json:"issue"`
@@ -513,4 +515,12 @@ func (a *asyncCLI) stop() {
 func fetchIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, issueNum int64) IssueResponse {
 	t.Helper()
 	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+itoa(issueNum))
+}
+
+// fetchDeletedIssueViaHTTP is the include_deleted=true variant. Used by
+// remove-flag tests that need to read a soft-deleted peer's UID after
+// it's already been hidden from the live-issue read path.
+func fetchDeletedIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, issueNum int64) IssueResponse {
+	t.Helper()
+	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+itoa(issueNum)+"?include_deleted=true")
 }

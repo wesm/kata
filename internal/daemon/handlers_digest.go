@@ -197,7 +197,17 @@ func applyEvent(e db.Event, totals, grand *api.DigestTotals, acc *issueAccum) {
 		for _, lk := range links {
 			bump(&totals.Linked, &grand.Linked)
 			if acc != nil && lk.Type != "" {
-				acc.Linked = append(acc.Linked, fmt.Sprintf("%s:#%d", lk.Type, lk.ToNumber))
+				// An inverse-direction blocks link (`--blocked-by N` on
+				// create) is stored as type="blocks" with incoming=true;
+				// the digest's per-edge label flips to "blocked_by" so the
+				// summary reads in the issue's POV — without this, a
+				// `--blocked-by` create would surface as `blocks:#N` and
+				// reverse the dependency direction in reports.
+				label := lk.Type
+				if lk.Type == "blocks" && lk.Incoming {
+					label = "blocked_by"
+				}
+				acc.Linked = append(acc.Linked, fmt.Sprintf("%s:#%d", label, lk.ToNumber))
 			}
 		}
 	case "issue.closed":
@@ -275,13 +285,20 @@ func applyEvent(e db.Event, totals, grand *api.DigestTotals, acc *issueAccum) {
 		}
 		// "blocked-on-X resolved": when the blocker side explicitly removes
 		// the blocks edge, credit them with unblocking the other issue. The
-		// link payload uses from_number = the URL-issue (the side calling
-		// `kata unblock <blocker> <blocked>` posts on the blocker), so the
-		// to_number is the issue that becomes unblocked.
+		// link payload uses from_number = the URL issue (the blocker, whose
+		// edit removes the link), so the to_number is the issue that
+		// becomes unblocked.
 		if t == "blocks" && acc != nil && to > 0 {
 			acc.UnblocksOthers = append(acc.UnblocksOthers, to)
 			bump(&totals.Unblocked, &grand.Unblocked)
 		}
+	case "issue.links_changed":
+		// Aggregated event from the PATCH /issues/{n} path (kata#1).
+		// One event covers any combination of adds and removes; we
+		// expand it back into per-edge digest accounting so reports
+		// look the same regardless of which API path produced the
+		// link mutation.
+		applyLinksChangedDigest(e.Payload, totals, grand, acc)
 	case "issue.soft_deleted":
 		bump(&totals.Deleted, &grand.Deleted)
 		if acc != nil {
@@ -380,6 +397,7 @@ func createdInitialState(payload string) ([]string, string, []createdLink) {
 type createdLink struct {
 	Type     string `json:"type"`
 	ToNumber int64  `json:"to_number"`
+	Incoming bool   `json:"incoming,omitempty"`
 }
 
 func linkSummary(payload string) (string, int64) {
@@ -394,6 +412,78 @@ func linkSummary(payload string) (string, int64) {
 		return "", 0
 	}
 	return p.Type, p.ToNumber
+}
+
+// applyLinksChangedDigest expands an issue.links_changed payload into the
+// same per-edge digest accounting that issue.linked / issue.unlinked use,
+// so reports do not vary by API path. The aggregated event always carries
+// the issue's POV (parent/blocks/blocked_by/related, each with adds and
+// removes); a single edit may produce many digest entries.
+func applyLinksChangedDigest(payload string, totals, grand *api.DigestTotals, acc *issueAccum) {
+	if payload == "" {
+		return
+	}
+	var p struct {
+		ParentSet        *int64  `json:"parent_set,omitempty"`
+		ParentRemoved    *int64  `json:"parent_removed,omitempty"`
+		BlocksAdded      []int64 `json:"blocks_added,omitempty"`
+		BlocksRemoved    []int64 `json:"blocks_removed,omitempty"`
+		BlockedByAdded   []int64 `json:"blocked_by_added,omitempty"`
+		BlockedByRemoved []int64 `json:"blocked_by_removed,omitempty"`
+		RelatedAdded     []int64 `json:"related_added,omitempty"`
+		RelatedRemoved   []int64 `json:"related_removed,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return
+	}
+	add := func(linkType string, target int64) {
+		bump(&totals.Linked, &grand.Linked)
+		if acc != nil {
+			acc.Linked = append(acc.Linked, fmt.Sprintf("%s:#%d", linkType, target))
+		}
+	}
+	remove := func(linkType string, target int64, alsoUnblocks bool) {
+		bump(&totals.Unlinked, &grand.Unlinked)
+		if acc != nil {
+			acc.Unlinked = append(acc.Unlinked, fmt.Sprintf("%s:#%d", linkType, target))
+		}
+		if alsoUnblocks && acc != nil && target > 0 {
+			acc.UnblocksOthers = append(acc.UnblocksOthers, target)
+			bump(&totals.Unblocked, &grand.Unblocked)
+		}
+	}
+
+	if p.ParentSet != nil {
+		add("parent", *p.ParentSet)
+	}
+	if p.ParentRemoved != nil {
+		remove("parent", *p.ParentRemoved, false)
+	}
+	for _, n := range p.BlocksAdded {
+		add("blocks", n)
+	}
+	for _, n := range p.BlocksRemoved {
+		remove("blocks", n, true)
+	}
+	for _, n := range p.BlockedByAdded {
+		add("blocked_by", n)
+	}
+	// blocked_by_removed deletes the same `blocks` edge as blocks_removed
+	// would from the opposite POV — but the actor semantics differ.
+	// `kata edit X --remove-blocked-by Y` means X is no longer blocked by
+	// Y; X did not unblock anyone. We surface this as a plain unlink from
+	// X's POV (no UnblocksOthers credit, no Unblocked-total bump) so the
+	// digest doesn't misattribute the action to X. The mirror operation
+	// (`kata edit Y --remove-blocks X`) still credits Y with unblocking.
+	for _, n := range p.BlockedByRemoved {
+		remove("blocked_by", n, false)
+	}
+	for _, n := range p.RelatedAdded {
+		add("related", n)
+	}
+	for _, n := range p.RelatedRemoved {
+		remove("related", n, false)
+	}
 }
 
 // renderIssueAccums turns the per-issue accumulators into the wire shape:

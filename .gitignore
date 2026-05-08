@@ -27,3 +27,4 @@ coverage.out
 *.swp
 *~
 .DS_Store
+.kata.local.toml

@@ -564,10 +564,28 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		Payload           json.RawMessage `json:"payload"`
 		CreatedAt         string          `json:"created_at"`
 	}
+	// See exportEventsV2 for the kata#1 design call: live-only export
+	// keeps aggregated issue.links_changed events whose related_issue_id
+	// points at a now-soft-deleted peer, but the peer's row is omitted
+	// from the export — so the FK must be scrubbed at emit time so the
+	// JSONL round-trips. The payload's *_uids slices retain the orphan
+	// reference for historical context.
+	relatedIDExpr, relatedUIDExpr := "events.related_issue_id", "events.related_issue_uid"
+	if !opts.IncludeDeleted {
+		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
+		                          AND peer.deleted_at IS NOT NULL
+		                     THEN NULL
+		                     ELSE events.related_issue_id END`
+		relatedUIDExpr = `CASE WHEN events.type = 'issue.links_changed'
+		                           AND peer.deleted_at IS NOT NULL
+		                      THEN NULL
+		                      ELSE events.related_issue_uid END`
+	}
 	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.project_id, %s, events.issue_id, events.issue_uid,
-	                 issue_number, related_issue_id, related_issue_uid,
-	                 type, actor, payload, CAST(events.created_at AS TEXT)
-	          FROM events%s`, projectNameExpr, joinProjects)
+	                 events.issue_number, `+relatedIDExpr+`, `+relatedUIDExpr+`,
+	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
+	          FROM events%s
+	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
 	where, args := eventExportWhere(opts)
 	query += where + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
@@ -606,10 +624,30 @@ func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		Payload         json.RawMessage `json:"payload"`
 		CreatedAt       string          `json:"created_at"`
 	}
+	// Live-only export keeps issue.links_changed events whose
+	// related_issue_id points at a soft-deleted peer (the iteration-21
+	// preservation rule) but the peer's `issues` row is intentionally
+	// omitted, so emitting the FK as-is would dangle on import. Scrub
+	// related_issue_id / related_issue_uid to NULL in that case so the
+	// JSONL round-trips. The payload's *_uids slices retain the orphan
+	// UID for historical context. include_deleted=true exports both
+	// sides, so the FK roundtrips fine — leave the columns alone there.
+	relatedIDExpr, relatedUIDExpr := "events.related_issue_id", "events.related_issue_uid"
+	if !opts.IncludeDeleted {
+		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
+		                          AND peer.deleted_at IS NOT NULL
+		                     THEN NULL
+		                     ELSE events.related_issue_id END`
+		relatedUIDExpr = `CASE WHEN events.type = 'issue.links_changed'
+		                           AND peer.deleted_at IS NOT NULL
+		                      THEN NULL
+		                      ELSE events.related_issue_uid END`
+	}
 	query := fmt.Sprintf(`SELECT events.id, events.project_id, %s, events.issue_id, events.issue_uid,
-	                 issue_number, related_issue_id, related_issue_uid,
-	                 type, actor, payload, CAST(events.created_at AS TEXT)
-	          FROM events%s`, projectNameExpr, joinProjects)
+	                 events.issue_number, `+relatedIDExpr+`, `+relatedUIDExpr+`,
+	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
+	          FROM events%s
+	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
 	where, args := eventExportWhere(opts)
 	query += where + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
@@ -646,9 +684,20 @@ func exportEventsV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		Payload        json.RawMessage `json:"payload"`
 		CreatedAt      string          `json:"created_at"`
 	}
-	query := fmt.Sprintf(`SELECT events.id, events.project_id, %s, events.issue_id, issue_number,
-	                 related_issue_id, type, actor, payload, CAST(events.created_at AS TEXT)
-	          FROM events%s`, projectNameExpr, joinProjects)
+	// See exportEventsV2 above for why aggregated issue.links_changed
+	// events on a soft-deleted peer get their related_issue_id scrubbed
+	// in live-only exports.
+	relatedIDExpr := "events.related_issue_id"
+	if !opts.IncludeDeleted {
+		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
+		                          AND peer.deleted_at IS NOT NULL
+		                     THEN NULL
+		                     ELSE events.related_issue_id END`
+	}
+	query := fmt.Sprintf(`SELECT events.id, events.project_id, %s, events.issue_id, events.issue_number,
+	                 `+relatedIDExpr+`, events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
+	          FROM events%s
+	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
 	where, args := eventExportWhere(opts)
 	query += where + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
@@ -907,9 +956,24 @@ func eventExportWhere(opts ExportOptions) (string, []any) {
 		args = append(args, opts.ProjectID)
 	}
 	if !opts.IncludeDeleted {
+		// Drop events whose issue_id refers to a soft-deleted issue,
+		// and events whose related_issue_id refers to a soft-deleted
+		// issue EXCEPT for aggregated issue.links_changed events. Per
+		// Jesse's design call on kata#1, soft-deleting a peer must not
+		// erase the historical context that another live issue was
+		// once linked to it. Aggregated events on a surviving issue
+		// are preserved regardless of whether iteration-16's envelope-
+		// peer fix populated related_issue_id (single-peer edit) or
+		// left it NULL (multi-peer edit) — exporting one but not the
+		// other based on batch size is just as broken as the broader
+		// history-loss problem this rule fixes. Per-link
+		// issue.linked / issue.unlinked events still drop via
+		// related_issue_id, matching their pre-kata#1 behavior.
+		// Payload-only references (issue.created initial links,
+		// issue.links_changed *_uids) export intact regardless.
 		clauses = append(clauses,
-			`(issue_id IS NULL OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.issue_id AND issues.deleted_at IS NULL))`,
-			`(related_issue_id IS NULL OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.related_issue_id AND issues.deleted_at IS NULL))`,
+			`(events.issue_id IS NULL OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.issue_id AND issues.deleted_at IS NULL))`,
+			`(events.related_issue_id IS NULL OR events.type = 'issue.links_changed' OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.related_issue_id AND issues.deleted_at IS NULL))`,
 		)
 	}
 	return whereClause(clauses), args

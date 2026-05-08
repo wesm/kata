@@ -148,6 +148,13 @@ type editorReturnedMsg struct {
 // eventReceivedMsg is the per-frame SSE message forwarded to the TEA
 // loop by startSSE. issueNumber is zero when the event has no
 // associated issue (project-level events).
+//
+// linksChanged is populated only for issue.links_changed events (the
+// aggregated form emitted by `kata edit`). It carries parent_set and
+// parent_removed from the payload so the detail-pane refetch logic
+// can refresh the OTHER endpoint of a parent transition — without it,
+// the old or new parent's pane would stay stale until a manual
+// refresh after a parent replace.
 type eventReceivedMsg struct {
 	eventType              string
 	projectID, issueNumber int64
@@ -155,6 +162,7 @@ type eventReceivedMsg struct {
 	issueUID               string
 	relatedIssueUID        string
 	link                   *linkPayload
+	linksChanged           *linksChangedParents
 }
 
 type linkPayload struct {
@@ -163,6 +171,31 @@ type linkPayload struct {
 	ToNumber     int64  `json:"to_number"`
 	FromIssueUID string `json:"from_issue_uid,omitempty"`
 	ToIssueUID   string `json:"to_issue_uid,omitempty"`
+}
+
+// linksChangedParents holds every peer issue referenced by an
+// issue.links_changed payload. The detail-refetch logic uses RefUIDs
+// (when populated) and falls back to Refs by number to invalidate
+// panes on the OTHER end of any add/remove. UIDs are authoritative —
+// project-scoped numbers can collide across `kata reset-counter`, so
+// matching solely on number can refresh the wrong pane after a reset.
+//
+// Set / Removed (and SetUID / RemovedUID) remain populated for parent
+// transitions (replace surfaces both at once) so callers that
+// specifically care about the parent slot can short-circuit without
+// scanning the full Refs slice.
+//
+// RefUIDs runs parallel to Refs (same length / order) when the source
+// payload carries the *_uids fields. Pre-kata#1 events lack those
+// fields; in that case RefUIDs is empty and the consumer falls back
+// to number-only matching.
+type linksChangedParents struct {
+	Set        int64    // parent_set; zero when absent
+	SetUID     string   // parent_set_uid; "" when absent
+	Removed    int64    // parent_removed; zero when absent
+	RemovedUID string   // parent_removed_uid; "" when absent
+	Refs       []int64  // every peer number in the payload (parents + blocks + related)
+	RefUIDs    []string // peer UIDs parallel to Refs; empty for pre-kata#1 events
 }
 
 // labelsFetchedMsg carries the result of an api.ListLabels call. pid

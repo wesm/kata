@@ -371,3 +371,33 @@ func TestMatch_IssueStarOnlyKnown(t *testing.T) {
 		t.Fatal("issue.* must not match foo.created")
 	}
 }
+
+// TestMatch_LinksChangedRecognized pins that the aggregated event added
+// for kata#1 is in knownEventTypes — both the explicit form and the
+// wildcard matchers must accept it. Without this, hook configs cannot
+// subscribe to relationship changes routed through `kata edit`.
+func TestMatch_LinksChangedRecognized(t *testing.T) {
+	_, exact, err := compileEventMatcher("issue.links_changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exact("issue.links_changed") {
+		t.Fatal("explicit issue.links_changed matcher must match the event")
+	}
+
+	_, issueStar, err := compileEventMatcher("issue.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !issueStar("issue.links_changed") {
+		t.Fatal("issue.* must match issue.links_changed")
+	}
+
+	_, allStar, err := compileEventMatcher("*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allStar("issue.links_changed") {
+		t.Fatal("* must match issue.links_changed")
+	}
+}

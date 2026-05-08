@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"net/http"
 	"net/url"
 	"strconv"
 	"testing"
@@ -216,6 +217,74 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 	assert.Contains(t, actions, "labeled:bug")
 	assert.Contains(t, actions, "assigned:bob")
 	assert.Contains(t, actions, "blocks:#"+strconv.FormatInt(target, 10))
+}
+
+// TestDigest_CreateTimeBlockedByEmitsBlockedByAction pins the digest's
+// translation of a `--blocked-by N` create-time link. Per kata#1, this
+// is stored as type="blocks" with incoming=true; the digest must flip
+// the per-issue action token to `blocked_by:#N` so the summary reads in
+// the issue's POV. Without the flip, agents see the dependency reversed.
+func TestDigest_CreateTimeBlockedByEmitsBlockedByAction(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+
+	blocker := createIssueAs(t, env, pid, "alice", "blocker")
+
+	var created struct {
+		Issue struct {
+			Number int64 `json:"number"`
+		} `json:"issue"`
+	}
+	envPostJSON(t, env, projectPath(pid)+"/issues", map[string]any{
+		"actor": "alice",
+		"title": "blocked-thing",
+		"links": []map[string]any{
+			{"type": "blocks", "to_number": blocker, "incoming": true},
+		},
+	}, &created)
+	child := created.Issue.Number
+
+	digest := fetchDigest(t, env, pid, rfc3339Offset(-time.Hour), rfc3339Offset(time.Hour))
+	actions := digest.actionsFor("alice", child)
+	require.NotNil(t, actions, "child not present in alice's per-issue digest")
+	assert.Contains(t, actions, "blocked_by:#"+strconv.FormatInt(blocker, 10),
+		"create-time --blocked-by must emit blocked_by:#N, not blocks:#N")
+	assert.NotContains(t, actions, "blocks:#"+strconv.FormatInt(blocker, 10),
+		"outgoing-direction action must NOT appear for an incoming link")
+}
+
+// TestDigest_BlockedByRemovedIsPlainUnlink pins the digest's actor
+// semantics for `kata edit X --remove-blocked-by Y`. From X's POV, X is
+// not actively unblocking anyone — X is becoming unblocked. The digest
+// must record a plain unlink (Unlinked total + per-issue Unlinked
+// action) without crediting X with UnblocksOthers or bumping Unblocked.
+// The mirror operation, `kata edit Y --remove-blocks X`, still credits
+// Y with unblocking.
+func TestDigest_BlockedByRemovedIsPlainUnlink(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+
+	blocker := createIssueAs(t, env, pid, "alice", "blocker")
+	child := createIssueAs(t, env, pid, "alice", "blocked")
+
+	resp, bs := envDoRaw(t, env, http.MethodPatch, issuePath(pid, child, ""),
+		map[string]any{
+			"actor":       "alice",
+			"links_delta": map[string]any{"add_blocked_by": []int64{blocker}},
+		}, nil)
+	require.Equalf(t, 200, resp.StatusCode, "add: %s", string(bs))
+	resp, bs = envDoRaw(t, env, http.MethodPatch, issuePath(pid, child, ""),
+		map[string]any{
+			"actor":       "alice",
+			"links_delta": map[string]any{"remove_blocked_by": []int64{blocker}},
+		}, nil)
+	require.Equalf(t, 200, resp.StatusCode, "remove: %s", string(bs))
+
+	digest := fetchDigest(t, env, pid, rfc3339Offset(-time.Hour), rfc3339Offset(time.Hour))
+	assert.Equal(t, 0, digest.Totals.Unblocked,
+		"blocked_by_removed must NOT credit X with unblocking — X was the one being unblocked")
+	assert.Equal(t, 1, digest.Totals.Unlinked,
+		"blocked_by_removed still records as a plain unlink for digest counts")
 }
 
 // TestDigest_PriorityEvents exercises the priority_set / priority_cleared

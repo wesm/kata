@@ -205,9 +205,17 @@ type CreateIssueRequest struct {
 }
 
 // CreateInitialLinkBody is one entry in CreateIssueRequest.Body.Links.
+//
+// Default direction: the new issue is the link's "from" side (e.g. for
+// type=blocks the new issue blocks ToNumber). Setting Incoming=true reverses
+// for type=blocks so the link runs from ToNumber to the new issue (i.e. the
+// new issue is blocked by ToNumber). Incoming=true is rejected for
+// type=parent (no inverse parent direction is exposed) and is a no-op for
+// type=related (which is symmetric).
 type CreateInitialLinkBody struct {
 	Type     string `json:"type" enum:"parent,blocks,related"`
 	ToNumber int64  `json:"to_number"`
+	Incoming bool   `json:"incoming,omitempty"`
 }
 
 // MutationResponse is the standard mutation envelope (§4.5). OriginalEvent is
@@ -266,6 +274,8 @@ type IssueOut struct {
 	ParentNumber *int64          `json:"parent_number,omitempty"`
 	ChildCounts  *db.ChildCounts `json:"child_counts,omitempty"`
 	Blocks       []int64         `json:"blocks,omitempty"`
+	BlockedBy    []int64         `json:"blocked_by,omitempty"`
+	Related      []int64         `json:"related,omitempty"`
 }
 
 // ListIssuesResponse is the list payload. Plan 8 commit 5b: each row
@@ -317,10 +327,67 @@ type EditIssueRequest struct {
 	ProjectID int64 `path:"project_id" required:"true"`
 	Number    int64 `path:"number" required:"true"`
 	Body      struct {
-		Actor string  `json:"actor" required:"true"`
-		Title *string `json:"title,omitempty"`
-		Body  *string `json:"body,omitempty"`
-		Owner *string `json:"owner,omitempty"`
+		Actor         string      `json:"actor" required:"true"`
+		Title         *string     `json:"title,omitempty"`
+		Body          *string     `json:"body,omitempty"`
+		Owner         *string     `json:"owner,omitempty"`
+		SetPriority   *int64      `json:"set_priority,omitempty"`
+		ClearPriority bool        `json:"clear_priority,omitempty"`
+		LinksDelta    *LinksDelta `json:"links_delta,omitempty"`
+	}
+}
+
+// LinksDelta describes a batched relationship mutation applied as part of
+// PATCH /issues/{number}. Each list contains target issue numbers; direction
+// is encoded by the field name from the URL issue's POV.
+//
+//	add_blocks        — URL issue blocks N
+//	add_blocked_by    — N blocks URL issue
+//	add_related       — URL issue related to N (canonicalized server-side)
+//	set_parent        — set URL issue's parent (replaces existing)
+//	remove_parent     — strict: must equal current parent
+//	remove_blocks/_blocked_by/_related — idempotent
+type LinksDelta struct {
+	SetParent       *int64  `json:"set_parent,omitempty"`
+	RemoveParent    *int64  `json:"remove_parent,omitempty"`
+	AddBlocks       []int64 `json:"add_blocks,omitempty"`
+	AddBlockedBy    []int64 `json:"add_blocked_by,omitempty"`
+	AddRelated      []int64 `json:"add_related,omitempty"`
+	RemoveBlocks    []int64 `json:"remove_blocks,omitempty"`
+	RemoveBlockedBy []int64 `json:"remove_blocked_by,omitempty"`
+	RemoveRelated   []int64 `json:"remove_related,omitempty"`
+}
+
+// LinkChanges reports link mutations actually applied. Empty fields are
+// omitted; entirely empty LinkChanges means every link op was a no-op.
+type LinkChanges struct {
+	ParentSet        *int64  `json:"parent_set,omitempty"`
+	ParentRemoved    *int64  `json:"parent_removed,omitempty"`
+	BlocksAdded      []int64 `json:"blocks_added,omitempty"`
+	BlocksRemoved    []int64 `json:"blocks_removed,omitempty"`
+	BlockedByAdded   []int64 `json:"blocked_by_added,omitempty"`
+	BlockedByRemoved []int64 `json:"blocked_by_removed,omitempty"`
+	RelatedAdded     []int64 `json:"related_added,omitempty"`
+	RelatedRemoved   []int64 `json:"related_removed,omitempty"`
+}
+
+// EditIssueResponse extends MutationResponse with a Changes block describing
+// link mutations actually applied. Field-only edits leave Changes empty.
+//
+// A single PATCH can emit up to three events (issue.updated for non-priority
+// field changes, issue.priority_set/_cleared for priority, issue.links_changed
+// for links). Events carries the full ordered slice. Event is retained as a
+// compatibility alias holding the FINAL event from that slice — older
+// clients that only knew one-event-per-mutation continue to work, while
+// new clients can walk the full slice to observe every transition (e.g.
+// distinguishing a priority change from a link change).
+type EditIssueResponse struct {
+	Body struct {
+		Issue   db.Issue     `json:"issue"`
+		Event   *db.Event    `json:"event"`
+		Events  []db.Event   `json:"events,omitempty"`
+		Changed bool         `json:"changed"`
+		Changes *LinkChanges `json:"changes,omitempty"`
 	}
 }
 

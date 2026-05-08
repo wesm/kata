@@ -11,7 +11,11 @@ start of each session for the agent contract; the short version:
 - `kata list --json` to see open work; `kata show <N> --json` for detail.
 - Search before creating: `kata search "<keywords>" --json`.
 - Update existing issues over creating duplicates (`kata comment`,
-  `kata label add`, `kata block`, `kata parent`).
+  `kata label add`, `kata edit --blocks/--blocked-by/--related/--parent`).
+- Relationships live on `kata create` and `kata edit` as flags, framed
+  from the operating issue's POV. Repeatable except `--parent`. Removes
+  are `--remove-parent` (strict; must equal current) plus idempotent
+  `--remove-blocks/--remove-blocked-by/--remove-related`.
 - Close only when the work is actually complete: `kata close <N> --reason done`.
 - Never `kata delete` or `kata purge` without explicit user authorization.
 
