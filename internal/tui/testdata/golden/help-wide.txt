@@ -9,7 +9,7 @@ L         toggle layout       esc/backspace  back                        ctrl+e 
 Graph                         c              new comment                                             
 k       up                    p              set parent                  Filters                     
 j       down                  b              add blocker                 /       search              
-up      scroll up             l              add link                    s       cycle status filter 
+up      scroll up             l              add related                 s       cycle status filter 
 down    scroll down           +              add label                   f       filter (form)       
 pgup    page up               -              remove label                c       clear filters       
 pgdown  page down             a              assign owner                ctrl+r  reset filter form   

@@ -165,7 +165,7 @@ func (dm detailModel) detailHelpRows() [][]helpItem {
 		{key: "r", desc: "reopen"},
 		{key: "p", desc: "parent"},
 		{key: "b", desc: "block"},
-		{key: "l", desc: "link"},
+		{key: "l", desc: "related"},
 		{key: "!", desc: "priority"},
 		{key: "N", desc: "child"},
 		{key: "L", desc: "layout"},

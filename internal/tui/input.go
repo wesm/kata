@@ -27,7 +27,7 @@ const (
 	inputOwnerPrompt       // detail `a` — assign owner
 	inputParentPrompt      // detail `p` — set parent
 	inputBlockerPrompt     // detail `b` — add blocker
-	inputLinkPrompt        // detail `L` — add link "kind number"
+	inputLinkPrompt        // detail `l` — add related link
 	inputPriorityPrompt    // detail `!` — set priority (0..4 or '-' to clear)
 	inputNewIssueForm      // list `n` — multi-field modal: Title/Body/Labels/Owner
 	inputBodyEditForm      // detail `e` — centered multi-line body editor
@@ -627,7 +627,7 @@ func panelPromptTitle(kind inputKind, n int64) string {
 	case inputBlockerPrompt:
 		return fmt.Sprintf("add blocker to #%d", n)
 	case inputLinkPrompt:
-		return fmt.Sprintf("add link to #%d (kind number)", n)
+		return fmt.Sprintf("add related link to #%d", n)
 	case inputPriorityPrompt:
 		return fmt.Sprintf("set priority of #%d (0..4 or '-')", n)
 	}

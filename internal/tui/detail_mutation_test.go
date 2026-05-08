@@ -246,19 +246,18 @@ func TestDetail_AddLink_Blocks(t *testing.T) {
 	}
 }
 
-// TestDetail_AddLink_Other: 'l' opens an inputLinkPrompt; commit of
-// "related 7" parses as <kind> <number> and calls AddLink. The
-// daemon's CHECK constraint accepts only 'parent', 'blocks', or
-// 'related' (internal/db/schema.sql links table CHECK); the l-key
-// path passes the first whitespace token verbatim as Type. (Capital
-// L was rebound to ToggleLayout when the layout-toggle hotkey was
-// added — AddLink moved to lowercase l for ergonomics.)
+// TestDetail_AddLink_Other: 'l' opens an inputLinkPrompt; committing a
+// number creates a "related" link. p covers parent, b covers blocks, so
+// l is dedicated to the third kind and just takes a number — no
+// "<kind> <number>" syntax. (Capital L was rebound to ToggleLayout when
+// the layout-toggle hotkey was added — AddLink moved to lowercase l
+// for ergonomics.)
 func TestDetail_AddLink_Other(t *testing.T) {
 	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('l'), km, api)
 	requireInputPrompt(t, cmd, inputLinkPrompt)
-	_ = executePromptCommit(t, dm, api, km, inputLinkPrompt, "related 7")
+	_ = executePromptCommit(t, dm, api, km, inputLinkPrompt, "7")
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
@@ -320,9 +319,9 @@ func TestDetail_SetPriority_ParseFailure(t *testing.T) {
 	}
 }
 
-// TestDetail_AddLink_OtherParseFailure: a single-token buffer "noop"
-// should not call api.AddLink — dispatchAddLinkSyntax surfaces a
-// parse-failed status via the synthetic mutationDoneMsg path.
+// TestDetail_AddLink_OtherParseFailure: a non-numeric buffer "noop"
+// should not call api.AddLink — dispatchLink surfaces a parse-failed
+// status via the synthetic mutationDoneMsg path.
 func TestDetail_AddLink_OtherParseFailure(t *testing.T) {
 	api := &fakeDetailAPI{}
 	km := newKeymap()

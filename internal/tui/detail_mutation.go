@@ -106,7 +106,7 @@ func (dm detailModel) dispatchPanelPromptCommit(
 	case inputBlockerPrompt:
 		return dm, dm.dispatchLink(api, "blocks", buf)
 	case inputLinkPrompt:
-		return dm, dm.dispatchAddLinkSyntax(api, buf)
+		return dm, dm.dispatchLink(api, "related", buf)
 	case inputPriorityPrompt:
 		return dm, dm.dispatchSetPriority(api, buf)
 	}
@@ -359,19 +359,6 @@ func parsePriorityFailedCmd(input string, gen int64) tea.Cmd {
 	}
 }
 
-// dispatchAddLinkSyntax parses "kind number" out of buf. Empty kind or
-// missing number surfaces a parse error via mutationDoneMsg so the
-// status line gets it.
-func (dm detailModel) dispatchAddLinkSyntax(
-	api detailAPI, buf string,
-) tea.Cmd {
-	parts := strings.Fields(buf)
-	if len(parts) != 2 {
-		return parseFailedCmd("link", buf, dm.gen)
-	}
-	return dm.dispatchLink(api, parts[0], parts[1])
-}
-
 // parseFailedCmd surfaces a parse error as a synthetic mutationDoneMsg
 // so the standard error-handling path renders the status line. gen is
 // captured so the parse-error toast respects the same scoping rule as
@@ -382,7 +369,7 @@ func parseFailedCmd(kind, input string, gen int64) tea.Cmd {
 			origin: "detail",
 			gen:    gen,
 			kind:   "link." + kind,
-			err:    fmt.Errorf("parse %q failed: expected '<kind> <number>'", input),
+			err:    fmt.Errorf("parse %q failed: expected an issue number", input),
 		}
 	}
 }

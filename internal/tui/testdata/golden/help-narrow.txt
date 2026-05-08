@@ -31,7 +31,7 @@ e              edit body
 c              new comment
 p              set parent
 b              add blocker
-l              add link
+l              add related
 +              add label
 -              remove label
 a              assign owner

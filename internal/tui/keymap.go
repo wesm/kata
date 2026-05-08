@@ -78,7 +78,7 @@ func newKeymap() keymap {
 		NewComment:   key{Keys: []string{"c"}, Help: "new comment"},
 		SetParent:    key{Keys: []string{"p"}, Help: "set parent"},
 		AddBlocker:   key{Keys: []string{"b"}, Help: "add blocker"},
-		AddLink:      key{Keys: []string{"l"}, Help: "add link"},
+		AddLink:      key{Keys: []string{"l"}, Help: "add related"},
 		AddLabel:     key{Keys: []string{"+"}, Help: "add label"},
 		RemoveLabel:  key{Keys: []string{"-"}, Help: "remove label"},
 		AssignOwner:  key{Keys: []string{"a"}, Help: "assign owner"},

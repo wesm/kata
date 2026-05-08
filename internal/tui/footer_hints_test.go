@@ -54,7 +54,7 @@ func TestDetailHelpRows_Contexts(t *testing.T) {
 		helpItem{key: "r", desc: "reopen"},
 		helpItem{key: "p", desc: "parent"},
 		helpItem{key: "b", desc: "block"},
-		helpItem{key: "l", desc: "link"},
+		helpItem{key: "l", desc: "related"},
 		helpItem{key: "L", desc: "layout"},
 		helpItem{key: "esc", desc: "back"},
 		helpItem{key: "?", desc: "help"},
