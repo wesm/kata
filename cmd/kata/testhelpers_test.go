@@ -514,3 +514,21 @@ func fetchIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, issueNum int64
 	t.Helper()
 	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+itoa(issueNum))
 }
+
+// listIssueNumbersViaHTTP fetches the open+closed issue numbers in a project.
+// Used by --project tests to assert that a created or mutated issue landed in
+// the right project rather than the workspace's default.
+func listIssueNumbersViaHTTP(t *testing.T, baseURL string, pid int64) []int64 {
+	t.Helper()
+	type response struct {
+		Issues []struct {
+			Number int64 `json:"number"`
+		} `json:"issues"`
+	}
+	b := getJSON[response](t, baseURL+"/api/v1/projects/"+itoa(pid)+"/issues?status=&limit=100")
+	out := make([]int64, 0, len(b.Issues))
+	for _, i := range b.Issues {
+		out = append(out, i.Number)
+	}
+	return out
+}

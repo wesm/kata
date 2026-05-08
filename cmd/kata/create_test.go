@@ -134,3 +134,95 @@ func TestResolveProjectID_FallsBackOnMissingConfig(t *testing.T) {
 	_, hasIdentity := got["project_identity"]
 	assert.False(t, hasIdentity, "no .kata.toml means no project_identity in the request")
 }
+
+// TestResolveProjectID_WithProjectFlag_ResolvesByName proves that when
+// flags.Project is set, resolveProjectID skips the workspace-based
+// /resolve flow and goes through the projects list selector. This is
+// what enables `kata create --project <name>` to target a project
+// other than the one bound to cwd.
+func TestResolveProjectID_WithProjectFlag_ResolvesByName(t *testing.T) {
+	resetFlags(t)
+	flags.Project = "kata"
+
+	var resolveCalled atomic.Int32
+	srv := httptest.NewServer(projectsListHandler(t, &resolveCalled))
+	t.Cleanup(srv.Close)
+
+	id, err := resolveProjectID(context.Background(), srv.URL, t.TempDir())
+	require.NoError(t, err)
+	assert.EqualValues(t, 7, id)
+	assert.Zero(t, resolveCalled.Load(), "selector path must not call /resolve")
+}
+
+// TestResolveProjectID_WithProjectFlag_AcceptsID confirms numeric
+// selectors work alongside name selectors.
+func TestResolveProjectID_WithProjectFlag_AcceptsID(t *testing.T) {
+	resetFlags(t)
+	flags.Project = "7"
+
+	srv := httptest.NewServer(projectsListHandler(t, nil))
+	t.Cleanup(srv.Close)
+
+	id, err := resolveProjectID(context.Background(), srv.URL, t.TempDir())
+	require.NoError(t, err)
+	assert.EqualValues(t, 7, id)
+}
+
+// TestResolveProjectID_WithProjectFlag_NotFound surfaces a useful
+// error when the selector matches nothing.
+func TestResolveProjectID_WithProjectFlag_NotFound(t *testing.T) {
+	resetFlags(t)
+	flags.Project = "nonexistent"
+
+	srv := httptest.NewServer(projectsListHandler(t, nil))
+	t.Cleanup(srv.Close)
+
+	_, err := resolveProjectID(context.Background(), srv.URL, t.TempDir())
+	require.Error(t, err)
+}
+
+// projectsListHandler stubs the daemon endpoints loadProjectRefs touches:
+// GET /api/v1/projects (the list) and GET /api/v1/projects/{id} (the
+// per-project alias detail loadProjectRefs walks for selector matching).
+// resolveSeen, when non-nil, is incremented if /api/v1/projects/resolve is
+// hit — selector callers must never go through that endpoint.
+func projectsListHandler(t *testing.T, resolveSeen *atomic.Int32) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"projects":[{"id":7,"identity":"github.com/wesm/kata","name":"kata","next_issue_number":1}]}`))
+		case "/api/v1/projects/7":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"project":{"id":7,"identity":"github.com/wesm/kata","name":"kata","next_issue_number":1},"aliases":[]}`))
+		case "/api/v1/projects/resolve":
+			if resolveSeen != nil {
+				resolveSeen.Add(1)
+			}
+			http.Error(w, "selector path must not call /resolve", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}
+}
+
+// TestCreate_WithProjectFlag_TargetsNamedProject is the integration
+// proof that --project lets a user create issues in a project other
+// than the one bound to cwd. Without --project, create falls back to
+// workspace resolution and the issue would land in the default
+// project.
+func TestCreate_WithProjectFlag_TargetsNamedProject(t *testing.T) {
+	env, dir := setupCLIEnv(t)
+	otherDir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/other.git")
+	defaultPID := resolvePIDViaHTTP(t, env.URL, dir)
+	otherPID := resolvePIDViaHTTP(t, env.URL, otherDir)
+
+	out := runCLI(t, env, dir, "--quiet", "create", "--project", "other", "issue in other")
+	assert.Equal(t, "1", out)
+
+	defaultIssues := listIssueNumbersViaHTTP(t, env.URL, defaultPID)
+	otherIssues := listIssueNumbersViaHTTP(t, env.URL, otherPID)
+	assert.Empty(t, defaultIssues, "issue must not land in the workspace project")
+	assert.Equal(t, []int64{1}, otherIssues, "issue must land in the project named by --project")
+}

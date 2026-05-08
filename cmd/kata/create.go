@@ -149,6 +149,12 @@ func validateCreateLabels(labels []string) error {
 // resolveProjectID resolves the project ID for a given workspace start
 // path by calling POST /api/v1/projects/resolve on the daemon.
 //
+// When --project is set, workspace resolution is bypassed entirely: the
+// selector (numeric id, name, identity, or alias) is matched against
+// the daemon's projects list. This is what lets a user run
+// `kata create --project <name> "title"` without cd'ing — and lets a
+// remote client target a project whose path doesn't exist locally.
+//
 // When the workspace has a readable .kata.toml at startPath or any
 // ancestor directory, the project identity is sent and the daemon
 // skips its filesystem walk. This is what lets a client on host B
@@ -165,6 +171,13 @@ func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, er
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
 		return 0, err
+	}
+	if selector := strings.TrimSpace(flags.Project); selector != "" {
+		project, err := resolveProjectSelector(ctx, client, baseURL, selector)
+		if err != nil {
+			return 0, err
+		}
+		return project.ID, nil
 	}
 	body := map[string]any{}
 	cfg, _, err := config.FindProjectConfig(startPath)

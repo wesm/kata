@@ -114,6 +114,25 @@ func TestEvents_NegativeAfterRejected(t *testing.T) {
 	assert.Contains(t, ce.Message, "non-negative")
 }
 
+// TestEvents_ProjectAndProjectIDConflict pins that --project (selector) and
+// --project-id (numeric, legacy) cannot both be set. Without this check the
+// flags would silently arbitrate; better to fail fast so users notice.
+func TestEvents_ProjectAndProjectIDConflict(t *testing.T) {
+	_, err := runCmdOutput(t, nil, "events", "--project", "kata", "--project-id", "1")
+	ce := requireCLIError(t, err, ExitUsage)
+	assert.Contains(t, ce.Message, "--project")
+	assert.Contains(t, ce.Message, "--project-id")
+}
+
+// TestEvents_ProjectAndAllProjectsConflict mirrors the existing
+// --all-projects/--project-id check for the new selector flag.
+func TestEvents_ProjectAndAllProjectsConflict(t *testing.T) {
+	_, err := runCmdOutput(t, nil, "events", "--project", "kata", "--all-projects")
+	ce := requireCLIError(t, err, ExitUsage)
+	assert.Contains(t, ce.Message, "--project")
+	assert.Contains(t, ce.Message, "--all-projects")
+}
+
 func TestEvents_NegativeLastEventIDRejected(t *testing.T) {
 	_, err := runCmdOutput(t, nil, "events", "--all-projects", "--tail", "--last-event-id=-1")
 	ce := requireCLIError(t, err, ExitUsage)

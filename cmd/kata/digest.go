@@ -41,6 +41,22 @@ cross-project digest.`,
 					ExitCode: ExitUsage,
 				}
 			}
+			if strings.TrimSpace(flags.Project) != "" {
+				if projectIDArg != 0 {
+					return &cliError{
+						Message:  "--project and --project-id are mutually exclusive",
+						Kind:     kindUsage,
+						ExitCode: ExitUsage,
+					}
+				}
+				if allProjects {
+					return &cliError{
+						Message:  "--project and --all-projects are mutually exclusive",
+						Kind:     kindUsage,
+						ExitCode: ExitUsage,
+					}
+				}
+			}
 			if strings.TrimSpace(sinceStr) == "" {
 				return &cliError{
 					Message:  "--since is required (e.g. --since 24h)",

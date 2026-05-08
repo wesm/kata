@@ -29,6 +29,24 @@ func TestDigest_RejectsBadSince(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid time spec")
 }
 
+// TestDigest_ProjectAndProjectIDConflict pins that --project (selector) and
+// --project-id (numeric, legacy) cannot both be set.
+func TestDigest_ProjectAndProjectIDConflict(t *testing.T) {
+	_, err := runCmdOutput(t, nil, "digest", "--since", "24h", "--project", "kata", "--project-id", "1")
+	ce := requireCLIError(t, err, ExitUsage)
+	assert.Contains(t, ce.Message, "--project")
+	assert.Contains(t, ce.Message, "--project-id")
+}
+
+// TestDigest_ProjectAndAllProjectsConflict mirrors the existing
+// --all-projects/--project-id check for the new selector flag.
+func TestDigest_ProjectAndAllProjectsConflict(t *testing.T) {
+	_, err := runCmdOutput(t, nil, "digest", "--since", "24h", "--project", "kata", "--all-projects")
+	ce := requireCLIError(t, err, ExitUsage)
+	assert.Contains(t, ce.Message, "--project")
+	assert.Contains(t, ce.Message, "--all-projects")
+}
+
 func TestDigest_ParseSinceUntil(t *testing.T) {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 
