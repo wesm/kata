@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/config"
 )
 
 // newTestClient stands up an httptest server with handler, registers
@@ -666,4 +667,25 @@ func TestClient_ResolveProject_FallsBackOnMissingConfig(t *testing.T) {
 	assert.Equal(t, dir, got["start_path"])
 	_, hasName := got["name"]
 	assert.False(t, hasName)
+}
+
+func TestClient_ResolveProject_UsesStartPathForWorkspaceConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, config.WriteProjectConfig(dir, "stale-name"))
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bs, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project":{"id":42}}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	_, err := c.ResolveProject(t.Context(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, dir, got["start_path"])
+	_, hasName := got["name"]
+	assert.False(t, hasName, "ordinary workspace resolution must let daemon alias repair run")
 }

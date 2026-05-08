@@ -180,20 +180,15 @@ func (c *Client) EditBody(
 
 // ResolveProject runs the §4.2 resolution flow against startPath.
 //
-// When the workspace has a readable .kata.toml at startPath or any ancestor
-// directory, the project name is sent so remote-client mode does not depend on
-// the daemon stat'ing the client's path. Otherwise the start_path fallback
-// walks the daemon's filesystem.
+// start_path lets the daemon resolve by alias first and repair stale
+// .kata.toml bindings after project rename/merge. A readable local .kata.toml
+// is still parsed first so malformed config fails with a direct fix-it error.
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
 	var resp ResolveResp
 	req := map[string]string{}
-	cfg, _, err := config.FindProjectConfig(startPath)
+	_, _, err := config.FindProjectConfig(startPath)
 	switch {
-	case err == nil && cfg.Project.Name != "":
-		req["name"] = cfg.Project.Name
 	case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
-		// Missing config falls back to start_path so the daemon walks its
-		// own filesystem.
 		req["start_path"] = startPath
 	default:
 		// Found a .kata.toml but couldn't parse it. Propagate so the

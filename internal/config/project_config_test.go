@@ -53,6 +53,18 @@ name = "foo"
 	assert.Equal(t, "foo", cfg.Project.Name)
 }
 
+func TestReadProjectConfig_DerivesNameFromLegacyIdentityOnly(t *testing.T) {
+	dir := setupKataProjectDir(t, `version = 1
+
+[project]
+identity = "github.com/example/foo"
+`)
+
+	cfg, err := config.ReadProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "foo", cfg.Project.Name)
+}
+
 func TestReadProjectConfig_Missing(t *testing.T) {
 	cfg, err := config.ReadProjectConfig(t.TempDir())
 	assert.Nil(t, cfg)

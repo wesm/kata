@@ -151,9 +151,10 @@ func validateCreateLabels(labels []string) error {
 //
 // A global --project value wins and is sent as the project name, allowing
 // project-scoped commands to target any project from any directory. Otherwise,
-// a readable .kata.toml at startPath or any ancestor supplies the name. When no
-// .kata.toml is found, start_path fallback lets the daemon resolve local
-// workspaces as before.
+// start_path lets the daemon resolve by alias first and repair stale .kata.toml
+// bindings after project rename/merge. A readable local .kata.toml is still
+// parsed before the daemon call so malformed config fails with a direct fix-it
+// error instead of being hidden behind daemon-side path resolution.
 func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, error) {
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
@@ -163,13 +164,9 @@ func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, er
 	if project := strings.TrimSpace(flags.Project); project != "" {
 		body["name"] = project
 	} else {
-		cfg, _, err := config.FindProjectConfig(startPath)
+		_, _, err := config.FindProjectConfig(startPath)
 		switch {
-		case err == nil && cfg.Project.Name != "":
-			body["name"] = cfg.Project.Name
 		case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
-			// Missing config falls back to start_path so the daemon walks its
-			// own filesystem in local mode.
 			body["start_path"] = startPath
 		default:
 			// Found a .kata.toml but couldn't read or parse it. Surface

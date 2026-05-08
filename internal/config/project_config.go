@@ -69,6 +69,9 @@ func ReadProjectConfig(workspaceRoot string) (*ProjectConfig, error) {
 	}
 	cfg.Project.LegacyIdentity = strings.TrimSpace(cfg.Project.LegacyIdentity)
 	cfg.Project.Name = strings.TrimSpace(cfg.Project.Name)
+	if cfg.Project.Name == "" && cfg.Project.LegacyIdentity != "" {
+		cfg.Project.Name = lastSegment(cfg.Project.LegacyIdentity)
+	}
 	if err := ValidateProjectName(cfg.Project.Name); err != nil {
 		return nil, fmt.Errorf("project.name: %w", err)
 	}
