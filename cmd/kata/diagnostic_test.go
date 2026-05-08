@@ -93,6 +93,20 @@ func TestProjectsRename_RejectsBlankName(t *testing.T) {
 	assert.Contains(t, ce.Message, "project name must be non-empty")
 }
 
+func TestProjectSelector_AmbiguousAcrossNameAndAliasSuffix(t *testing.T) {
+	projects := []projectRef{
+		{ID: 1, Name: "foo"},
+		{ID: 2, Name: "bar", Aliases: []projectAliasRef{{AliasIdentity: "github.com/example/foo"}}},
+	}
+	_, ok, err := uniqueProjectMatch("foo", projects, projectMatchesSelector)
+	require.Error(t, err)
+	assert.False(t, ok)
+	ce := requireCLIError(t, err, ExitValidation)
+	assert.Contains(t, ce.Message, "ambiguous")
+	assert.Contains(t, ce.Message, "#1 foo")
+	assert.Contains(t, ce.Message, "#2 bar")
+}
+
 func TestPluralCount_PluralizesAlias(t *testing.T) {
 	assert.Equal(t, "1 alias", pluralCount(1, "alias"))
 	assert.Equal(t, "2 aliases", pluralCount(2, "alias"))

@@ -65,7 +65,7 @@ type projectsRow struct {
 // §1.6) so the "All projects" Open/Closed/Total are guaranteed
 // consistent with the rows on the same frame, and last_event_at is the
 // max across rows.
-func projectsRows(byID map[int64]string, identByID map[int64]string, stats map[int64]ProjectStatsSummary) []projectsRow {
+func projectsRows(byID map[int64]string, _ map[int64]string, stats map[int64]ProjectStatsSummary) []projectsRow {
 	rows := []projectsRow{}
 	for id, name := range byID {
 		rows = append(rows, projectsRow{

@@ -342,8 +342,8 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Path:        "/api/v1/projects/{project_id}",
 	}, func(ctx context.Context, in *api.RenameProjectRequest) (*api.ShowProjectResponse, error) {
 		name := strings.TrimSpace(in.Body.Name)
-		if name == "" {
-			return nil, api.NewError(400, "validation", "name must be non-empty", "", nil)
+		if err := config.ValidateProjectName(name); err != nil {
+			return nil, api.NewError(400, "validation", err.Error(), "", nil)
 		}
 		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
 			return nil, err
@@ -403,6 +403,9 @@ func resolveByName(ctx context.Context, store *db.DB, name string) (*api.Project
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, api.NewError(400, "validation", "name must be non-empty", "", nil)
+	}
+	if err := config.ValidateProjectName(name); err != nil {
+		return nil, api.NewError(400, "validation", err.Error(), "", nil)
 	}
 	project, err := store.ProjectByName(ctx, name)
 	if errors.Is(err, db.ErrNotFound) {
@@ -568,9 +571,13 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 	if err != nil {
 		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
-	if existingAlias, err := store.AliasByIdentity(ctx, aliasInfo.Identity); err == nil {
-		if existingProject, err := store.ProjectByID(ctx, existingAlias.ProjectID); err == nil && existingProject.DeletedAt == nil {
-			name = existingProject.Name
+	explicitName := strings.TrimSpace(req.Body.Name) != ""
+	existingAlias, err := store.AliasByIdentity(ctx, aliasInfo.Identity)
+	if err == nil {
+		if !explicitName {
+			if existingProject, err := store.ProjectByID(ctx, existingAlias.ProjectID); err == nil && existingProject.DeletedAt == nil {
+				name = existingProject.Name
+			}
 		}
 	} else if !errors.Is(err, db.ErrNotFound) {
 		return nil, false, api.NewError(500, "internal", err.Error(), "", nil)
@@ -615,9 +622,8 @@ func initProject(ctx context.Context, store *db.DB, req *api.InitProjectRequest)
 
 func initByName(ctx context.Context, store *db.DB, req *api.InitProjectRequest) (*api.ProjectResolveBody, bool, error) {
 	name := strings.TrimSpace(req.Body.Name)
-	if name == "" {
-		return nil, false, api.NewError(400, "validation",
-			"name must be non-empty", "", nil)
+	if err := config.ValidateProjectName(name); err != nil {
+		return nil, false, api.NewError(400, "validation", err.Error(), "", nil)
 	}
 	if req.Body.Reassign && req.Body.Alias == nil {
 		return nil, false, api.NewError(400, "validation",
@@ -700,6 +706,9 @@ func pickInitName(req *api.InitProjectRequest, disc config.DiscoveredPaths, toml
 		return "", api.NewError(400, "validation",
 			err.Error(), `pass name or run inside a workspace`, nil)
 	case err != nil:
+		return "", api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	if err := config.ValidateProjectName(choice.Name); err != nil {
 		return "", api.NewError(400, "validation", err.Error(), "", nil)
 	}
 	return choice.Name, nil

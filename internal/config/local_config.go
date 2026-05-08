@@ -40,6 +40,11 @@ func ReadLocalConfig(workspaceRoot string) (*ProjectConfig, error) {
 	}
 	cfg.Project.LegacyIdentity = strings.TrimSpace(cfg.Project.LegacyIdentity)
 	cfg.Project.Name = strings.TrimSpace(cfg.Project.Name)
+	if cfg.Project.Name != "" {
+		if err := ValidateProjectName(cfg.Project.Name); err != nil {
+			return nil, fmt.Errorf("project.name: %w", err)
+		}
+	}
 	cfg.Server.URL = strings.TrimSpace(cfg.Server.URL)
 	return &cfg, nil
 }

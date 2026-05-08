@@ -14,12 +14,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 // initOptions holds the flags specific to `kata init`.
 type initOptions struct {
 	Project  string
-	Name     string
 	Replace  bool
 	Reassign bool
 }
@@ -27,7 +27,6 @@ type initOptions struct {
 // callInitOpts is the parameter bag passed to callInit.
 type callInitOpts struct {
 	Project  string
-	Name     string
 	Replace  bool
 	Reassign bool
 }
@@ -135,7 +134,6 @@ get committed.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Name, "name", "", "deprecated alias for --project")
 	cmd.Flags().BoolVar(&opts.Replace, "replace", false, "overwrite .kata.toml binding when it conflicts")
 	cmd.Flags().BoolVar(&opts.Reassign, "reassign", false, "move an existing alias to this project")
 
@@ -147,7 +145,7 @@ get committed.`,
 // files) and the path-based flow (daemon does everything).
 //
 // Path-free runs whenever the client can resolve the name locally —
-// from .kata.toml, --project, --name, or a discoverable git workspace. That's
+// from .kata.toml, --project, or a discoverable git workspace. That's
 // the contract that lets a daemon on another host serve init without
 // filesystem access to the client workspace. The client falls back to
 // the path-based request only when local derivation can't produce an
@@ -155,9 +153,6 @@ get committed.`,
 func callInit(ctx context.Context, baseURL, startPath string, opts callInitOpts) (string, error) {
 	if opts.Project == "" {
 		opts.Project = flags.Project
-	}
-	if opts.Project == "" && opts.Name != "" {
-		opts.Project = opts.Name
 	}
 	derived, err := localDerive(startPath, opts)
 	switch {
@@ -389,7 +384,7 @@ func formatInitOutput(bs []byte, name string, created bool) (string, error) {
 	if created {
 		action = "created and bound"
 	}
-	return fmt.Sprintf("%s project %s\n", action, name), nil
+	return fmt.Sprintf("%s project %s\n", action, textsafe.Line(name)), nil
 }
 
 // resolveStartPath returns the absolute path to use as the daemon's

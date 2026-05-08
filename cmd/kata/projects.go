@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/textsafe"
 )
 
 type projectAliasRef struct {
@@ -80,7 +81,7 @@ func projectsListCmd() *cobra.Command {
 			}
 			for _, p := range b.Projects {
 				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%d  %s  (next #%d)\n",
-					p.ID, p.Name, p.NextIssueNumber); err != nil {
+					p.ID, textsafe.Line(p.Name), p.NextIssueNumber); err != nil {
 					return err
 				}
 			}
@@ -139,7 +140,8 @@ func projectsRenameCmd() *cobra.Command {
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "renamed project #%d to %s\n", b.Project.ID, b.Project.Name)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "renamed project #%d to %s\n",
+				b.Project.ID, textsafe.Line(b.Project.Name))
 			return err
 		},
 	}
@@ -198,7 +200,7 @@ func projectsResetCounterCmd() *cobra.Command {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (next #%d)\n",
-				b.Project.ID, b.Project.Name, b.Project.NextIssueNumber)
+				b.Project.ID, textsafe.Line(b.Project.Name), b.Project.NextIssueNumber)
 			return err
 		},
 	}
@@ -272,7 +274,7 @@ func projectsMergeCmd() *cobra.Command {
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(),
 				"merged project #%d into #%d (%s); moved %s, %s, %s; next #%d\n",
-				b.Source.ID, b.Target.ID, b.Target.Name,
+				b.Source.ID, b.Target.ID, textsafe.Line(b.Target.Name),
 				pluralCount(b.IssuesMoved, "issue"),
 				pluralCount(b.AliasesMoved, "alias"),
 				pluralCount(b.EventsMoved, "event"),
@@ -370,7 +372,7 @@ func projectsShowCmd() *cobra.Command {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (next #%d)\n",
-				b.Project.ID, b.Project.Name, b.Project.NextIssueNumber)
+				b.Project.ID, textsafe.Line(b.Project.Name), b.Project.NextIssueNumber)
 			return err
 		},
 	}
@@ -397,16 +399,8 @@ func resolveProjectSelector(ctx context.Context, client *http.Client, baseURL, s
 			ExitCode: ExitNotFound,
 		}
 	}
-	// Prefer exact project names and aliases before suffix matches.
-	for _, matcher := range []projectSelectorMatcher{
-		projectNameExact,
-		projectAliasExact,
-		projectNameSuffix,
-		projectAliasSuffix,
-	} {
-		if match, ok, err := uniqueProjectMatch(selector, projects, matcher); ok || err != nil {
-			return match, err
-		}
+	if match, ok, err := uniqueProjectMatch(selector, projects, projectMatchesSelector); ok || err != nil {
+		return match, err
 	}
 	return projectRef{}, &cliError{
 		Message:  fmt.Sprintf("project selector %q did not match any project", selector),
@@ -474,6 +468,13 @@ func uniqueProjectMatch(selector string, projects []projectRef, matchesSelector 
 	}
 }
 
+func projectMatchesSelector(project projectRef, selector string) bool {
+	return projectNameExact(project, selector) ||
+		projectAliasExact(project, selector) ||
+		projectNameSuffix(project, selector) ||
+		projectAliasSuffix(project, selector)
+}
+
 func projectAliasExact(project projectRef, selector string) bool {
 	for _, alias := range project.Aliases {
 		if alias.AliasIdentity == selector {
@@ -509,7 +510,7 @@ func suffixMatches(value, selector string) bool {
 func ambiguousProjectSelectorMessage(selector string, matches []projectRef) string {
 	parts := make([]string, 0, len(matches))
 	for _, match := range matches {
-		parts = append(parts, fmt.Sprintf("#%d %s", match.ID, match.Name))
+		parts = append(parts, fmt.Sprintf("#%d %s", match.ID, textsafe.Line(match.Name)))
 	}
 	return fmt.Sprintf("project selector %q is ambiguous: %s", selector, strings.Join(parts, ", "))
 }
@@ -571,7 +572,7 @@ func projectsRemoveCmd() *cobra.Command {
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(),
 				"archived project #%d (%s); events preserved, aliases dropped\n",
-				project.ID, project.Name)
+				project.ID, textsafe.Line(project.Name))
 			return err
 		},
 	}

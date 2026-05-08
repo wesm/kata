@@ -34,18 +34,25 @@ func PickInitName(disc DiscoveredPaths, tomlCfg *ProjectConfig, inputName string
 		if !replace {
 			return NameChoice{}, ErrNameConflict
 		}
-		return NameChoice{Name: inputName}, nil
+		return validateNameChoice(inputName)
 	case tomlCfg != nil && strings.TrimSpace(tomlCfg.Project.Name) != "":
-		return NameChoice{Name: strings.TrimSpace(tomlCfg.Project.Name)}, nil
+		return validateNameChoice(strings.TrimSpace(tomlCfg.Project.Name))
 	case inputName != "":
-		return NameChoice{Name: inputName}, nil
+		return validateNameChoice(inputName)
 	default:
 		name, err := DeriveProjectName(disc)
 		if err != nil {
 			return NameChoice{}, err
 		}
-		return NameChoice{Name: name}, nil
+		return validateNameChoice(name)
 	}
+}
+
+func validateNameChoice(name string) (NameChoice, error) {
+	if err := ValidateProjectName(name); err != nil {
+		return NameChoice{}, err
+	}
+	return NameChoice{Name: name}, nil
 }
 
 // PickName returns explicit if non-empty, otherwise the last `/` or

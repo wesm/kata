@@ -184,6 +184,27 @@ func TestInit_AliasConflictWithoutReassign(t *testing.T) {
 	require.Equal(t, 200, resp2.StatusCode, string(bs2))
 }
 
+func TestInit_PathBasedReassignHonorsExplicitName(t *testing.T) {
+	h := newServerWithGitWorkspace(t, "https://github.com/wesm/kata.git")
+	ts := h.ts.(*httptest.Server)
+
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"start_path": h.dir})
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"name": "target"})
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"start_path": h.dir,
+		"name":       "target",
+		"replace":    true,
+		"reassign":   true,
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"name":"target"`)
+
+	cfgBytes, err := os.ReadFile(filepath.Join(h.dir, ".kata.toml")) //nolint:gosec // test fixture under TempDir
+	require.NoError(t, err)
+	assert.Contains(t, string(cfgBytes), `name = "target"`)
+}
+
 // TestInit_ByName_PathFree verifies the remote-client init path:
 // the daemon registers a project by client-derived identity without
 // touching the filesystem. This is what lets a kata client on host B

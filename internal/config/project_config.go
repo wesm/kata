@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -66,11 +67,11 @@ func ReadProjectConfig(workspaceRoot string) (*ProjectConfig, error) {
 	if cfg.Version != 1 {
 		return nil, fmt.Errorf("unsupported .kata.toml version %d (expected 1)", cfg.Version)
 	}
-	if strings.TrimSpace(cfg.Project.Name) == "" {
-		return nil, fmt.Errorf("project.name must be a non-empty string")
-	}
 	cfg.Project.LegacyIdentity = strings.TrimSpace(cfg.Project.LegacyIdentity)
 	cfg.Project.Name = strings.TrimSpace(cfg.Project.Name)
+	if err := ValidateProjectName(cfg.Project.Name); err != nil {
+		return nil, fmt.Errorf("project.name: %w", err)
+	}
 	return &cfg, nil
 }
 
@@ -104,12 +105,27 @@ func FindProjectConfig(startPath string) (*ProjectConfig, string, error) {
 // WriteProjectConfig writes a v1 .kata.toml at <workspaceRoot>/.kata.toml.
 func WriteProjectConfig(workspaceRoot, name string) error {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("name must be non-empty")
+	if err := ValidateProjectName(name); err != nil {
+		return err
 	}
 	body := fmt.Sprintf("version = 1\n\n[project]\nname = %q\n", name)
 	path := filepath.Join(workspaceRoot, ProjectConfigFilename)
 	return os.WriteFile(path, []byte(body), 0o644) //nolint:gosec // committed project file, world-readable by design
+}
+
+// ValidateProjectName rejects names that can spoof terminal output when echoed
+// by CLI/TUI surfaces. Names may contain printable Unicode and spaces, but not
+// control characters, ESC, newlines, or other non-printable runes.
+func ValidateProjectName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("name must be non-empty")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || !unicode.IsPrint(r) {
+			return fmt.Errorf("name contains non-printable character %U", r)
+		}
+	}
+	return nil
 }
 
 func lastSegment(identity string) string {

@@ -86,7 +86,7 @@ name = "   "
 func TestWriteProjectConfig_WritesNameOnly(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, config.WriteProjectConfig(dir, "foo"))
-	bs, err := os.ReadFile(filepath.Join(dir, ".kata.toml"))
+	bs, err := os.ReadFile(filepath.Join(dir, ".kata.toml")) //nolint:gosec // test fixture under TempDir
 	require.NoError(t, err)
 	assert.Contains(t, string(bs), `name = "foo"`)
 	assert.NotContains(t, string(bs), "identity")
@@ -102,9 +102,32 @@ func TestWriteProjectConfig_RejectsBlankName(t *testing.T) {
 	assert.Contains(t, err.Error(), "name")
 }
 
+func TestProjectConfig_RejectsControlCharactersInName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		toml string
+		want string
+	}{
+		{name: "bad\nname", toml: `"bad\nname"`, want: "non-printable"},
+		{name: "bad\x1b]52;c;AAAA\x07name", toml: `"bad\u001b]52;c;AAAA\u0007name"`, want: "non-printable"},
+	} {
+		t.Run("write", func(t *testing.T) {
+			err := config.WriteProjectConfig(t.TempDir(), tc.name)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+		t.Run("read", func(t *testing.T) {
+			dir := setupKataProjectDir(t, "version = 1\n\n[project]\nname = "+tc.toml+"\n")
+			_, err := config.ReadProjectConfig(dir)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestWriteProjectConfig_PreservesName(t *testing.T) {
-	cfg := writeAndReadConfig(t, "Kata Tracker")
-	assert.Equal(t, "Kata Tracker", cfg.Project.Name)
+	cfg := writeAndReadConfig(t, "Kata Tracker %20 github.com/example/foo")
+	assert.Equal(t, "Kata Tracker %20 github.com/example/foo", cfg.Project.Name)
 }
 
 func TestReadProjectConfig_AcceptsOptionalServerBlock(t *testing.T) {
