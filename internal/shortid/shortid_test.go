@@ -78,11 +78,27 @@ func TestParseQualifiedWithMultipleHashes(t *testing.T) {
 	assert.Equal(t, "abc4", r.ShortID)
 }
 
-func TestParseRejectsLegacyNumber(t *testing.T) {
+func TestParseRejectsShortLegacyNumber(t *testing.T) {
 	_, err := shortid.Parse("12")
 	assert.ErrorIs(t, err, shortid.ErrInvalidRef)
 	_, err = shortid.Parse("kata#12")
 	assert.ErrorIs(t, err, shortid.ErrInvalidRef)
+}
+
+// At or above MinLength, all-digit refs are accepted as candidate short_ids.
+// They resolve at the DB layer — usually NotFound unless an issue's ULID
+// happens to end in 4+ digits. This documents the boundary so reviewers
+// don't mistake "Parse accepts 1234" for legacy-number routing.
+func TestParseAcceptsLongAllDigitAsShortID(t *testing.T) {
+	r, err := shortid.Parse("1234")
+	require.NoError(t, err)
+	assert.Equal(t, "1234", r.ShortID)
+	assert.Empty(t, r.Project)
+
+	r, err = shortid.Parse("kata#1234")
+	require.NoError(t, err)
+	assert.Equal(t, "kata", r.Project)
+	assert.Equal(t, "1234", r.ShortID)
 }
 
 func TestParseRejectsEmpty(t *testing.T) {

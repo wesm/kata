@@ -70,7 +70,13 @@ type Ref struct {
 //   - a bare short_id (Ref.ShortID set; Ref.Project empty)
 //   - a qualified short_id "<project>#<short_id>" (Ref.Project, Ref.ShortID)
 //
-// Legacy numeric forms ("12", "kata#12") are rejected with ErrInvalidRef.
+// Legacy numeric refs that fall below MinLength ("12", "kata#42") are
+// rejected with ErrInvalidRef because no valid short_id is that short.
+// Numeric refs at or above MinLength ("1234", "kata#1234") parse as
+// short_ids and resolve at the database layer — they return NotFound
+// unless a real issue's ULID suffix happens to be all-digit (≈1% of
+// short_ids at length 4). Legacy per-project issue numbers are not
+// kept under the v8 schema, so there is no risk of misroute.
 func Parse(s string) (Ref, error) {
 	if s == "" {
 		return Ref{}, ErrInvalidRef
