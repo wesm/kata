@@ -3,14 +3,14 @@
 -- to fresh databases by db.Open's bootstrap path.
 
 CREATE TABLE projects (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  uid               TEXT NOT NULL UNIQUE,
-  name              TEXT NOT NULL UNIQUE,
-  created_at        DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  next_issue_number INTEGER NOT NULL DEFAULT 1,
-  deleted_at        DATETIME,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid        TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL UNIQUE,
+  created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  deleted_at DATETIME,
   CHECK (length(uid) = 26),
-  CHECK (length(trim(name)) > 0)
+  CHECK (length(trim(name)) > 0),
+  CHECK (name NOT GLOB '*#*')
 );
 CREATE INDEX idx_projects_active ON projects(id) WHERE deleted_at IS NULL;
 
@@ -31,7 +31,7 @@ CREATE TABLE issues (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   uid           TEXT NOT NULL UNIQUE,
   project_id    INTEGER NOT NULL REFERENCES projects(id),
-  number        INTEGER NOT NULL,
+  short_id      TEXT NOT NULL,
   title         TEXT NOT NULL,
   body          TEXT NOT NULL DEFAULT '',
   status        TEXT NOT NULL CHECK(status IN ('open','closed')) DEFAULT 'open',
@@ -43,12 +43,14 @@ CREATE TABLE issues (
   updated_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   closed_at     DATETIME,
   deleted_at    DATETIME,
-  UNIQUE(project_id, number),
   CHECK (length(uid) = 26),
   CHECK (length(trim(title))  > 0),
   CHECK (length(trim(author)) > 0),
   CHECK (status = 'closed' OR (closed_at IS NULL AND closed_reason IS NULL)),
-  CHECK (priority IS NULL OR priority BETWEEN 0 AND 4)
+  CHECK (priority IS NULL OR priority BETWEEN 0 AND 4),
+  CHECK (length(short_id) BETWEEN 4 AND 26),
+  CHECK (short_id NOT GLOB '*[^0-9abcdefghjkmnpqrstvwxyz]*'),
+  CHECK (short_id = lower(substr(uid, 27 - length(short_id), length(short_id))))
 );
 CREATE INDEX idx_issues_project_status_updated
   ON issues(project_id, status, updated_at DESC) WHERE deleted_at IS NULL;
@@ -56,6 +58,8 @@ CREATE INDEX idx_issues_project_updated
   ON issues(project_id, updated_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_issues_owner
   ON issues(owner) WHERE owner IS NOT NULL AND deleted_at IS NULL;
+CREATE UNIQUE INDEX uniq_issues_project_short_id
+  ON issues(project_id, short_id);
 
 CREATE TABLE comments (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,7 +163,6 @@ CREATE TABLE events (
   project_name    TEXT NOT NULL,
   issue_id            INTEGER REFERENCES issues(id),
   issue_uid           TEXT,
-  issue_number        INTEGER,
   related_issue_id    INTEGER REFERENCES issues(id),
   related_issue_uid   TEXT,
   type                TEXT NOT NULL,
@@ -190,7 +193,6 @@ CREATE TABLE purge_log (
   issue_uid                   TEXT,
   project_uid                 TEXT,
   project_name            TEXT NOT NULL,      -- snapshot of projects.name at purge time
-  issue_number                INTEGER NOT NULL,
   issue_title                 TEXT NOT NULL,
   issue_author                TEXT NOT NULL,
   comment_count               INTEGER NOT NULL,
@@ -212,7 +214,6 @@ CREATE INDEX idx_purge_log_reset
 CREATE INDEX idx_purge_log_project_reset
   ON purge_log(project_id, purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
 CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
-CREATE INDEX idx_purge_log_lookup ON purge_log(project_name, issue_number);
 CREATE INDEX idx_purge_log_issue_uid ON purge_log(issue_uid) WHERE issue_uid IS NOT NULL;
 CREATE INDEX idx_purge_log_project_uid ON purge_log(project_uid) WHERE project_uid IS NOT NULL;
 CREATE INDEX idx_purge_log_origin_instance ON purge_log(origin_instance_uid);
