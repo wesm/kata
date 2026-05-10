@@ -159,9 +159,9 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			fmt.Fprintf(os.Stderr, "note: project #%d renamed from %q to %q during cutover\n", rec.ID, rec.OriginalName, rec.Name)
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO projects(id, uid, name, created_at, next_issue_number, deleted_at)
-			 VALUES(?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.UID, rec.Name, rec.CreatedAt, rec.NextIssueNumber, rec.DeletedAt)
+			`INSERT INTO projects(id, uid, name, created_at, deleted_at)
+			 VALUES(?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.Name, rec.CreatedAt, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindProjectAlias:
 		var rec projectAliasRecord
@@ -181,11 +181,17 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if err := fillIssueUID(&rec, exportVersion); err != nil {
 			return err
 		}
+		// Current-version envelopes carry short_id verbatim; older
+		// envelopes (no short_id) fail this branch and require the
+		// v7→v8 cutover (Task 9) to derive a short_id from the UID.
+		if rec.ShortID == "" {
+			return fmt.Errorf("import issue %d: missing short_id (older envelopes must go through cutover)", rec.ID)
+		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO issues(id, uid, project_id, number, title, body, status, closed_reason, owner, priority, author,
+			`INSERT INTO issues(id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
 			                    created_at, updated_at, closed_at, deleted_at)
 			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.UID, rec.ProjectID, rec.Number, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
+			rec.ID, rec.UID, rec.ProjectID, rec.ShortID, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
 			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindComment:
@@ -250,19 +256,19 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO events(id, uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid,
+			`INSERT INTO events(id, uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, related_issue_id, related_issue_uid,
 			                    type, actor, payload, created_at)
 			 VALUES(
 			   ?, ?, ?, ?, ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
-			   ?, ?,
+			   ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   ?, ?, ?, ?
 			)`,
 			rec.ID, rec.UID, rec.OriginInstanceUID,
 			rec.ProjectID, projectName, rec.IssueID,
 			stringPtrValue(rec.IssueUID), rec.IssueID,
-			rec.IssueNumber, rec.RelatedIssueID,
+			rec.RelatedIssueID,
 			stringPtrValue(rec.RelatedIssueUID), rec.RelatedIssueID,
 			rec.Type, rec.Actor, string(rec.Payload), rec.CreatedAt)
 		return wrapImportErr(env.Kind, err)
@@ -279,7 +285,7 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO purge_log(id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid, project_name, issue_number, issue_title,
+			`INSERT INTO purge_log(id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid, project_name, issue_title,
 			                       issue_author, comment_count, link_count, label_count, event_count,
 			                       events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 			                       actor, reason, purged_at)
@@ -287,13 +293,13 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			   ?, ?, ?, ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   COALESCE(?, (SELECT uid FROM projects WHERE id = ?)),
-			   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			 )`,
 			rec.ID, rec.UID, rec.OriginInstanceUID,
 			rec.ProjectID, rec.PurgedIssueID,
 			stringPtrValue(rec.IssueUID), rec.PurgedIssueID,
 			stringPtrValue(rec.ProjectUID), rec.ProjectID,
-			projectName, rec.IssueNumber,
+			projectName,
 			rec.IssueTitle, rec.IssueAuthor, rec.CommentCount, rec.LinkCount, rec.LabelCount,
 			rec.EventCount, rec.EventsDeletedMinID, rec.EventsDeletedMaxID, rec.PurgeResetAfterEventID,
 			rec.Actor, rec.Reason, rec.PurgedAt)
@@ -481,13 +487,16 @@ func stringPtrValue(s *string) any {
 }
 
 type projectRecord struct {
-	ID              int64   `json:"id"`
-	UID             string  `json:"uid"`
-	Identity        string  `json:"identity,omitempty"`
-	Name            string  `json:"name"`
-	OriginalName    string  `json:"-"`
-	CreatedAt       string  `json:"created_at"`
-	NextIssueNumber int64   `json:"next_issue_number"`
+	ID           int64  `json:"id"`
+	UID          string `json:"uid"`
+	Identity     string `json:"identity,omitempty"`
+	Name         string `json:"name"`
+	OriginalName string `json:"-"`
+	CreatedAt    string `json:"created_at"`
+	// NextIssueNumber is the legacy per-project counter; carried for
+	// v7-and-below envelopes so the decoder can read them. Dropped from
+	// the current version's exports (v8+) — see export.go.
+	NextIssueNumber int64   `json:"next_issue_number,omitempty"`
 	DeletedAt       *string `json:"deleted_at,omitempty"`
 }
 
@@ -502,10 +511,17 @@ type projectAliasRecord struct {
 }
 
 type issueRecord struct {
-	ID           int64   `json:"id"`
-	UID          string  `json:"uid"`
-	ProjectID    int64   `json:"project_id"`
-	Number       int64   `json:"number"`
+	ID        int64  `json:"id"`
+	UID       string `json:"uid"`
+	ProjectID int64  `json:"project_id"`
+	// ShortID is the v8+ display ID. Older envelopes (v7 and below) omit
+	// this field and carry Number instead; the cutover (Task 9) derives
+	// short_ids from UIDs for those.
+	ShortID string `json:"short_id,omitempty"`
+	// Number is the legacy per-project counter; carried for v7-and-below
+	// envelopes so the decoder can read them. Dropped from the current
+	// version's exports (v8+) — see export.go.
+	Number       int64   `json:"number,omitempty"`
 	Title        string  `json:"title"`
 	Body         string  `json:"body"`
 	Status       string  `json:"status"`
@@ -561,34 +577,40 @@ type importMappingRecord struct {
 }
 
 type eventRecord struct {
-	ID                int64           `json:"id"`
-	UID               string          `json:"uid"`
-	OriginInstanceUID string          `json:"origin_instance_uid"`
-	ProjectID         int64           `json:"project_id"`
-	ProjectName       string          `json:"project_name"`
-	LegacyProjectName string          `json:"project_identity,omitempty"`
-	IssueID           *int64          `json:"issue_id"`
-	IssueUID          *string         `json:"issue_uid"`
-	IssueNumber       *int64          `json:"issue_number"`
-	RelatedIssueID    *int64          `json:"related_issue_id"`
-	RelatedIssueUID   *string         `json:"related_issue_uid"`
-	Type              string          `json:"type"`
-	Actor             string          `json:"actor"`
-	Payload           json.RawMessage `json:"payload"`
-	CreatedAt         string          `json:"created_at"`
+	ID                int64   `json:"id"`
+	UID               string  `json:"uid"`
+	OriginInstanceUID string  `json:"origin_instance_uid"`
+	ProjectID         int64   `json:"project_id"`
+	ProjectName       string  `json:"project_name"`
+	LegacyProjectName string  `json:"project_identity,omitempty"`
+	IssueID           *int64  `json:"issue_id"`
+	IssueUID          *string `json:"issue_uid"`
+	// IssueNumber is the legacy per-project counter snapshot; carried for
+	// v7-and-below envelopes so the decoder can read them. Dropped from
+	// the current version's exports (v8+) — see export.go.
+	IssueNumber     *int64          `json:"issue_number,omitempty"`
+	RelatedIssueID  *int64          `json:"related_issue_id"`
+	RelatedIssueUID *string         `json:"related_issue_uid"`
+	Type            string          `json:"type"`
+	Actor           string          `json:"actor"`
+	Payload         json.RawMessage `json:"payload"`
+	CreatedAt       string          `json:"created_at"`
 }
 
 type purgeLogRecord struct {
-	ID                     int64   `json:"id"`
-	UID                    string  `json:"uid"`
-	OriginInstanceUID      string  `json:"origin_instance_uid"`
-	ProjectID              int64   `json:"project_id"`
-	PurgedIssueID          int64   `json:"purged_issue_id"`
-	IssueUID               *string `json:"issue_uid"`
-	ProjectUID             *string `json:"project_uid"`
-	ProjectName            string  `json:"project_name"`
-	LegacyProjectName      string  `json:"project_identity,omitempty"`
-	IssueNumber            int64   `json:"issue_number"`
+	ID                int64   `json:"id"`
+	UID               string  `json:"uid"`
+	OriginInstanceUID string  `json:"origin_instance_uid"`
+	ProjectID         int64   `json:"project_id"`
+	PurgedIssueID     int64   `json:"purged_issue_id"`
+	IssueUID          *string `json:"issue_uid"`
+	ProjectUID        *string `json:"project_uid"`
+	ProjectName       string  `json:"project_name"`
+	LegacyProjectName string  `json:"project_identity,omitempty"`
+	// IssueNumber is the legacy per-project counter snapshot; carried for
+	// v7-and-below envelopes so the decoder can read them. Dropped from
+	// the current version's exports (v8+) — see export.go.
+	IssueNumber            int64   `json:"issue_number,omitempty"`
 	IssueTitle             string  `json:"issue_title"`
 	IssueAuthor            string  `json:"issue_author"`
 	CommentCount           int64   `json:"comment_count"`

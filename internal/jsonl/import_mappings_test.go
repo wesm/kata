@@ -30,8 +30,8 @@ func TestExportImport_DeletedIssueOmitsImportMappings(t *testing.T) {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: deleted.ID, EventIssueNumber: deleted.Number,
-		FromNumber: deleted.Number, ToNumber: live.Number, Actor: "tester",
+		EventType: "issue.linked", EventIssueID: deleted.ID,
+		FromNumber: deleted.ID, ToNumber: live.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
 	label := "deleted-label"

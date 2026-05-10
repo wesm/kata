@@ -194,8 +194,8 @@ func buildRichJSONLFixture(t *testing.T) richJSONLFixture {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: blocker.ID, EventIssueNumber: blocker.Number,
-		FromNumber: blocker.Number, ToNumber: login.Number, Actor: "tester",
+		EventType: "issue.linked", EventIssueID: blocker.ID,
+		FromNumber: blocker.ID, ToNumber: login.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
 	_, _, _, err = d.SoftDeleteIssue(ctx, softDeleted.ID, "tester")

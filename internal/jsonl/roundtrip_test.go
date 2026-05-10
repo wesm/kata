@@ -1,8 +1,10 @@
 package jsonl_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,11 +78,46 @@ func normalizeSearchHits(hits []db.SearchCandidate) []map[string]any {
 	for _, hit := range hits {
 		out = append(out, map[string]any{
 			"project_id": hit.Issue.ProjectID,
-			"number":     hit.Issue.Number,
+			"short_id":   hit.Issue.ShortID,
 			"title":      hit.Issue.Title,
 			"matched_in": hit.MatchedIn,
 			"deleted":    hit.Issue.DeletedAt != nil,
 		})
 	}
 	return out
+}
+
+// TestRoundtrip_IssueEnvelopeCarriesShortID pins spec §8.1: the JSONL issue
+// envelope carries a short_id field at the current schema version and drops
+// the legacy number field. The cutover (Task 9) handles older inputs.
+func TestRoundtrip_IssueEnvelopeCarriesShortID(t *testing.T) {
+	ctx := context.Background()
+	d := openExportTestDB(t)
+	p, err := d.CreateProject(ctx, "demo")
+	require.NoError(t, err)
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "rt",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, d, &buf, jsonl.ExportOptions{}))
+
+	scanner := bufio.NewScanner(&buf)
+	var issuePayload map[string]any
+	for scanner.Scan() {
+		var env jsonl.Envelope
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &env))
+		if env.Kind == jsonl.KindIssue {
+			require.NoError(t, json.Unmarshal(env.Data, &issuePayload))
+			break
+		}
+	}
+	require.NotNil(t, issuePayload)
+	assert.Equal(t, created.ShortID, issuePayload["short_id"])
+	_, hasNumber := issuePayload["number"]
+	assert.False(t, hasNumber, "issue envelope should not carry 'number'")
 }

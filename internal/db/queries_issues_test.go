@@ -46,6 +46,52 @@ func TestCreateIssue_ShortIDsAreUniquePerProject(t *testing.T) {
 	}
 }
 
+// TestCreateIssue_ShortIDOverridePersistsVerbatim pins spec §8.1: JSONL
+// import passes the stored short_id and CreateIssue uses it as-is, bypassing
+// auto-extend. The override must be the lowercased suffix of UID at its
+// length — anything else is a caller bug that returns an error.
+func TestCreateIssue_ShortIDOverridePersistsVerbatim(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       p.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		ShortIDOverride: "bcd4ex",
+		Title:           "preserved",
+		Author:          "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "bcd4ex", issue.ShortID)
+}
+
+func TestCreateIssue_ShortIDOverrideRejectsMismatch(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       p.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		ShortIDOverride: "abcd", // does not match the suffix of UID at length 4
+		Title:           "bad",
+		Author:          "tester",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match")
+}
+
+func TestCreateIssue_ShortIDOverrideRejectsInvalidSyntax(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       p.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		ShortIDOverride: "AB", // too short, also uppercase
+		Title:           "bad",
+		Author:          "tester",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid short_id override")
+}
+
 // TestIssueByShortID_ReturnsLiveIssue pins that a live issue resolves by its
 // stored short_id under the default include-deleted=no filter.
 func TestIssueByShortID_ReturnsLiveIssue(t *testing.T) {

@@ -345,6 +345,14 @@ type CreateIssueParams struct {
 	// tests and the JSONL replay path; live callers should leave it empty.
 	UID string
 
+	// Optional. When non-empty, CreateIssue bypasses assignShortID's
+	// auto-extend loop and persists this value verbatim on the new row.
+	// The value must satisfy shortid.Valid AND equal the lowercased suffix
+	// of UID at its own length — the same invariant the schema CHECK
+	// enforces. Used by JSONL import (spec §8.1) to preserve stored
+	// short_ids across future cutovers; live callers leave it empty.
+	ShortIDOverride string
+
 	// Optional initial state. Plan 2 fields. CreateIssue inserts label/link
 	// rows and applies the owner in the same TX, then folds them into the
 	// issue.created event payload (no separate labeled/linked/assigned events).
@@ -435,9 +443,9 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		return Issue{}, Event{}, fmt.Errorf("invalid issue uid %q", issueUID)
 	}
 
-	shortID, err := assignShortID(ctx, tx, p.ProjectID, issueUID)
+	shortID, err := resolveShortID(ctx, tx, p.ProjectID, issueUID, p.ShortIDOverride)
 	if err != nil {
-		return Issue{}, Event{}, fmt.Errorf("assign short_id: %w", err)
+		return Issue{}, Event{}, err
 	}
 
 	// Insert issue + optional owner/priority columns in one statement.

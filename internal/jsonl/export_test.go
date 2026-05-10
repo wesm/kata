@@ -24,7 +24,7 @@ func TestExportWritesOrderedRecordsWithSequenceLast(t *testing.T) {
 
 	require.NotEmpty(t, records)
 	assert.Equal(t, "meta", records[0]["kind"])
-	assert.Equal(t, map[string]any{"key": "export_version", "value": "7"}, records[0]["data"])
+	assert.Equal(t, map[string]any{"key": "export_version", "value": "8"}, records[0]["data"])
 	assert.Equal(t, "sqlite_sequence", records[len(records)-1]["kind"])
 
 	assertKindOrder(t, records)
@@ -118,8 +118,8 @@ func TestExportNoIncludeDeletedOmitsSoftDeletedIssueDependents(t *testing.T) {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: deleted.ID, EventIssueNumber: deleted.Number,
-		FromNumber: deleted.Number, ToNumber: kept.Number, Actor: "tester",
+		EventType: "issue.linked", EventIssueID: deleted.ID,
+		FromNumber: deleted.ID, ToNumber: kept.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `UPDATE issues SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, deleted.ID)
@@ -160,7 +160,7 @@ func TestExportNoIncludeDeletedNullsAggregatedEnvelopePeerOnSoftDelete(t *testin
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number},
+		AddBlocks: []int64{target.ID},
 	})
 	require.NoError(t, err)
 
@@ -205,7 +205,7 @@ func TestExportNoIncludeDeletedPreservesSinglePeerAggregatedEvent(t *testing.T) 
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number},
+		AddBlocks: []int64{target.ID},
 	})
 	require.NoError(t, err)
 
@@ -253,7 +253,7 @@ func TestExportNoIncludeDeletedPreservesLinksChangedReferencingDeleted(t *testin
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number, other.Number},
+		AddBlocks: []int64{target.ID, other.ID},
 	})
 	require.NoError(t, err)
 

@@ -17,6 +17,35 @@ func assignShortID(ctx context.Context, tx *sql.Tx, projectID int64, ulid string
 	return assignShortIDIn(ctx, tx, []int64{projectID}, ulid)
 }
 
+// resolveShortID picks the short_id for a new issue. When override is empty,
+// it auto-extends via assignShortID. When override is non-empty (JSONL import
+// path; spec §8.1), it validates that override is a syntactically valid
+// short_id and equals the lowercased suffix of ulid at its own length — the
+// same invariant the schema CHECK enforces. The override is used verbatim
+// without a collision check: the UNIQUE(project_id, short_id) index will
+// surface any duplicate at INSERT time.
+func resolveShortID(ctx context.Context, tx *sql.Tx, projectID int64, ulid, override string) (string, error) {
+	if override == "" {
+		s, err := assignShortID(ctx, tx, projectID, ulid)
+		if err != nil {
+			return "", fmt.Errorf("assign short_id: %w", err)
+		}
+		return s, nil
+	}
+	if !shortid.Valid(override) {
+		return "", fmt.Errorf("invalid short_id override %q", override)
+	}
+	derived, err := shortid.Derive(ulid, len(override))
+	if err != nil {
+		return "", fmt.Errorf("validate short_id override %q against uid %q: %w", override, ulid, err)
+	}
+	if override != derived {
+		return "", fmt.Errorf("short_id override %q does not match uid %q suffix at length %d (expected %q)",
+			override, ulid, len(override), derived)
+	}
+	return override, nil
+}
+
 // assignShortIDIn is the generalized form of assignShortID that returns the
 // smallest-length short_id (>= shortid.MinLength) derived from ulid that
 // doesn't collide with any issue in the given project set. Rows whose uid

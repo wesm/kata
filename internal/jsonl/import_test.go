@@ -42,7 +42,7 @@ func TestImportRoundTripsExportedRows(t *testing.T) {
 
 	got, err := dst.IssueByID(ctx, issue.ID)
 	require.NoError(t, err)
-	assert.Equal(t, issue.Number, got.Number)
+	assert.Equal(t, issue.ShortID, got.ShortID)
 	assert.Equal(t, issue.Title, got.Title)
 }
 
@@ -88,7 +88,7 @@ func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 	}
 	var schemaVersion string
 	require.NoError(t, first.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion))
-	assert.Equal(t, "7", schemaVersion)
+	assert.Equal(t, "8", schemaVersion)
 }
 
 func TestImportLegacyEventSnapshotsUseFinalProjectName(t *testing.T) {
