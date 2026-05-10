@@ -26,8 +26,7 @@ This spec replaces `#N` as kata's user-facing identifier with a **short ID deriv
 - A display ID that is **probabilistically unique across daemons**, with collisions rare enough at typical project sizes to be a documented edge case rather than routine. Coordination-free uniqueness across unsynced daemons is **not** a property of this design at the chosen length; see §4.3.
 - Short enough to type and remember (4-character minimum) and to embed in commit messages without ceremony.
 - No new generated identity to migrate, version, or collide on. The short ID is a function of the existing ULID.
-- Minimal schema impact: one column on `issues`, one CHECK on `projects.name`.
-- Single-pass cutover via the existing JSONL roundtrip in `internal/jsonl/cutover.go`.
+- Focused single-pass schema delta: drop the `*_number` columns on `issues`, `projects`, `events`, and `purge_log`; add `issues.short_id`; add a CHECK on `projects.name`. Applied via the existing JSONL cutover in `internal/jsonl/cutover.go`.
 
 **Non-goals**
 
@@ -116,12 +115,15 @@ In practice, almost all issues are 4 chars. Length 5 is the rare extension. Leng
 
 Within a single daemon, an issue's short_id is set once at creation and never changes for any reason that occurs in normal operation. New issues can only extend *their own* length to avoid colliding with existing ones; existing issues are never bumped by new arrivals.
 
-Two operator-driven situations *can* shift an issue's short_id, both explicit and infrequent:
+Three operator-driven situations *can* shift an issue's short_id, all explicit and infrequent:
 
-1. **JSONL cutover** that rebuilds the database (e.g., the cutover introducing this feature). Cutovers re-derive every issue's length in ULID-ascending order — the same order in which the original daemon assigned them — so for a database that has not been federated, the post-cutover short_ids match what the daemon originally chose.
-2. **Federation merge** (§4.3). When a remote daemon's issues are imported and a short_id collision is detected, the merge extends one of the colliding issues. References to the extended issue written on its origin daemon become stale.
+1. **The initial JSONL cutover** introducing this feature derives every issue's short_id from the ULID in ULID-ascending order. There are no prior short_ids to preserve, so this is a one-time derivation event.
+2. **`kata projects merge`** (§9.4). Source-side issues whose short_ids collide with target-side issues are extended; existing target short_ids are not bumped. The merge response reports each shifted source-side short_id with its pre- and post-merge values.
+3. **Federation merge** (§4.3). The cross-daemon analog of project merge; covered by a future federation spec.
 
-In the steady state — single-daemon use without cutover or merge — short_ids are immutable.
+**Future cutovers preserve stored short_ids.** Any subsequent JSONL cutover (for an unrelated schema change) reads `short_id` from each issue record and persists it as-is. Auto-extend re-derivation runs only for records that lack a stored `short_id` — i.e., when importing legacy backups created before this feature shipped. This rule is what keeps post-merge short_ids stable across future schema migrations: a project that has been through `kata projects merge` and then through a later cutover will not see the merge's shifted IDs revert to a fresh ULID-ascending derivation.
+
+In the steady state — single-daemon use without one of the three events above — short_ids are immutable.
 
 ## 6. Lookup and resolution
 
@@ -192,12 +194,23 @@ The cutover follows the existing pattern in `internal/jsonl/cutover.go`. Schema 
 2. **Export** the current SQLite database to JSONL at the current version.
 3. **Rebuild** at the new version:
    - Apply the new schema (which has `short_id` and lacks `number` / `next_issue_number`).
-   - Replay JSONL grouped by project, with each project's issues processed in **ULID-ascending order**. ULIDs are time-ordered, so this matches original creation order.
+   - Replay JSONL grouped by project, with each project's issues processed in **ULID-ascending order**.
    - For each issue, run the §5 algorithm against the issues already replayed in the same project. Persist the resulting `short_id` on the row.
-   - All other state (links, comments, labels, events, import mappings, purge_log) replays with the schema-level changes in §9.1 applied (number-bearing columns dropped or renamed). The `number` field on issue records in the JSONL stream is read for older inputs and discarded after the issue is replayed; new issue records carry `short_id` instead.
+   - All other state (links, comments, labels, events, import mappings, purge_log) replays with the schema-level changes in §9.1 applied (number-bearing columns dropped). The `number` field on issue records in the JSONL stream is read for older inputs and discarded after the issue is replayed; new issue records carry `short_id` instead.
 4. **Verify** the rebuilt database round-trips: re-export to JSONL, diff against the cutover input modulo the schema diff. This is the existing pattern from `cutover_test.go`.
 
 The JSONL `issue` envelope at the new version carries `short_id` and drops `number`. Older JSONL files (e.g. archived backups) remain importable through the cutover path; new exports always emit the current version.
+
+### 8.1 Future cutovers preserve stored short_ids
+
+This spec defines the *initial* derivation. Any later cutover — for an unrelated schema change — must persist the stored `short_id` from each JSONL issue record verbatim. Concretely:
+
+- If the JSONL issue record has a `short_id` field, the rebuild persists it as-is and skips the auto-extend algorithm for that issue.
+- If the JSONL issue record lacks `short_id` (e.g., a v7 export from before this feature shipped), the rebuild runs the §5 algorithm to derive one, in ULID-ascending order within the project.
+
+Without this rule, a database that has been through `kata projects merge` (§9.4) — which may have extended some source-side short_ids to break collisions with the target's existing short_ids — would have those extensions silently reverted by the next cutover, since a fresh ULID-ascending derivation across the merged set would pick different winners. Preserving stored values is what makes the post-merge state durable across future schema changes.
+
+The verify step in (4) above already catches this: a round-trip on a merged database produces byte-identical short_ids only if the rebuild preserves them.
 
 ## 9. CLI, API, and schema surface
 
@@ -302,6 +315,7 @@ This is consistent with the existing importer's treatment of Beads-origin metada
 - **Order-dependence is documented, not hidden.** A unit test creates two issues with deliberately colliding 4-char ULID suffixes, asserts their short_ids in ULID-ascending creation order, then runs the same fixture through cutover replay and asserts the same result. A second unit test imports them in reverse order through a simulated merge path and asserts the documented behavior (existing local short_id stays; imported issue extends).
 - **`kata reset-counter` is gone.** Cobra registration tests assert the command is absent. Daemon endpoint tests assert `POST /api/v1/projects/{pid}/reset-counter` returns 404. The `api.ResetCounterRequest` / `api.ResetCounterResponse` types are absent from the OpenAPI spec. TUI snapshot tests assert no UI surface offers the affordance.
 - **`kata projects merge` collision behavior.** A fixture with two projects, each holding an issue whose ULIDs share a 4-char suffix, merges successfully after cutover. The response identifies the issue whose short_id was extended (`pre_merge_short_id` ≠ `post_merge_short_id`). The old `project_merge_issue_number_collision` 409 path is asserted absent.
+- **Future cutovers preserve stored short_ids (§8.1).** A fixture database is run through the initial cutover, then through `kata projects merge` to deliberately extend one source short_id, then through a simulated subsequent cutover (with a no-op schema bump). Every issue's short_id post-second-cutover equals its short_id pre-second-cutover; the merge-shifted short_id is not silently reverted.
 - **TUI snapshots.** List-view, detail-view, and event-pane snapshots update to assert `kata#abc4` rendering and the absence of `#N`.
 
 ## 12. Decisions
