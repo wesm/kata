@@ -50,6 +50,9 @@ func FromStableSeed(seed []byte, t time.Time) (string, error) {
 	return id.String(), nil
 }
 
+// Length is the fixed character length of a kata ULID (Crockford base32).
+func Length() int { return encodedLen }
+
 // Valid reports whether s is a strict 26-character ULID.
 func Valid(s string) bool {
 	_, err := ulid.ParseStrict(s)
