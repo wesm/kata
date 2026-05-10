@@ -154,9 +154,16 @@ func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string,
 		// Defensive: an issue.created event without an issue_id is malformed.
 		return nil, fmt.Errorf("idempotency match has no issue_id")
 	}
+	// Carveout (spec §6): idempotency-key collision detection sees the issue
+	// even if it has been soft-deleted, so it can report the right mismatch.
+	// IssueByID returns rows regardless of deleted_at, matching that intent.
+	issue, err := d.IssueByID(ctx, *evt.IssueID)
+	if err != nil {
+		return nil, fmt.Errorf("idempotency match issue: %w", err)
+	}
 	return &IdempotencyMatch{
-		IssueID:      *evt.IssueID,
-		IssueShortID: "", // populated in Task 5 once IssueByShortID exists
+		IssueID:      issue.ID,
+		IssueShortID: issue.ShortID,
 		Fingerprint:  fp.String,
 		Event:        evt,
 	}, nil

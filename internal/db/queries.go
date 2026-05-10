@@ -733,10 +733,29 @@ func (d *DB) IssueByID(ctx context.Context, id int64) (Issue, error) {
 	return scanIssue(row)
 }
 
-// IssueByNumber fetches an issue by (project_id, number). Includes
-// soft-deleted rows; see IssueByID for the rationale.
-func (d *DB) IssueByNumber(ctx context.Context, projectID, number int64) (Issue, error) {
-	row := d.QueryRowContext(ctx, issueSelect+` WHERE i.project_id = ? AND i.number = ?`, projectID, number)
+// IncludeDeleted controls whether a lookup is allowed to return soft-deleted
+// rows. Spec §6: normal read/mutate paths exclude them; the carveout paths
+// (restore, idempotent re-delete, purge, idempotency-key collision detection)
+// pass IncludeDeletedYes.
+type IncludeDeleted int
+
+const (
+	// IncludeDeletedNo filters out rows with deleted_at IS NOT NULL.
+	IncludeDeletedNo IncludeDeleted = 0
+	// IncludeDeletedYes returns soft-deleted rows alongside live ones.
+	IncludeDeletedYes IncludeDeleted = 1
+)
+
+// IssueByShortID resolves a project-scoped short_id. Soft-deleted issues are
+// returned only when include == IncludeDeletedYes (spec §6: used by restore,
+// idempotent re-delete, purge confirmation, and idempotency-key collision
+// detection). Returns ErrNotFound when no row matches the filter.
+func (d *DB) IssueByShortID(ctx context.Context, projectID int64, shortID string, include IncludeDeleted) (Issue, error) {
+	q := issueSelect + ` WHERE i.project_id = ? AND i.short_id = ?`
+	if include == IncludeDeletedNo {
+		q += ` AND i.deleted_at IS NULL`
+	}
+	row := d.QueryRowContext(ctx, q, projectID, shortID)
 	return scanIssue(row)
 }
 

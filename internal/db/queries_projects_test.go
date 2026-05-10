@@ -174,15 +174,18 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	assert.Equal(t, int64(3), merged.EventsMoved)
 	// merged.Target.NextIssueNumber removed in Task 3.
 
-	gotParent, err := d.IssueByNumber(ctx, beta.ID, 1)
+	// TODO(Task 7): merge collision behavior is rewritten there; for now switch
+	// the lookups to short_id so the test compiles. The merge-collision
+	// failure of this case is a Task 7 concern, not a Task 5 lookup concern.
+	gotParent, err := d.IssueByShortID(ctx, beta.ID, parent.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, "parent", gotParent.Title)
 	assert.Equal(t, beta.ID, gotParent.ProjectID)
-	gotChild, err := d.IssueByNumber(ctx, beta.ID, 2)
+	gotChild, err := d.IssueByShortID(ctx, beta.ID, child.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, "child", gotChild.Title)
 	assert.Equal(t, beta.ID, gotChild.ProjectID)
-	_, err = d.IssueByNumber(ctx, alpha.ID, 1)
+	_, err = d.IssueByShortID(ctx, alpha.ID, parent.ShortID, db.IncludeDeletedNo)
 	assert.ErrorIs(t, err, db.ErrNotFound)
 	_, err = d.ProjectByID(ctx, alpha.ID)
 	assert.ErrorIs(t, err, db.ErrNotFound)
@@ -450,10 +453,16 @@ func TestBatchProjectStats_NoCountInflation(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 	p := createProject(ctx, t, d, "proj")
-	for range 3 {
-		makeIssue(t, ctx, d, p.ID, "i", "tester")
+	var first db.Issue
+	for i := range 3 {
+		iss := makeIssue(t, ctx, d, p.ID, "i", "tester")
+		if i == 0 {
+			first = iss
+		}
 	}
-	iss, err := d.IssueByNumber(ctx, p.ID, 1)
+	// TODO(Task 6): switch back to a short_id lookup once the rest of the
+	// db tests are green; for now reuse the issue returned from makeIssue.
+	iss, err := d.IssueByShortID(ctx, p.ID, first.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
 		IssueID: iss.ID,

@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,10 +45,76 @@ func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
 	}
 }
 
-func TestGetIssueByNumber_NotFound(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-	_, err := d.IssueByNumber(ctx, p.ID, 99)
+// TestIssueByShortID_ReturnsLiveIssue pins that a live issue resolves by its
+// stored short_id under the default include-deleted=no filter.
+func TestIssueByShortID_ReturnsLiveIssue(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "find me",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.IssueByShortID(ctx, p.ID, "d4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, created.UID, got.UID)
+}
+
+// TestIssueByShortID_NotFoundForUnknownShortID pins that a short_id with no
+// matching row returns ErrNotFound rather than a zero-value Issue.
+func TestIssueByShortID_NotFoundForUnknownShortID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	_, err := d.IssueByShortID(ctx, p.ID, "zzzz", db.IncludeDeletedNo)
 	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+// TestIssueByShortID_DefaultExcludesSoftDeleted pins spec §6: normal read
+// paths hide soft-deleted rows. The same short_id that resolved before
+// SoftDeleteIssue must return ErrNotFound after.
+func TestIssueByShortID_DefaultExcludesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "soon-gone",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, created.ID, "tester")
+	require.NoError(t, err)
+
+	_, err = d.IssueByShortID(ctx, p.ID, created.ShortID, db.IncludeDeletedNo)
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+// TestIssueByShortID_IncludeDeletedYesResolvesSoftDeleted pins the carveout
+// branch (spec §6): restore/delete/purge/idempotency-collision pass
+// IncludeDeletedYes and must see the soft-deleted row.
+func TestIssueByShortID_IncludeDeletedYesResolvesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "soon-gone",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, created.ID, "tester")
+	require.NoError(t, err)
+
+	got, err := d.IssueByShortID(ctx, p.ID, created.ShortID, db.IncludeDeletedYes)
+	require.NoError(t, err)
+	assert.Equal(t, created.UID, got.UID)
 }
 
 func TestListIssues_DefaultsToOpenOnlyAndExcludesDeleted(t *testing.T) {
