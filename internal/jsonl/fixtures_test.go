@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,4 +207,52 @@ func buildRichJSONLFixture(t *testing.T) richJSONLFixture {
 	require.NotNil(t, pl.PurgeResetAfterEventID)
 
 	return richJSONLFixture{DB: d, Project: p1}
+}
+
+// v7Issue is a minimal issue fixture for buildV7Fixture. The fixture emits a
+// v7-schema JSONL stream (export_version=7) where issue envelopes carry
+// `number` and lack `short_id` — the shape that exercises the v7→v8 cutover.
+type v7Issue struct {
+	ProjectID   int64
+	ProjectName string
+	UID         string
+	Number      int64
+	Title       string
+}
+
+// buildV7Fixture returns a JSONL string at export_version=7 containing project
+// envelopes (one per distinct ProjectID/ProjectName pair, in first-seen order)
+// followed by issue envelopes in the given order. The output is intended for
+// jsonl.Import, which detects export_version<8 and runs the v7→v8 cutover
+// (derives short_ids in ULID-ascending order per project).
+func buildV7Fixture(t *testing.T, issues []v7Issue) string {
+	t.Helper()
+	var lines []string
+	lines = append(lines, `{"kind":"meta","data":{"key":"export_version","value":"7"}}`)
+	seenProject := map[int64]bool{}
+	for _, iss := range issues {
+		if seenProject[iss.ProjectID] {
+			continue
+		}
+		seenProject[iss.ProjectID] = true
+		// Use a fixed ULID base for projects so the fixture is deterministic;
+		// the high byte tracks the project ID so distinct projects get
+		// distinct UIDs.
+		projectUID := "01HZZZZZZZZZZZZZZZZZZZZZZZ"
+		switch iss.ProjectID {
+		case 2:
+			projectUID = "01HZZZZZZZZZZZZZZZZZZZZZ02"
+		case 3:
+			projectUID = "01HZZZZZZZZZZZZZZZZZZZZZ03"
+		}
+		lines = append(lines, fmt.Sprintf(
+			`{"kind":"project","data":{"id":%d,"uid":%q,"name":%q,"created_at":"2026-05-03T00:00:00.000Z","next_issue_number":%d}}`,
+			iss.ProjectID, projectUID, iss.ProjectName, len(issues)+1))
+	}
+	for _, iss := range issues {
+		lines = append(lines, fmt.Sprintf(
+			`{"kind":"issue","data":{"id":%d,"uid":%q,"project_id":%d,"number":%d,"title":%q,"body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
+			iss.Number, iss.UID, iss.ProjectID, iss.Number, iss.Title))
+	}
+	return buildJSONL(lines...)
 }

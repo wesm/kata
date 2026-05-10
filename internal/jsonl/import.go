@@ -41,6 +41,15 @@ func ImportWithOptions(ctx context.Context, r io.Reader, target *db.DB, opts Imp
 	if err != nil {
 		return err
 	}
+	// Pre-v8 envelopes lack short_id; derive them in ULID-ascending order
+	// per project before any inserts run so the per-envelope loop only ever
+	// sees current-version-shaped issue records. Project-name validation
+	// (no '#') happens here too so a bad fixture fails before any mutation.
+	if exportVersion < 8 {
+		if err := applyCutoverV7toV8(envs); err != nil {
+			return err
+		}
+	}
 	tx, err := target.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin import: %w", err)
