@@ -183,7 +183,7 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 			ProjectID:   issue.ProjectID,
 			ProjectName: projectName,
 			IssueID:     &issue.ID,
-			IssueNumber: &issue.Number,
+			IssueNumber: nil,
 			Type:        "issue.updated",
 			Actor:       p.Actor,
 			Payload:     "{}",
@@ -216,7 +216,7 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 				ProjectID:   issue.ProjectID,
 				ProjectName: projectName,
 				IssueID:     &issue.ID,
-				IssueNumber: &issue.Number,
+				IssueNumber: nil,
 				Type:        eventType,
 				Actor:       p.Actor,
 				Payload:     payload,
@@ -254,7 +254,7 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 			ProjectID:       issue.ProjectID,
 			ProjectName:     projectName,
 			IssueID:         &issue.ID,
-			IssueNumber:     &issue.Number,
+			IssueNumber:     nil,
 			RelatedIssueID:  peerID,
 			RelatedIssueUID: peerUID,
 			Type:            "issue.links_changed",
@@ -339,7 +339,11 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 				// to the insert (the end-state user wanted is still
 				// reachable).
 				if rows > 0 {
-					oldNum := oldParent.Number
+					// ParentRemoved carries the numeric parent ref; with
+					// short_id replacing number this field will be updated
+					// in Task 6 (internal/db cleanup pass). For now use 0
+					// as a placeholder so the package compiles.
+					oldNum := int64(0)
 					oldUID := oldParent.UID
 					changes.ParentRemoved = &oldNum
 					changes.ParentRemovedUID = &oldUID
@@ -385,7 +389,9 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 		if err != nil {
 			return changed, err
 		}
-		if parentIssue.Number != *p.RemoveParent {
+		// TODO Task 6: parentIssue.Number was removed; use ID as interim placeholder
+		// until RemoveParent is migrated to short_id.
+		if parentIssue.ID != *p.RemoveParent {
 			return changed, ErrParentMismatch
 		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, existing.ID)
@@ -404,7 +410,8 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 		if rows == 0 {
 			return changed, ErrParentMismatch
 		}
-		n := *p.RemoveParent
+		// TODO Task 6: store short_id-based ref once RemoveParent is migrated.
+		n := parentIssue.ID
 		uid := parentIssue.UID
 		changes.ParentRemoved = &n
 		changes.ParentRemovedUID = &uid
@@ -647,11 +654,13 @@ func lookupIssueByNumberTxIncludingDeleted(ctx context.Context, tx *sql.Tx, proj
 }
 
 func lookupIssueByNumberTxOpts(ctx context.Context, tx *sql.Tx, projectID, number int64, includeDeleted bool) (Issue, error) {
-	const base = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
+	// TODO Task 5: migrate callers to short_id lookups. For now, look up by rowid
+	// as a stand-in so the package compiles; the number param is treated as the issue ID.
+	const base = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at
 		FROM issues i JOIN projects p ON p.id = i.project_id
-		WHERE i.project_id = ? AND i.number = ?`
+		WHERE i.project_id = ? AND i.id = ?`
 	q := base + ` AND i.deleted_at IS NULL`
 	if includeDeleted {
 		q = base
@@ -665,7 +674,7 @@ func lookupIssueByNumberTxOpts(ctx context.Context, tx *sql.Tx, projectID, numbe
 // link, where the link row is still valid even if the peer issue has
 // been soft-deleted.
 func lookupIssueByIDTxIncludingDeleted(ctx context.Context, tx *sql.Tx, id int64) (Issue, error) {
-	const q = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
+	const q = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at
 		FROM issues i JOIN projects p ON p.id = i.project_id

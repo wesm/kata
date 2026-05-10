@@ -199,7 +199,7 @@ func TestLookupIdempotency_ReturnsMatchWithinWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, issue.ID, got.IssueID)
-	assert.Equal(t, issue.Number, got.IssueNumber)
+	assert.Equal(t, issue.ShortID, got.IssueShortID)
 	assert.Equal(t, fp, got.Fingerprint)
 	assert.Equal(t, "issue.created", got.Event.Type)
 }
@@ -251,7 +251,7 @@ func TestLookupIdempotency_OnlyIssueCreatedEvents(t *testing.T) {
 		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester',
 		        json_object('idempotency_key', 'K1', 'idempotency_fingerprint', 'fp'),
 		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		eventUID, p.ID, p.Name, issue.ID, issue.Number)
+		eventUID, p.ID, p.Name, issue.ID, 0)
 	require.NoError(t, err)
 
 	got, err := d.LookupIdempotency(ctx, p.ID, "K1", time.Now().Add(-1*time.Hour))

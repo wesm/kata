@@ -150,14 +150,14 @@ func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string,
 	if err != nil {
 		return nil, fmt.Errorf("lookup idempotency: %w", err)
 	}
-	if evt.IssueID == nil || evt.IssueNumber == nil {
+	if evt.IssueID == nil {
 		// Defensive: an issue.created event without an issue_id is malformed.
 		return nil, fmt.Errorf("idempotency match has no issue_id")
 	}
 	return &IdempotencyMatch{
-		IssueID:     *evt.IssueID,
-		IssueNumber: *evt.IssueNumber,
-		Fingerprint: fp.String,
-		Event:       evt,
+		IssueID:      *evt.IssueID,
+		IssueShortID: "", // populated in Task 5 once IssueByShortID exists
+		Fingerprint:  fp.String,
+		Event:        evt,
 	}, nil
 }

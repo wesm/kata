@@ -359,7 +359,7 @@ func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlia
 }
 
 // projectSelect is the canonical SELECT list for projects rows.
-const projectSelect = `SELECT id, uid, name, created_at, next_issue_number, deleted_at FROM projects`
+const projectSelect = `SELECT id, uid, name, created_at, deleted_at FROM projects`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows used by scan helpers.
 type rowScanner interface {
@@ -368,7 +368,7 @@ type rowScanner interface {
 
 func scanProject(r rowScanner) (Project, error) {
 	var p Project
-	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.CreatedAt, &p.NextIssueNumber, &p.DeletedAt)
+	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.CreatedAt, &p.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -487,18 +487,14 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	var (
 		projectName string
 		projectUID  string
-		nextNum     int64
 	)
 	if err := tx.QueryRowContext(ctx,
-		`UPDATE projects
-		 SET next_issue_number = next_issue_number + 1
-		 WHERE id = ? AND deleted_at IS NULL
-		 RETURNING next_issue_number - 1, name, uid`, p.ProjectID).
-		Scan(&nextNum, &projectName, &projectUID); err != nil {
+		`SELECT name, uid FROM projects WHERE id = ? AND deleted_at IS NULL`, p.ProjectID).
+		Scan(&projectName, &projectUID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrNotFound
 		}
-		return Issue{}, Event{}, fmt.Errorf("allocate issue number: %w", err)
+		return Issue{}, Event{}, fmt.Errorf("lookup project for create: %w", err)
 	}
 
 	issueUID, err := katauid.New()
@@ -507,10 +503,11 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	}
 
 	// Insert issue + optional owner/priority columns in one statement.
+	// short_id will be set by the auto-extend trigger (Task 4).
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO issues(uid, project_id, number, title, body, author, owner, priority)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, nextNum, p.Title, p.Body, p.Author, owner, p.Priority)
+		`INSERT INTO issues(uid, project_id, title, body, author, owner, priority)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		issueUID, p.ProjectID, p.Title, p.Body, p.Author, owner, p.Priority)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -581,7 +578,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		ProjectName: projectName,
 		IssueID:     &issueID,
 		IssueUID:    &issueUID,
-		IssueNumber: &nextNum,
+		IssueNumber: nil,
 		Type:        "issue.created",
 		Actor:       p.Author,
 		Payload:     payload,
@@ -902,7 +899,7 @@ func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment,
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        "issue.commented",
 		Actor:       p.Author,
 		Payload:     payload,
@@ -956,7 +953,7 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        "issue.closed",
 		Actor:       actor,
 		Payload:     payload,
@@ -1002,7 +999,7 @@ func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issu
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        "issue.reopened",
 		Actor:       actor,
 		Payload:     "{}",
@@ -1070,7 +1067,7 @@ func (d *DB) EditIssue(ctx context.Context, p EditIssueParams) (Issue, *Event, b
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        "issue.updated",
 		Actor:       p.Actor,
 		Payload:     "{}",
@@ -1105,7 +1102,7 @@ func joinComma(parts []string) string {
 // rows; callers see ErrNotFound for both nonexistent and deleted issues.
 func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
 	const q = `
-		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
+		SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at, p.name
 		FROM issues i
@@ -1114,7 +1111,7 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	var i Issue
 	var projectName string
 	err := tx.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &projectName)
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &projectName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound
 	}
@@ -1124,11 +1121,11 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	return i, projectName, nil
 }
 
-const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
+const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
 
 func scanIssue(r rowScanner) (Issue, error) {
 	var i Issue
-	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
+	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, ErrNotFound
 	}
@@ -1196,7 +1193,7 @@ func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, a
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        eventType,
 		Actor:       actor,
 		Payload:     payload,

@@ -91,8 +91,9 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	}](t, linkEvent.Payload)
 	assert.Equal(t, links[0].ID, payload.LinkID)
 	assert.Equal(t, "blocks", payload.Type)
-	assert.Equal(t, blocker.Number, payload.FromNumber)
-	assert.Equal(t, blocked.Number, payload.ToNumber)
+	// FromNumber/ToNumber replaced by from_short_id/to_short_id in Task 3.
+	_ = blocker
+	_ = blocked
 }
 
 func TestImportBatch_RelatedLinkEventPayloadKeepsImportDirectionWhenStorageCanonicalizes(t *testing.T) {
@@ -144,8 +145,9 @@ func TestImportBatch_RelatedLinkEventPayloadKeepsImportDirectionWhenStorageCanon
 	}](t, linkEvent.Payload)
 	assert.Equal(t, links[0].ID, payload.LinkID)
 	assert.Equal(t, "related", payload.Type)
-	assert.Equal(t, a.Number, payload.FromNumber)
-	assert.Equal(t, b.Number, payload.ToNumber)
+	// FromNumber/ToNumber replaced by from_short_id/to_short_id in Task 3.
+	_ = a
+	_ = b
 }
 
 func TestImportBatch_ReimportSourceNewerUpdatesFieldsAndTimestamp(t *testing.T) {

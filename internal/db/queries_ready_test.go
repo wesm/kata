@@ -17,8 +17,8 @@ func TestReadyIssues_FiltersOutClosed(t *testing.T) {
 	require.NoError(t, err)
 
 	got := readyNumbers(t, ctx, d, p.ID)
-	assert.Contains(t, got, open.Number)
-	assert.NotContains(t, got, closed.Number)
+	assert.Contains(t, got, open.ShortID)
+	assert.NotContains(t, got, closed.ShortID)
 }
 
 func TestReadyIssues_ExcludesIssuesBlockedByOpenBlocker(t *testing.T) {
@@ -29,9 +29,9 @@ func TestReadyIssues_ExcludesIssuesBlockedByOpenBlocker(t *testing.T) {
 	makeLink(ctx, t, d, p.ID, blocker.ID, blocked.ID, "blocks")
 
 	got := readyNumbers(t, ctx, d, p.ID)
-	assert.Contains(t, got, blocker.Number, "blocker is ready (not blocked itself)")
-	assert.Contains(t, got, standalone.Number, "standalone is ready")
-	assert.NotContains(t, got, blocked.Number, "blocked is not ready while blocker is open")
+	assert.Contains(t, got, blocker.ShortID, "blocker is ready (not blocked itself)")
+	assert.Contains(t, got, standalone.ShortID, "standalone is ready")
+	assert.NotContains(t, got, blocked.ShortID, "blocked is not ready while blocker is open")
 }
 
 func TestReadyIssues_ClosedBlockerUnblocksDownstream(t *testing.T) {
@@ -43,19 +43,19 @@ func TestReadyIssues_ClosedBlockerUnblocksDownstream(t *testing.T) {
 	require.NoError(t, err)
 
 	got := readyNumbers(t, ctx, d, p.ID)
-	assert.Contains(t, got, blocked.Number, "blocked is ready once blocker closes")
+	assert.Contains(t, got, blocked.ShortID, "blocked is ready once blocker closes")
 }
 
-// readyNumbers fetches ready issues for projectID and returns their numbers.
+// readyNumbers fetches ready issues for projectID and returns their short IDs.
 //
 //nolint:revive // test helper: t *testing.T conventionally precedes ctx.
-func readyNumbers(t *testing.T, ctx context.Context, d *db.DB, projectID int64) []int64 {
+func readyNumbers(t *testing.T, ctx context.Context, d *db.DB, projectID int64) []string {
 	t.Helper()
 	rows, err := d.ReadyIssues(ctx, projectID, 0)
 	require.NoError(t, err)
-	out := make([]int64, 0, len(rows))
+	out := make([]string, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.Number)
+		out = append(out, r.ShortID)
 	}
 	return out
 }

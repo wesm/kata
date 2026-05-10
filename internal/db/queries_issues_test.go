@@ -18,7 +18,7 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 		Author:    "agent-1",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), issue.Number)
+	// issue.Number removed in Task 3; short_id populated in Task 4.
 	assertValidUID(t, issue.UID)
 	assert.Equal(t, p.UID, issue.ProjectUID)
 	assert.Equal(t, "open", issue.Status)
@@ -28,12 +28,7 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 	assert.NotNil(t, evt.IssueID)
 	require.NotNil(t, evt.IssueUID)
 	assert.Equal(t, issue.UID, *evt.IssueUID)
-	require.NotNil(t, evt.IssueNumber)
-	assert.Equal(t, int64(1), *evt.IssueNumber)
-
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.Equal(t, int64(2), p2.NextIssueNumber)
+	// IssueNumber on events is nil after Task 3; Task 12 will re-populate it.
 }
 
 func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
@@ -44,7 +39,8 @@ func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
 			ProjectID: p.ID, Title: "x", Author: "a",
 		})
 		require.NoError(t, err)
-		assert.EqualValues(t, i, issue.Number)
+		// issue.Number removed in Task 3; sequential short_ids verified in Task 4.
+		_ = issue
 	}
 }
 

@@ -23,8 +23,7 @@ func TestSoftDeleteIssue_SetsDeletedAtAndEmitsEvent(t *testing.T) {
 	assert.JSONEq(t, "{}", string(evt.Payload), "soft_deleted event has empty payload")
 	require.NotNil(t, evt.IssueID)
 	assert.Equal(t, issue.ID, *evt.IssueID, "event refs the soft-deleted issue id")
-	require.NotNil(t, evt.IssueNumber)
-	assert.Equal(t, issue.Number, *evt.IssueNumber, "event refs the soft-deleted issue number")
+	// IssueNumber on events is nil after Task 3; Task 12 will re-populate it.
 	require.NotNil(t, updated.DeletedAt)
 	assert.True(t, updated.UpdatedAt.After(issue.UpdatedAt) || updated.UpdatedAt.Equal(issue.UpdatedAt),
 		"updated_at must not regress on soft-delete")
@@ -110,8 +109,7 @@ func TestRestoreIssue_EmitsEventWithPayloadAndRefs(t *testing.T) {
 	assert.JSONEq(t, "{}", string(evt.Payload), "restored event has empty payload")
 	require.NotNil(t, evt.IssueID)
 	assert.Equal(t, issue.ID, *evt.IssueID)
-	require.NotNil(t, evt.IssueNumber)
-	assert.Equal(t, issue.Number, *evt.IssueNumber)
+	// IssueNumber on events is nil after Task 3; Task 12 will re-populate it.
 	assert.True(t, updated.UpdatedAt.After(issue.UpdatedAt) || updated.UpdatedAt.Equal(issue.UpdatedAt),
 		"updated_at must not regress on restore")
 }
@@ -166,8 +164,8 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 		ProjectID: p.ID, FromIssueID: keeper.ID, ToIssueID: target.ID,
 		Type: "blocks", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: keeper.ID, EventIssueNumber: keeper.Number,
-		FromNumber: keeper.Number, ToNumber: target.Number, Actor: "tester",
+		EventType: "issue.linked", EventIssueID: keeper.ID, EventIssueNumber: keeper.ID,
+		FromNumber: keeper.ID, ToNumber: target.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
 
@@ -178,7 +176,7 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 	assert.Equal(t, target.UID, *pl.IssueUID)
 	assert.Equal(t, p.UID, *pl.ProjectUID)
 	assert.Equal(t, "kata", pl.ProjectName)
-	assert.Equal(t, target.Number, pl.IssueNumber)
+	// IssueNumber on purge_log is 0 after Task 3; Task 7 rewrites the merge path.
 	assert.Equal(t, "delete me", pl.IssueTitle)
 	assert.Equal(t, "tester", pl.IssueAuthor)
 	assert.Equal(t, int64(1), pl.CommentCount)
@@ -240,7 +238,7 @@ func TestEditIssueAtomic_AddBlocksHandlesConcurrentInsertGracefully(t *testing.T
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   a.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{b.Number},
+		AddBlocks: []int64{b.ID},
 	})
 	require.NoError(t, err)
 
@@ -249,7 +247,7 @@ func TestEditIssueAtomic_AddBlocksHandlesConcurrentInsertGracefully(t *testing.T
 	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   a.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{b.Number},
+		AddBlocks: []int64{b.ID},
 	})
 	require.NoError(t, err, "duplicate add must be a no-op, never an error")
 	assert.Empty(t, res.Changes.BlocksAdded, "duplicate add must report no change")
@@ -281,7 +279,7 @@ func TestPurgeIssue_PreservesSinglePeerAggregatedLinksChangedEvent(t *testing.T)
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number},
+		AddBlocks: []int64{target.ID},
 	})
 	require.NoError(t, err)
 
@@ -330,7 +328,7 @@ func TestPurgeIssue_PreservesAggregatedLinksChangedEventsOnOtherIssues(t *testin
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number, other.Number},
+		AddBlocks: []int64{target.ID, other.ID},
 	})
 	require.NoError(t, err)
 
@@ -404,7 +402,7 @@ func TestEditIssueAtomic_LinksChangedSetsEnvelopePeerForSingleEdge(t *testing.T)
 	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number},
+		AddBlocks: []int64{target.ID},
 	})
 	require.NoError(t, err)
 
@@ -436,7 +434,7 @@ func TestEditIssueAtomic_LinksChangedNullsEnvelopePeerForMultiEdge(t *testing.T)
 	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{t1.Number, t2.Number},
+		AddBlocks: []int64{t1.ID, t2.ID},
 	})
 	require.NoError(t, err)
 

@@ -174,20 +174,12 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 		return ProjectMergeResult{}, fmt.Errorf("move aliases: %w", err)
 	}
 
-	nextIssueNumber, err := mergedNextIssueNumber(ctx, tx, source, target)
-	if err != nil {
-		return ProjectMergeResult{}, err
-	}
 	if p.TargetName != nil {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE projects SET name = ?, next_issue_number = ? WHERE id = ?`,
-			*p.TargetName, nextIssueNumber, target.ID); err != nil {
+			`UPDATE projects SET name = ? WHERE id = ?`,
+			*p.TargetName, target.ID); err != nil {
 			return ProjectMergeResult{}, fmt.Errorf("update target project: %w", err)
 		}
-	} else if _, err := tx.ExecContext(ctx,
-		`UPDATE projects SET next_issue_number = ? WHERE id = ?`,
-		nextIssueNumber, target.ID); err != nil {
-		return ProjectMergeResult{}, fmt.Errorf("update target next issue number: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, source.ID); err != nil {
 		return ProjectMergeResult{}, fmt.Errorf("delete source project: %w", err)
@@ -273,17 +265,3 @@ func countProjectRows(ctx context.Context, tx *sql.Tx, table string, projectID i
 	return n, nil
 }
 
-func mergedNextIssueNumber(ctx context.Context, tx *sql.Tx, source, target Project) (int64, error) {
-	next := target.NextIssueNumber
-	if source.NextIssueNumber > next {
-		next = source.NextIssueNumber
-	}
-	var maxNumber sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(number) FROM issues WHERE project_id = ?`, target.ID).Scan(&maxNumber); err != nil {
-		return 0, fmt.Errorf("read merged max issue number: %w", err)
-	}
-	if maxNumber.Valid && maxNumber.Int64+1 > next {
-		next = maxNumber.Int64 + 1
-	}
-	return next, nil
-}

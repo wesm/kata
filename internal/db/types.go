@@ -7,12 +7,11 @@ import "time"
 // events/issues keep referring to a valid FK target, but read paths filter it
 // out. Name is the user-facing unique project key.
 type Project struct {
-	ID              int64      `json:"id"`
-	UID             string     `json:"uid"`
-	Name            string     `json:"name"`
-	CreatedAt       time.Time  `json:"created_at"`
-	NextIssueNumber int64      `json:"next_issue_number"`
-	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	ID        int64      `json:"id"`
+	UID       string     `json:"uid"`
+	Name      string     `json:"name"`
+	CreatedAt time.Time  `json:"created_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // ProjectStats is the per-project aggregate returned by BatchProjectStats.
@@ -43,7 +42,7 @@ type Issue struct {
 	UID          string     `json:"uid"`
 	ProjectID    int64      `json:"project_id"`
 	ProjectUID   string     `json:"project_uid,omitempty"`
-	Number       int64      `json:"number"`
+	ShortID      string     `json:"short_id"`
 	Title        string     `json:"title"`
 	Body         string     `json:"body"`
 	Status       string     `json:"status"`
@@ -132,7 +131,7 @@ type SearchCandidate struct {
 // MutationResponse without a second query.
 type IdempotencyMatch struct {
 	IssueID     int64
-	IssueNumber int64
+	IssueShortID string
 	Fingerprint string
 	Event       Event
 }

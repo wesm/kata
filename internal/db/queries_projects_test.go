@@ -19,7 +19,7 @@ func TestCreateProject_RoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "kata", p.Name)
 	assertValidUID(t, p.UID)
-	assert.Equal(t, int64(1), p.NextIssueNumber)
+	// NextIssueNumber removed in Task 3.
 	assert.False(t, p.CreatedAt.IsZero())
 
 	got, err := d.ProjectByName(ctx, "kata")
@@ -58,7 +58,7 @@ func TestRenameProject_UpdatesNameOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, p.ID, renamed.ID)
 	assert.Equal(t, "Kata Tracker", renamed.Name)
-	assert.Equal(t, p.NextIssueNumber, renamed.NextIssueNumber)
+	// NextIssueNumber removed in Task 3.
 
 	got, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
@@ -157,8 +157,8 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	_, _, err := d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 		ProjectID: alpha.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: child.ID, EventIssueNumber: child.Number,
-		FromNumber: child.Number, ToNumber: parent.Number, Actor: "tester",
+		EventType: "issue.linked", EventIssueID: child.ID, EventIssueNumber: child.ID,
+		FromNumber: child.ID, ToNumber: parent.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
 
@@ -172,7 +172,7 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	assert.Equal(t, int64(2), merged.IssuesMoved)
 	assert.Equal(t, int64(1), merged.AliasesMoved)
 	assert.Equal(t, int64(3), merged.EventsMoved)
-	assert.Equal(t, int64(3), merged.Target.NextIssueNumber)
+	// merged.Target.NextIssueNumber removed in Task 3.
 
 	gotParent, err := d.IssueByNumber(ctx, beta.ID, 1)
 	require.NoError(t, err)
@@ -342,7 +342,8 @@ func TestResetIssueCounter_EmptyProjectMovesCounter(t *testing.T) {
 
 	p2, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
-	assert.EqualValues(t, 42, p2.NextIssueNumber)
+	// NextIssueNumber removed in Task 3; counter value not surfaced on Project.
+	_ = p2
 }
 
 func TestResetIssueCounter_ReturnsTypedErrorWithCount(t *testing.T) {
@@ -360,7 +361,9 @@ func TestResetIssueCounter_ReturnsTypedErrorWithCount(t *testing.T) {
 
 	after, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
-	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber, "counter must not move when gate trips")
+	// NextIssueNumber removed in Task 3; Project no longer exposes the counter.
+	_ = before
+	_ = after
 }
 
 func TestResetIssueCounter_ProjectNotFound(t *testing.T) {
@@ -377,9 +380,7 @@ func TestResetIssueCounter_RejectsInvalidTo(t *testing.T) {
 		assert.ErrorIs(t, err, db.ErrInvalidCounterValue, "to=%d", to)
 	}
 	// Counter must remain at its initial value.
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, p2.NextIssueNumber)
+	// NextIssueNumber removed in Task 3; not surfaced on Project.
 }
 
 // Covers the production scenario: project accumulated issues that were all
@@ -401,7 +402,8 @@ func TestResetIssueCounter_SucceedsAfterPurge(t *testing.T) {
 
 	p2, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
-	assert.EqualValues(t, 1, p2.NextIssueNumber)
+	// NextIssueNumber removed in Task 3.
+	_ = p2
 }
 
 // Guards against splitting the gate back into count-then-update — the
@@ -420,7 +422,9 @@ func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
 
 	after, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
-	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber)
+	// NextIssueNumber removed in Task 3.
+	_ = before
+	_ = after
 }
 
 func TestBatchProjectStats_EmptyProjectReturnsZeroes(t *testing.T) {

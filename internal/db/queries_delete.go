@@ -61,7 +61,7 @@ func (d *DB) SoftDeleteIssue(ctx context.Context, issueID int64, actor string) (
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        "issue.soft_deleted",
 		Actor:       actor,
 		Payload:     "{}",
@@ -127,7 +127,7 @@ func (d *DB) RestoreIssue(ctx context.Context, issueID int64, actor string) (Iss
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        "issue.restored",
 		Actor:       actor,
 		Payload:     "{}",
@@ -328,7 +328,7 @@ func purgeCascade(
 		   purge_reset_after_event_id, actor, reason)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		purgeUID, originInstanceUID,
-		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectName, issue.Number,
+		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectName, 0,
 		issue.Title, issue.Author, commentCount, linkCount, labelCount,
 		eventCount, minEventID, maxEventID, reservedCursor, actor, reason)
 	if err != nil {
@@ -411,7 +411,7 @@ func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) 
 // destructive ladder verbs that need to operate on deleted issues.
 func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64) (Issue, string, error) {
 	const q = `
-		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
+		SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at, p.name
 		FROM issues i
@@ -422,7 +422,7 @@ func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64
 		projectName string
 	)
 	err := r.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status,
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status,
 			&i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt,
 			&i.ClosedAt, &i.DeletedAt, &projectName)
 	if errors.Is(err, sql.ErrNoRows) {

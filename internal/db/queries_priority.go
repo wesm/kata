@@ -48,7 +48,7 @@ func (d *DB) UpdatePriority(ctx context.Context, issueID int64, newPriority *int
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
+		IssueNumber: nil,
 		Type:        eventType,
 		Actor:       actor,
 		Payload:     payload,
