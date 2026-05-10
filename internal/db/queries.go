@@ -417,6 +417,13 @@ type CreateIssueParams struct {
 	Body      string
 	Author    string
 
+	// Optional. When non-empty, CreateIssue uses this ULID instead of
+	// generating one. Required to be a valid 26-char ULID; the caller owns
+	// uniqueness (the UNIQUE constraint on issues.uid will still surface
+	// duplicates as a constraint error). This seam supports deterministic
+	// tests and the JSONL replay path; live callers should leave it empty.
+	UID string
+
 	// Optional initial state. Plan 2 fields. CreateIssue inserts label/link
 	// rows and applies the owner in the same TX, then folds them into the
 	// issue.created event payload (no separate labeled/linked/assigned events).
@@ -497,17 +504,26 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		return Issue{}, Event{}, fmt.Errorf("lookup project for create: %w", err)
 	}
 
-	issueUID, err := katauid.New()
+	issueUID := p.UID
+	if issueUID == "" {
+		issueUID, err = katauid.New()
+		if err != nil {
+			return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
+		}
+	} else if !katauid.Valid(issueUID) {
+		return Issue{}, Event{}, fmt.Errorf("invalid issue uid %q", issueUID)
+	}
+
+	shortID, err := assignShortID(ctx, tx, p.ProjectID, issueUID)
 	if err != nil {
-		return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
+		return Issue{}, Event{}, fmt.Errorf("assign short_id: %w", err)
 	}
 
 	// Insert issue + optional owner/priority columns in one statement.
-	// short_id will be set by the auto-extend trigger (Task 4).
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO issues(uid, project_id, title, body, author, owner, priority)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, p.Title, p.Body, p.Author, owner, p.Priority)
+		`INSERT INTO issues(uid, project_id, short_id, title, body, author, owner, priority)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		issueUID, p.ProjectID, shortID, p.Title, p.Body, p.Author, owner, p.Priority)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -1260,19 +1276,23 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	if err != nil {
 		return Event{}, fmt.Errorf("generate event uid: %w", err)
 	}
+	// The events table dropped `issue_number` in schema v8; Event.IssueNumber
+	// stays in the Go struct as a transitional always-nil sink that older
+	// readers still scan, but no SQL path binds it. Task 6's cleanup pass
+	// will remove the field entirely.
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid, type, actor, payload)
+		`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, related_issue_id, related_issue_uid, type, actor, payload)
 		 VALUES(
 		   ?, ?, ?, ?, ?,
 		   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
-		   ?, ?,
+		   ?,
 		   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 		   ?, ?, ?
 		 )`,
 		eventUID, d.instanceUID,
 		in.ProjectID, in.ProjectName, in.IssueID,
 		stringPtrValue(in.IssueUID), in.IssueID,
-		in.IssueNumber, in.RelatedIssueID,
+		in.RelatedIssueID,
 		stringPtrValue(in.RelatedIssueUID), in.RelatedIssueID,
 		in.Type, in.Actor, in.Payload)
 	if err != nil {
@@ -1285,7 +1305,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	var e Event
 	err = tx.QueryRowContext(ctx, eventSelectByID, id).
 		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName, &e.IssueID,
-			&e.IssueUID, &e.IssueNumber, &e.RelatedIssueID, &e.RelatedIssueUID,
+			&e.IssueUID, &e.RelatedIssueID, &e.RelatedIssueUID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt)
 	if err != nil {
 		return Event{}, fmt.Errorf("read event: %w", err)
@@ -1294,7 +1314,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 }
 
 const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
-       e.issue_id, e.issue_uid, e.issue_number, e.related_issue_id, e.related_issue_uid,
+       e.issue_id, e.issue_uid, e.related_issue_id, e.related_issue_uid,
        e.type, e.actor, e.payload, e.created_at
   FROM events e
   JOIN projects p ON p.id = e.project_id

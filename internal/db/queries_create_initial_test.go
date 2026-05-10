@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -239,4 +240,82 @@ func TestCreateIssue_WithAllInitialState(t *testing.T) {
 	assert.Equal(t, "parent", payload.Links[0].Type)
 	assert.Equal(t, parent.ID, payload.Links[0].ToNumber)
 	assert.Equal(t, "alice", payload.Owner)
+}
+
+// Auto-extend tests use ULIDs whose suffixes are constructed to collide at
+// specific lengths, exercising the loop in assignShortID. The injected UIDs
+// flow through the optional CreateIssueParams.UID field; live callers leave
+// UID empty and let CreateIssue call uid.New() instead.
+//
+// Suffix table for the chosen ULIDs:
+//
+//	01HZNQ7VFPK1XGD8R5MABCD4EX -> last4=d4ex,  last5=cd4ex,  last6=bcd4ex
+//	01HZNQ7VFPK1XGD8R5MABXD4EX -> last4=d4ex,  last5=xd4ex,  last6=bxd4ex
+//	01HZNQ7VFPK1XGD8R5AYBXD4EX -> last4=d4ex,  last5=xd4ex,  last6=bxd4ex
+func TestCreateIssue_AssignsLength4WhenUnique(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	row, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "d4ex", row.ShortID)
+}
+
+func TestCreateIssue_ExtendsToLength5OnCollision(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	// Different ULID with the same last 4 chars (D4EX), forcing extension.
+	row2, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "second",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "xd4ex", row2.ShortID)
+}
+
+func TestCreateIssue_ExtendsToLength6OnDoubleCollision(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	uids := []string{
+		"01HZNQ7VFPK1XGD8R5MABCD4EX",
+		"01HZNQ7VFPK1XGD8R5MABXD4EX",
+		"01HZNQ7VFPK1XGD8R5AYBXD4EX",
+	}
+	for i, u := range uids {
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID,
+			UID:       u,
+			Title:     "i" + string(rune('0'+i)),
+			Author:    "tester",
+		})
+		require.NoError(t, err, "create %s", u)
+	}
+	rows, err := d.ListIssues(ctx, db.ListIssuesParams{ProjectID: p.ID})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	// ListIssues orders by updated_at DESC, so the most recent insert comes
+	// first. Index the assertions by UID instead.
+	got := map[string]string{}
+	for _, r := range rows {
+		got[r.UID] = r.ShortID
+	}
+	assert.Equal(t, "d4ex", got["01HZNQ7VFPK1XGD8R5MABCD4EX"])
+	assert.Equal(t, "xd4ex", got["01HZNQ7VFPK1XGD8R5MABXD4EX"])
+	assert.Equal(t, "bxd4ex", got["01HZNQ7VFPK1XGD8R5AYBXD4EX"])
 }
