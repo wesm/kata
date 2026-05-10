@@ -16,7 +16,7 @@ func nowZero() time.Time { return time.Date(2026, 4, 30, 14, 22, 11, 482_000_000
 
 func sampleEvent(t string) db.Event {
 	id := int64(42)
-	num := int64(7)
+	uid := "01HZNQ7VFPK1XGD8R5MABCD4EX"
 	return db.Event{
 		ID:          81237,
 		Type:        t,
@@ -24,7 +24,7 @@ func sampleEvent(t string) db.Event {
 		ProjectID:   3,
 		ProjectName: "github.com/wesm/kata",
 		IssueID:     &id,
-		IssueNumber: &num,
+		IssueUID:    &uid,
 		Payload:     `{"comment_id":104}`,
 		CreatedAt:   nowZero(),
 	}

@@ -35,9 +35,9 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, err
 		}
 
-		links := make([]db.InitialLink, 0, len(in.Body.Links))
-		for _, l := range in.Body.Links {
-			links = append(links, db.InitialLink{Type: l.Type, ToNumber: l.ToNumber, Incoming: l.Incoming})
+		links, err := resolveInitialLinks(ctx, cfg.DB, in.ProjectID, in.Body.Links)
+		if err != nil {
+			return nil, err
 		}
 
 		// Validate priority before the idempotency lookup so an out-of-range
@@ -183,9 +183,13 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "showIssue",
 		Method:      "GET",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}",
 	}, func(ctx context.Context, in *api.ShowIssueRequest) (*api.ShowIssueResponse, error) {
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		include := db.IncludeDeletedNo
+		if in.IncludeDeleted {
+			include = db.IncludeDeletedYes
+		}
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, include)
 		if err != nil {
 			return nil, err
 		}
@@ -197,7 +201,11 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/issues/{uid}",
 	}, func(ctx context.Context, in *api.ShowIssueByUIDRequest) (*api.ShowIssueResponse, error) {
-		issue, err := resolveIssueByUIDOrPrefix(ctx, cfg.DB, in.UID)
+		include := db.IncludeDeletedNo
+		if in.IncludeDeleted {
+			include = db.IncludeDeletedYes
+		}
+		issue, err := resolveIssueByUIDOrPrefix(ctx, cfg.DB, in.UID, include)
 		if err != nil {
 			return nil, err
 		}
@@ -213,11 +221,11 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "editIssue",
 		Method:      "PATCH",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}",
 	}, editIssueHandler(cfg))
 }
 
-// editIssueHandler dispatches a PATCH /issues/{number} call. It applies any
+// editIssueHandler dispatches a PATCH /issues/{ref} call. It applies any
 // title/body/owner change, the priority change, and any LinksDelta mutations
 // in a single daemon transaction. Reports applied link mutations in the
 // response's `changes` block. Either every requested mutation lands or none
@@ -230,7 +238,7 @@ func editIssueHandler(cfg ServerConfig) func(context.Context, *api.EditIssueRequ
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}
@@ -266,20 +274,14 @@ func editIssueHandler(cfg ServerConfig) func(context.Context, *api.EditIssueRequ
 			ClearPriority: in.Body.ClearPriority,
 		}
 		if hasLinkChange {
-			d := in.Body.LinksDelta
-			params.SetParent = d.SetParent
-			params.RemoveParent = d.RemoveParent
-			params.AddBlocks = d.AddBlocks
-			params.AddBlockedBy = d.AddBlockedBy
-			params.AddRelated = d.AddRelated
-			params.RemoveBlocks = d.RemoveBlocks
-			params.RemoveBlockedBy = d.RemoveBlockedBy
-			params.RemoveRelated = d.RemoveRelated
+			if err := fillLinksDeltaParams(ctx, cfg.DB, in.ProjectID, in.Body.LinksDelta, &params); err != nil {
+				return nil, err
+			}
 		}
 
 		result, err := cfg.DB.EditIssueAtomic(ctx, params)
 		if err != nil {
-			return nil, mapAtomicEditError(err, issue.Number, in.Body.LinksDelta)
+			return nil, mapAtomicEditError(err, issue.ShortID, in.Body.LinksDelta)
 		}
 		// Broadcast all events post-commit. Order matches DB.EditIssueAtomic's
 		// emission order: issue.updated → priority → links_changed.
@@ -313,16 +315,11 @@ func editIssueHandler(cfg ServerConfig) func(context.Context, *api.EditIssueRequ
 		// envelope carries no operations and should be treated like the
 		// field-only PATCH it functionally is.
 		if linksDeltaRequestsAnyOp(in.Body.LinksDelta) {
-			out.Body.Changes = &api.LinkChanges{
-				ParentSet:        result.Changes.ParentSet,
-				ParentRemoved:    result.Changes.ParentRemoved,
-				BlocksAdded:      result.Changes.BlocksAdded,
-				BlocksRemoved:    result.Changes.BlocksRemoved,
-				BlockedByAdded:   result.Changes.BlockedByAdded,
-				BlockedByRemoved: result.Changes.BlockedByRemoved,
-				RelatedAdded:     result.Changes.RelatedAdded,
-				RelatedRemoved:   result.Changes.RelatedRemoved,
+			changes, err := buildLinkChanges(ctx, cfg.DB, result.Changes)
+			if err != nil {
+				return nil, api.NewError(500, "internal", err.Error(), "", nil)
 			}
+			out.Body.Changes = changes
 		}
 		return out, nil
 	}
@@ -345,23 +342,24 @@ func linksDeltaRequestsAnyOp(d *api.LinksDelta) bool {
 
 // mapAtomicEditError translates DB-layer errors from EditIssueAtomic into
 // the right API error envelope. Touches only error categories the atomic
-// path can produce.
-func mapAtomicEditError(err error, issueNumber int64, delta *api.LinksDelta) error {
+// path can produce. issueShortID is the URL issue's short_id, used in
+// human-readable error messages.
+func mapAtomicEditError(err error, issueShortID string, delta *api.LinksDelta) error {
 	var lt *db.LinkTargetNotFoundError
 	switch {
 	case errors.As(err, &lt):
 		return api.NewError(404, "issue_not_found",
-			fmt.Sprintf("link target #%d not found", lt.Number), "", nil)
+			"link target not found", "", nil)
 	case errors.Is(err, db.ErrNotFound):
 		return api.NewError(404, "issue_not_found",
 			"target issue not found", "", nil)
 	case errors.Is(err, db.ErrParentMismatch):
-		assertion := int64(0)
+		assertion := ""
 		if delta != nil && delta.RemoveParent != nil {
 			assertion = *delta.RemoveParent
 		}
 		return api.NewError(409, "parent_mismatch",
-			fmt.Sprintf("issue #%d's current parent does not match asserted #%d", issueNumber, assertion),
+			fmt.Sprintf("issue #%s's current parent does not match asserted #%s", issueShortID, assertion),
 			"read the current parent before asserting a removal", nil)
 	case errors.Is(err, db.ErrSelfLink):
 		return api.NewError(400, "validation", "cannot link an issue to itself", "", nil)
@@ -369,7 +367,7 @@ func mapAtomicEditError(err error, issueNumber int64, delta *api.LinksDelta) err
 		return api.NewError(400, "validation", "cross-project links are not allowed", "", nil)
 	case errors.Is(err, db.ErrParentCycle):
 		return api.NewError(400, "validation",
-			fmt.Sprintf("set_parent on #%d would create a parent cycle", issueNumber),
+			fmt.Sprintf("set_parent on #%s would create a parent cycle", issueShortID),
 			"the requested parent is a descendant of this issue", nil)
 	case errors.Is(err, db.ErrParentAlreadySet):
 		// Should not surface from the atomic path (set_parent replaces),
@@ -384,10 +382,10 @@ func mapAtomicEditError(err error, issueNumber int64, delta *api.LinksDelta) err
 // any mutation runs. Catches:
 //   - set_parent + remove_parent in the same call
 //   - the same (type, target) appearing in both an add list and the matching
-//     remove list (e.g. add_blocks: [50] and remove_blocks: [50])
+//     remove list (e.g. add_blocks: [abc4] and remove_blocks: [abc4])
 //
 // Self-link detection lives in the per-link helpers (where we have the URL
-// issue's number to compare against).
+// issue's ref to compare against).
 func validateLinksDelta(d *api.LinksDelta) error {
 	if d == nil {
 		return nil
@@ -397,31 +395,31 @@ func validateLinksDelta(d *api.LinksDelta) error {
 			"links_delta cannot set_parent and remove_parent in the same call",
 			"choose one", nil)
 	}
-	if conflict := firstConflict(d.AddBlocks, d.RemoveBlocks); conflict != 0 {
+	if conflict := firstConflict(d.AddBlocks, d.RemoveBlocks); conflict != "" {
 		return api.NewError(400, "validation",
-			fmt.Sprintf("links_delta conflict: blocks #%d appears in both add_blocks and remove_blocks", conflict),
+			fmt.Sprintf("links_delta conflict: blocks #%s appears in both add_blocks and remove_blocks", conflict),
 			"", nil)
 	}
-	if conflict := firstConflict(d.AddBlockedBy, d.RemoveBlockedBy); conflict != 0 {
+	if conflict := firstConflict(d.AddBlockedBy, d.RemoveBlockedBy); conflict != "" {
 		return api.NewError(400, "validation",
-			fmt.Sprintf("links_delta conflict: blocked_by #%d appears in both add_blocked_by and remove_blocked_by", conflict),
+			fmt.Sprintf("links_delta conflict: blocked_by #%s appears in both add_blocked_by and remove_blocked_by", conflict),
 			"", nil)
 	}
-	if conflict := firstConflict(d.AddRelated, d.RemoveRelated); conflict != 0 {
+	if conflict := firstConflict(d.AddRelated, d.RemoveRelated); conflict != "" {
 		return api.NewError(400, "validation",
-			fmt.Sprintf("links_delta conflict: related #%d appears in both add_related and remove_related", conflict),
+			fmt.Sprintf("links_delta conflict: related #%s appears in both add_related and remove_related", conflict),
 			"", nil)
 	}
 	return nil
 }
 
-// firstConflict returns the first issue number present in both slices, or 0
-// when there is no overlap. Used by validateLinksDelta.
-func firstConflict(adds, removes []int64) int64 {
+// firstConflict returns the first ref present in both slices, or "" when
+// there is no overlap. Used by validateLinksDelta.
+func firstConflict(adds, removes []string) string {
 	if len(adds) == 0 || len(removes) == 0 {
-		return 0
+		return ""
 	}
-	seen := make(map[int64]struct{}, len(adds))
+	seen := make(map[string]struct{}, len(adds))
 	for _, n := range adds {
 		seen[n] = struct{}{}
 	}
@@ -430,7 +428,7 @@ func firstConflict(adds, removes []int64) int64 {
 			return n
 		}
 	}
-	return 0
+	return ""
 }
 
 // linksDeltaNonEmpty reports whether the delta contains at least one
@@ -445,7 +443,7 @@ func linksDeltaNonEmpty(d *api.LinksDelta) bool {
 		len(d.RemoveBlocks) > 0 || len(d.RemoveBlockedBy) > 0 || len(d.RemoveRelated) > 0
 }
 
-func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string) (db.Issue, error) {
+func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string, include db.IncludeDeleted) (db.Issue, error) {
 	// ULIDs are spec-defined as case-insensitive. Uppercase the ref
 	// before validation/lookup so a user typing the lowercase form
 	// they got from a copy-paste pipeline isn't told their input is
@@ -453,7 +451,7 @@ func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string) (d
 	// "no match for ABC12345" reads the same regardless of case.
 	normalized := strings.ToUpper(ref)
 	if uid.Valid(normalized) {
-		issue, err := store.IssueByUID(ctx, normalized)
+		issue, err := store.IssueByUID(ctx, normalized, include)
 		if errors.Is(err, db.ErrNotFound) {
 			return db.Issue{}, api.NewError(404, "issue_not_found",
 				fmt.Sprintf("no issue matches uid %s", normalized), "", nil)
@@ -487,7 +485,7 @@ func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string) (d
 		candidates := make([]string, 0, len(matches))
 		for _, issue := range matches {
 			candidates = append(candidates,
-				fmt.Sprintf("%s (#%d project %d)", issue.UID, issue.Number, issue.ProjectID))
+				fmt.Sprintf("%s (#%s project %d)", issue.UID, issue.ShortID, issue.ProjectID))
 		}
 		return db.Issue{}, api.NewError(409, "prefix_ambiguous",
 			"uid prefix is ambiguous: "+strings.Join(candidates, ", "), "",
@@ -536,8 +534,14 @@ func buildShowIssueResponse(ctx context.Context, cfg ServerConfig, issue db.Issu
 	return out, nil
 }
 
-func issueRefFromDB(iss db.Issue) api.IssueRef {
-	return api.IssueRef{Number: iss.Number, Title: iss.Title, Status: iss.Status}
+func issueRefFromDB(iss db.Issue, projectName string) api.IssueRef {
+	return api.IssueRef{
+		UID:         iss.UID,
+		ShortID:     iss.ShortID,
+		QualifiedID: qualifiedID(projectName, iss.ShortID),
+		Title:       iss.Title,
+		Status:      iss.Status,
+	}
 }
 
 func loadParentRef(ctx context.Context, store *db.DB, issue db.Issue) (*api.IssueRef, error) {
@@ -552,7 +556,11 @@ func loadParentRef(ctx context.Context, store *db.DB, issue db.Issue) (*api.Issu
 	if err != nil {
 		return nil, err
 	}
-	ref := issueRefFromDB(parent)
+	project, err := store.ProjectByID(ctx, parent.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	ref := issueRefFromDB(parent, project.Name)
 	return &ref, nil
 }
 
@@ -588,6 +596,10 @@ func hydrateIssueOutsCrossProject(ctx context.Context, store *db.DB, issues []db
 }
 
 func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues []db.Issue) ([]api.IssueOut, error) {
+	project, err := store.ProjectByID(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]int64, len(issues))
 	for i, iss := range issues {
 		ids[i] = iss.ID
@@ -616,17 +628,61 @@ func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues
 	if err != nil {
 		return nil, err
 	}
+	// Gather peer ids referenced by any relationship slice so we can resolve
+	// each to LinkPeer{UID, ShortID} in one pass.
+	peerCache := map[int64]api.LinkPeer{}
+	collectPeer := func(id int64) error {
+		if _, ok := peerCache[id]; ok {
+			return nil
+		}
+		peer, err := store.IssueByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		peerCache[id] = api.LinkPeer{UID: peer.UID, ShortID: peer.ShortID}
+		return nil
+	}
+	for _, ids := range blocks {
+		for _, id := range ids {
+			if err := collectPeer(id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, ids := range blockedBy {
+		for _, id := range ids {
+			if err := collectPeer(id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, ids := range related {
+		for _, id := range ids {
+			if err := collectPeer(id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, id := range parentNumbers {
+		if err := collectPeer(id); err != nil {
+			return nil, err
+		}
+	}
 	out := make([]api.IssueOut, len(issues))
 	for i, iss := range issues {
 		row := api.IssueOut{
-			Issue:     iss,
-			Labels:    labelsByID[iss.ID],
-			Blocks:    blocks[iss.ID],
-			BlockedBy: blockedBy[iss.ID],
-			Related:   related[iss.ID],
+			Issue:       iss,
+			QualifiedID: qualifiedID(project.Name, iss.ShortID),
+			Labels:      labelsByID[iss.ID],
+			Blocks:      peerSlice(peerCache, blocks[iss.ID]),
+			BlockedBy:   peerSlice(peerCache, blockedBy[iss.ID]),
+			Related:     peerSlice(peerCache, related[iss.ID]),
 		}
-		if parentNumber, ok := parentNumbers[iss.ID]; ok {
-			row.ParentNumber = &parentNumber
+		if parentID, ok := parentNumbers[iss.ID]; ok {
+			if peer, ok := peerCache[parentID]; ok {
+				sid := peer.ShortID
+				row.ParentShortID = &sid
+			}
 		}
 		if counts := childCounts[iss.ID]; counts.Total > 0 {
 			row.ChildCounts = &counts
@@ -636,10 +692,25 @@ func hydrateIssueOuts(ctx context.Context, store *db.DB, projectID int64, issues
 	return out, nil
 }
 
+// peerSlice projects a slice of peer issue ids onto LinkPeer entries using
+// the cache, in the same order. Missing ids (the cache miss case) yield a
+// zero-value LinkPeer rather than a panic so a transient lookup gap doesn't
+// crash the list handler.
+func peerSlice(cache map[int64]api.LinkPeer, ids []int64) []api.LinkPeer {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]api.LinkPeer, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, cache[id])
+	}
+	return out
+}
+
 // loadLinkOuts fetches every link involving issueID, resolving both endpoint
-// numbers so the wire response speaks the agent-facing surface (numbers, not
-// internal ids). One IssueByID call per endpoint is fine for show; pagination
-// is a Plan 4 concern.
+// short_ids so the wire response carries LinkPeer (UID + short_id) for each
+// side. One IssueByID call per endpoint is fine for show; pagination is a
+// Plan 4 concern.
 func loadLinkOuts(ctx context.Context, store *db.DB, issueID int64) ([]api.LinkOut, error) {
 	rows, err := store.LinksByIssue(ctx, issueID)
 	if err != nil {
@@ -656,15 +727,13 @@ func loadLinkOuts(ctx context.Context, store *db.DB, issueID int64) ([]api.LinkO
 			return nil, err
 		}
 		out = append(out, api.LinkOut{
-			ID:           l.ID,
-			ProjectID:    l.ProjectID,
-			FromNumber:   from.Number,
-			FromIssueUID: l.FromIssueUID,
-			ToNumber:     to.Number,
-			ToIssueUID:   l.ToIssueUID,
-			Type:         l.Type,
-			Author:       l.Author,
-			CreatedAt:    l.CreatedAt,
+			ID:        l.ID,
+			ProjectID: l.ProjectID,
+			From:      api.LinkPeer{UID: from.UID, ShortID: from.ShortID},
+			To:        api.LinkPeer{UID: to.UID, ShortID: to.ShortID},
+			Type:      l.Type,
+			Author:    l.Author,
+			CreatedAt: l.CreatedAt,
 		})
 	}
 	return out, nil
@@ -744,20 +813,42 @@ func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIs
 		return fp, nil, nil
 	}
 	if match.Fingerprint != fp && match.Fingerprint != fpLegacy {
+		// Resolve the prior issue so the mismatch envelope carries UID +
+		// short_id + qualified_id rather than the dropped numeric ref.
+		prior, err := cfg.DB.IssueByID(ctx, match.IssueID)
+		if err != nil {
+			return "", nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		priorProject, err := cfg.DB.ProjectByID(ctx, prior.ProjectID)
+		if err != nil {
+			return "", nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		return "", nil, api.NewError(409, "idempotency_mismatch",
 			"idempotency key matched a prior issue with a different fingerprint",
 			"either use a fresh key, or send the exact same fields as the original",
-			map[string]any{"original_issue_number": match.IssueNumber})
+			map[string]any{
+				"uid":          prior.UID,
+				"short_id":     prior.ShortID,
+				"qualified_id": qualifiedID(priorProject.Name, prior.ShortID),
+			})
 	}
 	existing, err := cfg.DB.IssueByID(ctx, match.IssueID)
 	if err != nil {
 		return "", nil, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	if existing.DeletedAt != nil {
+		existingProject, err := cfg.DB.ProjectByID(ctx, existing.ProjectID)
+		if err != nil {
+			return "", nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		return "", nil, api.NewError(409, "idempotency_deleted",
 			"idempotency key matched a soft-deleted issue",
-			"run `kata restore "+strconv.FormatInt(existing.Number, 10)+"` or use a fresh key",
-			map[string]any{"original_issue_number": existing.Number})
+			"run `kata restore "+existing.ShortID+"` or use a fresh key",
+			map[string]any{
+				"uid":          existing.UID,
+				"short_id":     existing.ShortID,
+				"qualified_id": qualifiedID(existingProject.Name, existing.ShortID),
+			})
 	}
 	// Copy the Event off the *IdempotencyMatch struct so OriginalEvent has a
 	// stable address that doesn't alias the lookup result.
@@ -788,9 +879,10 @@ func runLookalikeCheck(ctx context.Context, cfg ServerConfig, in *api.CreateIssu
 		score := similarity.Score(in.Body.Title, in.Body.Body, c.Issue.Title, c.Issue.Body)
 		if score >= similarityThreshold {
 			matched = append(matched, map[string]any{
-				"number": c.Issue.Number,
-				"title":  c.Issue.Title,
-				"score":  score,
+				"uid":      c.Issue.UID,
+				"short_id": c.Issue.ShortID,
+				"title":    c.Issue.Title,
+				"score":    score,
 			})
 		}
 	}

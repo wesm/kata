@@ -86,13 +86,13 @@ func doDigest(
 	return out, nil
 }
 
-// issueKey identifies an issue across projects in the digest aggregator. We
-// can't key on issue_number alone because cross-project digests can have
-// colliding numbers, and a (project_id, issue_number) pair is enough to
-// disambiguate without resolving the canonical issues.id.
+// issueKey identifies an issue across projects in the digest aggregator.
+// The UID is globally unique on its own, but we still hold the project id
+// because it scopes the rendering helpers (project_name comes off the
+// event row regardless).
 type issueKey struct {
 	ProjectID int64
-	Number    int64
+	UID       string
 }
 
 // issueAccum tracks the per-(actor,issue) action sequence. We collapse repeats
@@ -138,8 +138,8 @@ func aggregateDigest(rows []db.Event) (api.DigestTotals, []api.DigestActorEntry)
 		// Some event types have no associated issue (none today, but be defensive).
 		var key issueKey
 		var acc *issueAccum
-		if e.IssueNumber != nil {
-			key = issueKey{ProjectID: e.ProjectID, Number: *e.IssueNumber}
+		if e.IssueUID != nil {
+			key = issueKey{ProjectID: e.ProjectID, UID: *e.IssueUID}
 			a, ok := st.issues[key]
 			if !ok {
 				a = &issueAccum{ProjectName: e.ProjectName}
@@ -488,7 +488,7 @@ func applyLinksChangedDigest(payload string, totals, grand *api.DigestTotals, ac
 
 // renderIssueAccums turns the per-issue accumulators into the wire shape:
 // one DigestIssueActions per issue with a stable, ordered list of action
-// tokens. Issues are sorted by (project_id, number).
+// tokens. Issues are sorted by (project_id, uid).
 func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 	keys := make([]issueKey, 0, len(m))
 	for k := range m {
@@ -498,7 +498,7 @@ func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 		if keys[i].ProjectID != keys[j].ProjectID {
 			return keys[i].ProjectID < keys[j].ProjectID
 		}
-		return keys[i].Number < keys[j].Number
+		return keys[i].UID < keys[j].UID
 	})
 	out := make([]api.DigestIssueActions, 0, len(keys))
 	for _, k := range keys {
@@ -509,8 +509,10 @@ func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 		out = append(out, api.DigestIssueActions{
 			ProjectID:   k.ProjectID,
 			ProjectName: acc.ProjectName,
-			IssueNumber: k.Number,
-			Actions:     renderActions(acc),
+			IssueUID:    k.UID,
+			// IssueShortID is left blank here; Task 12 wires the join from
+			// the digest query against the live issues table.
+			Actions: renderActions(acc),
 		})
 	}
 	return out

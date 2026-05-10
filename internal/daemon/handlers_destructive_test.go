@@ -8,6 +8,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// confirmHeader builds the X-Kata-Confirm value for an issue. After Task 11
+// the daemon expects "<verb> <project>#<short_id>" rather than the old
+// "<verb> #N" form.
+func confirmHeader(t *testing.T, h *httptestServerHandle, projectID, issueID int64, verb string) string {
+	t.Helper()
+	issue, err := h.DB().IssueByID(t.Context(), issueID)
+	require.NoError(t, err)
+	project, err := h.DB().ProjectByID(t.Context(), projectID)
+	require.NoError(t, err)
+	return verb + " " + project.Name + "#" + issue.ShortID
+}
+
 func TestDelete_RequiresConfirmHeader(t *testing.T) {
 	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
@@ -21,16 +33,16 @@ func TestDelete_RejectsWrongConfirmValue(t *testing.T) {
 	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
 	resp := postWithHeader(t, ts, issueURL(pid, num, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #2"}, // wrong number
+		map[string]string{"X-Kata-Confirm": "DELETE kata#zzzz"}, // wrong short_id
 		map[string]any{"actor": "agent"})
 	assertAPIError(t, resp.status, resp.body, 412, "confirm_mismatch")
 }
 
 func TestDelete_AcceptsCorrectConfirmAndSoftDeletes(t *testing.T) {
-	_, ts, pid, num := bootstrapProjectWithIssue(t)
+	h, ts, pid, num := bootstrapProjectWithIssue(t)
 
 	resp := postWithHeader(t, ts, issueURL(pid, num, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+		map[string]string{"X-Kata-Confirm": confirmHeader(t, h, pid, num, "DELETE")},
 		map[string]any{"actor": "agent"})
 	require.Equal(t, 200, resp.status, string(resp.body))
 	assert.Contains(t, string(resp.body), `"changed":true`)
@@ -42,13 +54,14 @@ func TestDelete_AcceptsCorrectConfirmAndSoftDeletes(t *testing.T) {
 }
 
 func TestDelete_AlreadyDeletedIsNoOp(t *testing.T) {
-	_, ts, pid, num := bootstrapProjectWithIssue(t)
+	h, ts, pid, num := bootstrapProjectWithIssue(t)
+	hdr := confirmHeader(t, h, pid, num, "DELETE")
 	requireOK(t, postWithHeader(t, ts, issueURL(pid, num, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+		map[string]string{"X-Kata-Confirm": hdr},
 		map[string]any{"actor": "agent"}))
 
 	resp := postWithHeader(t, ts, issueURL(pid, num, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+		map[string]string{"X-Kata-Confirm": hdr},
 		map[string]any{"actor": "agent"})
 	require.Equal(t, 200, resp.status, string(resp.body))
 	assert.Contains(t, string(resp.body), `"changed":false`)
@@ -56,9 +69,9 @@ func TestDelete_AlreadyDeletedIsNoOp(t *testing.T) {
 }
 
 func TestRestore_ClearsDeletedAt(t *testing.T) {
-	_, ts, pid, num := bootstrapProjectWithIssue(t)
+	h, ts, pid, num := bootstrapProjectWithIssue(t)
 	requireOK(t, postWithHeader(t, ts, issueURL(pid, num, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+		map[string]string{"X-Kata-Confirm": confirmHeader(t, h, pid, num, "DELETE")},
 		map[string]any{"actor": "agent"}))
 
 	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/restore"),
@@ -74,7 +87,7 @@ func TestRestore_ClearsDeletedAt(t *testing.T) {
 
 func TestPurge_RequiresConfirmHeaderAndRemovesAllRows(t *testing.T) {
 	h, ts, pid, num := bootstrapProjectWithIssue(t)
-	issue, err := h.DB().IssueByNumber(t.Context(), pid, num)
+	issue, err := h.DB().IssueByID(t.Context(), num)
 	require.NoError(t, err)
 	project, err := h.DB().ProjectByID(t.Context(), pid)
 	require.NoError(t, err)
@@ -86,13 +99,13 @@ func TestPurge_RequiresConfirmHeaderAndRemovesAllRows(t *testing.T) {
 
 	// Wrong header → 412 confirm_mismatch.
 	resp = postWithHeader(t, ts, issueURL(pid, num, "actions/purge"),
-		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+		map[string]string{"X-Kata-Confirm": "DELETE kata#zzzz"},
 		map[string]any{"actor": "agent"})
 	assertAPIError(t, resp.status, resp.body, 412, "confirm_mismatch")
 
 	// Correct header → 200 with purge_log.
 	resp = postWithHeader(t, ts, issueURL(pid, num, "actions/purge"),
-		map[string]string{"X-Kata-Confirm": "PURGE #1"},
+		map[string]string{"X-Kata-Confirm": confirmHeader(t, h, pid, num, "PURGE")},
 		map[string]any{"actor": "agent"})
 	require.Equal(t, 200, resp.status, string(resp.body))
 	assert.Contains(t, string(resp.body), `"purge_log"`)

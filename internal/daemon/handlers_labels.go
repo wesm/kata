@@ -18,13 +18,13 @@ func registerLabelsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "addLabel",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/labels",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/labels",
 	}, addLabelHandler(cfg))
 
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "removeLabel",
 		Method:      "DELETE",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/labels/{label}",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/labels/{label}",
 	}, removeLabelHandler(cfg))
 
 	huma.Register(humaAPI, huma.Operation{
@@ -39,7 +39,7 @@ func addLabelHandler(cfg ServerConfig) func(context.Context, *api.AddLabelReques
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +90,7 @@ func removeLabelHandler(cfg ServerConfig) func(context.Context, *api.RemoveLabel
 		if err := validateActor(in.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}

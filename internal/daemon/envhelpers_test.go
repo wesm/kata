@@ -110,16 +110,36 @@ func projectPath(projectID int64) string {
 	return "/api/v1/projects/" + strconv.FormatInt(projectID, 10)
 }
 
-// issuePath returns the URL for a specific issue under a project. When suffix
-// is non-empty it is appended after the issue number (e.g. "comments" or
-// "actions/close"); when empty the resource URL itself is returned.
-func issuePath(projectID, issueNumber int64, suffix string) string {
-	base := projectPath(projectID) + "/issues/" + strconv.FormatInt(issueNumber, 10)
+// issuePath returns the URL for a specific issue under a project. The int64
+// parameter is the issue's row id (as returned by createIssueAs); the helper
+// resolves it to the issue's short_id via the env-scoped registry below.
+// Negative-path callers can still pass an int that points at no row — the
+// fallback formats it as a string ref.
+func issuePath(projectID, issueID int64, suffix string) string {
+	ref := strconv.FormatInt(issueID, 10)
+	if currentEnvForIssuePath != nil {
+		issue, err := currentEnvForIssuePath.DB.IssueByID(context.Background(), issueID)
+		if err == nil && issue.ShortID != "" {
+			ref = issue.ShortID
+		}
+	}
+	return issuePathRef(projectID, ref, suffix)
+}
+
+// issuePathRef builds the issue resource URL from a string ref. Use this
+// from tests that hold the issue's short_id or UID directly.
+func issuePathRef(projectID int64, ref, suffix string) string {
+	base := projectPath(projectID) + "/issues/" + ref
 	if suffix == "" {
 		return base
 	}
 	return base + "/" + suffix
 }
+
+// currentEnvForIssuePath mirrors currentHandleForIssueURL for env-based
+// tests. Set by initWorkspaceViaHTTP; never read in parallel because
+// tests in this package do not call t.Parallel().
+var currentEnvForIssuePath *testenv.Env
 
 // initWorkspaceViaHTTP runs git init in a temp dir, adds origin, posts to
 // /api/v1/projects, and returns the resolved project_id.
@@ -136,6 +156,14 @@ func initWorkspaceViaHTTP(t *testing.T, env *testenv.Env, origin string) int64 {
 		} `json:"project"`
 	}
 	envPostJSON(t, env, "/api/v1/projects/resolve", map[string]string{"start_path": dir}, &out)
+	// Register env so issuePath can resolve issue IDs → short_ids at
+	// request time. Tests in this package run sequentially.
+	currentEnvForIssuePath = env
+	t.Cleanup(func() {
+		if currentEnvForIssuePath == env {
+			currentEnvForIssuePath = nil
+		}
+	})
 	return out.Project.ID
 }
 
@@ -164,23 +192,24 @@ func setupTwoIssues(t *testing.T, env *testenv.Env) (int64, int64, int64) {
 	return pid, a, b
 }
 
-// createIssueViaHTTP creates an issue with the default actor and returns its number.
+// createIssueViaHTTP creates an issue with the default actor and returns its row id.
 func createIssueViaHTTP(t *testing.T, env *testenv.Env, projectID int64, title string) int64 {
 	t.Helper()
 	return createIssueAs(t, env, projectID, defaultActor, title)
 }
 
-// createIssueAs creates an issue attributed to actor and returns its number.
+// createIssueAs creates an issue attributed to actor and returns its row id.
+// Callers that need the issue's short_id should look it up via env.DB.
 func createIssueAs(t *testing.T, env *testenv.Env, projectID int64, actor, title string) int64 {
 	t.Helper()
 	var out struct {
 		Issue struct {
-			Number int64 `json:"number"`
+			ID int64 `json:"id"`
 		} `json:"issue"`
 	}
 	envPostJSON(t, env, projectPath(projectID)+"/issues",
 		map[string]string{"actor": actor, "title": title}, &out)
-	return out.Issue.Number
+	return out.Issue.ID
 }
 
 // postCommentAs posts a comment attributed to actor.
@@ -279,8 +308,14 @@ func postLink(t *testing.T, env *testenv.Env, projectID, fromNumber int64, linkT
 func postLinkAs(t *testing.T, env *testenv.Env, projectID, fromNumber int64, actor, linkType string, toNumber int64) linkResp {
 	t.Helper()
 	var out linkResp
+	toRef := strconv.FormatInt(toNumber, 10)
+	if currentEnvForIssuePath != nil {
+		if toIssue, err := currentEnvForIssuePath.DB.IssueByID(context.Background(), toNumber); err == nil && toIssue.ShortID != "" {
+			toRef = toIssue.ShortID
+		}
+	}
 	envPostJSON(t, env, issuePath(projectID, fromNumber, "links"),
-		map[string]any{"actor": actor, "type": linkType, "to_number": toNumber}, &out)
+		map[string]any{"actor": actor, "type": linkType, "to_ref": toRef}, &out)
 	return out
 }
 
@@ -364,22 +399,30 @@ func lastEventPayload(t *testing.T, env *testenv.Env, projectID int64, eventType
 // who gets credit for the unblock event.
 func deleteLinkBlocksAs(t *testing.T, env *testenv.Env, projectID, fromNumber int64, actor string, toNumber int64) {
 	t.Helper()
+	toShortID := ""
+	if currentEnvForIssuePath != nil {
+		toIssue, err := currentEnvForIssuePath.DB.IssueByID(context.Background(), toNumber)
+		require.NoError(t, err)
+		toShortID = toIssue.ShortID
+	}
 	var view struct {
 		Links []struct {
-			ID       int64  `json:"id"`
-			Type     string `json:"type"`
-			ToNumber int64  `json:"to_number"`
+			ID   int64  `json:"id"`
+			Type string `json:"type"`
+			To   struct {
+				ShortID string `json:"short_id"`
+			} `json:"to"`
 		} `json:"links"`
 	}
 	envGetJSON(t, env, issuePath(projectID, fromNumber, ""), &view)
 	var linkID int64
 	for _, l := range view.Links {
-		if l.Type == "blocks" && l.ToNumber == toNumber {
+		if l.Type == "blocks" && l.To.ShortID == toShortID {
 			linkID = l.ID
 			break
 		}
 	}
-	require.NotZerof(t, linkID, "no blocks link to %d found on issue %d", toNumber, fromNumber)
+	require.NotZerof(t, linkID, "no blocks link to %s found on issue %d", toShortID, fromNumber)
 
 	delPath := issuePath(projectID, fromNumber, "links/"+strconv.FormatInt(linkID, 10)) +
 		"?actor=" + url.QueryEscape(actor)

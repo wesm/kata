@@ -7,13 +7,14 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/db"
 )
 
 func registerPriorityHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "setIssuePriority",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/priority",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/priority",
 	}, func(ctx context.Context, in *api.PriorityRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
@@ -21,7 +22,7 @@ func registerPriorityHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := validatePriorityRange(in.Body.Priority); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}

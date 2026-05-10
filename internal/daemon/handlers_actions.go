@@ -17,12 +17,12 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "closeIssue",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/close",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/close",
 	}, func(ctx context.Context, in *api.ActionRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}
@@ -51,12 +51,12 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "reopenIssue",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/reopen",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/reopen",
 	}, func(ctx context.Context, in *api.ActionRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}

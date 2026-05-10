@@ -20,6 +20,13 @@ func mkProject(t *testing.T, env *testenv.Env, _ string, name string) int64 {
 	t.Helper()
 	p, err := env.DB.CreateProject(context.Background(), name)
 	require.NoError(t, err)
+	// Register env for issuePath's int64→short_id resolution.
+	currentEnvForIssuePath = env
+	t.Cleanup(func() {
+		if currentEnvForIssuePath == env {
+			currentEnvForIssuePath = nil
+		}
+	})
 	return p.ID
 }
 
@@ -112,8 +119,8 @@ func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
 	_, _, err = env.DB.CreateLinkAndEvent(context.Background(), db.CreateLinkParams{
 		ProjectID: pid, FromIssueID: from.ID, ToIssueID: to.ID, Type: "blocks", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: from.ID, EventIssueNumber: from.Number,
-		FromNumber: from.Number, ToNumber: to.Number, Actor: "tester",
+		EventType: "issue.linked", EventIssueID: from.ID,
+		FromNumber: from.ID, ToNumber: to.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
 
@@ -526,10 +533,12 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 	require.True(t, ok, "drain frame should arrive")
 	assert.Equal(t, "issue.created", first.event)
 
+	project, perr := env.DB.ProjectByID(context.Background(), pid)
+	require.NoError(t, perr)
 	purgeResp, _ := envDoRaw(t, env, http.MethodPost,
-		issuePath(pid, is.Number, "actions/purge"),
+		issuePathRef(pid, is.ShortID, "actions/purge"),
 		map[string]string{"actor": "tester"},
-		map[string]string{"X-Kata-Confirm": "PURGE #" + strconv.FormatInt(is.Number, 10)})
+		map[string]string{"X-Kata-Confirm": "PURGE " + project.Name + "#" + is.ShortID})
 	require.Equal(t, 200, purgeResp.StatusCode)
 
 	reset, ok := framer.Next(t, 2*time.Second)

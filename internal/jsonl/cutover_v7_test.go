@@ -96,10 +96,10 @@ func TestCutover_PreservesStoredShortIDs(t *testing.T) {
 	dst := openImportTargetDB(t)
 	require.NoError(t, jsonl.Import(ctx, bytes.NewReader(buf.Bytes()), dst))
 
-	got, err := dst.IssueByUID(ctx, a.UID)
+	got, err := dst.IssueByUID(ctx, a.UID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, a.ShortID, got.ShortID)
-	got, err = dst.IssueByUID(ctx, b.UID)
+	got, err = dst.IssueByUID(ctx, b.UID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, b.ShortID, got.ShortID)
 }

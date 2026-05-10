@@ -280,8 +280,8 @@ func buildEnv(userEnv []string, evt db.Event, asnap AliasSnapshot, hasAlias bool
 		"KATA_PROJECT_ID="+strconv.FormatInt(evt.ProjectID, 10),
 		"KATA_PROJECT_NAME="+evt.ProjectName,
 	)
-	if evt.IssueNumber != nil {
-		env = append(env, "KATA_ISSUE_NUMBER="+strconv.FormatInt(*evt.IssueNumber, 10))
+	if evt.IssueUID != nil {
+		env = append(env, "KATA_ISSUE_UID="+*evt.IssueUID)
 	}
 	if hasAlias {
 		env = append(env,

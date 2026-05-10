@@ -44,7 +44,7 @@ func TestImportEndpoint_CreatesAndReimports(t *testing.T) {
 		Comments int      `json:"comments"`
 		Errors   []string `json:"errors"`
 		Items    []struct {
-			IssueNumber int64 `json:"issue_number"`
+			IssueShortID string `json:"issue_short_id"`
 		} `json:"items"`
 	}
 	envPostJSON(t, env, importEndpointPath(pid), body, &out)
@@ -65,7 +65,7 @@ func TestImportEndpoint_CreatesAndReimports(t *testing.T) {
 	assert.Equal(t, 1, second.Unchanged)
 	assert.Equal(t, 0, second.Comments)
 
-	issue, err := env.DB.IssueByNumber(context.Background(), pid, out.Items[0].IssueNumber)
+	issue, err := env.DB.IssueByShortID(context.Background(), pid, out.Items[0].IssueShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	var commentCount int
 	err = env.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM comments WHERE issue_id = ?`, issue.ID).Scan(&commentCount)
@@ -135,7 +135,7 @@ func TestImportEndpoint_SourceNewerUpdatesIssue(t *testing.T) {
 	var first struct {
 		Created int `json:"created"`
 		Items   []struct {
-			IssueNumber int64 `json:"issue_number"`
+			IssueShortID string `json:"issue_short_id"`
 		} `json:"items"`
 	}
 	envPostJSON(t, env, importEndpointPath(pid), body, &first)
@@ -159,7 +159,7 @@ func TestImportEndpoint_SourceNewerUpdatesIssue(t *testing.T) {
 	envPostJSON(t, env, importEndpointPath(pid), body, &second)
 	assert.Equal(t, 1, second.Updated)
 
-	issue, err := env.DB.IssueByNumber(context.Background(), pid, first.Items[0].IssueNumber)
+	issue, err := env.DB.IssueByShortID(context.Background(), pid, first.Items[0].IssueShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, "New title", issue.Title)
 	assert.Equal(t, "new body", issue.Body)
@@ -181,12 +181,12 @@ func TestImportEndpoint_PriorityRoundtrips(t *testing.T) {
 	}
 	var out struct {
 		Items []struct {
-			IssueNumber int64 `json:"issue_number"`
+			IssueShortID string `json:"issue_short_id"`
 		} `json:"items"`
 	}
 	envPostJSON(t, env, importEndpointPath(pid), body, &out)
 	require.Len(t, out.Items, 1)
-	issue, err := env.DB.IssueByNumber(context.Background(), pid, out.Items[0].IssueNumber)
+	issue, err := env.DB.IssueByShortID(context.Background(), pid, out.Items[0].IssueShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	require.NotNil(t, issue.Priority)
 	assert.Equal(t, int64(1), *issue.Priority)

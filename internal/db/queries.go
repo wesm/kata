@@ -690,10 +690,15 @@ func (d *DB) IssueByShortID(ctx context.Context, projectID int64, shortID string
 	return scanIssue(row)
 }
 
-// IssueByUID fetches an issue by stable UID. Includes soft-deleted rows; see
-// IssueByID for the rationale.
-func (d *DB) IssueByUID(ctx context.Context, issueUID string) (Issue, error) {
-	row := d.QueryRowContext(ctx, issueSelect+` WHERE i.uid = ?`, issueUID)
+// IssueByUID fetches an issue by stable UID. Soft-deleted rows are returned
+// only when include == IncludeDeletedYes (spec §6 carveout, matching
+// IssueByShortID). Returns ErrNotFound when no row matches the filter.
+func (d *DB) IssueByUID(ctx context.Context, issueUID string, include IncludeDeleted) (Issue, error) {
+	q := issueSelect + ` WHERE i.uid = ?`
+	if include == IncludeDeletedNo {
+		q += ` AND i.deleted_at IS NULL`
+	}
+	row := d.QueryRowContext(ctx, q, issueUID)
 	return scanIssue(row)
 }
 
