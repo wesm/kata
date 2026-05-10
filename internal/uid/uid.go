@@ -13,6 +13,9 @@ import (
 
 const encodedLen = 26
 
+// EncodedLen is the fixed character length of a Crockford base32-encoded ULID.
+const EncodedLen = encodedLen
+
 var (
 	monoMu      sync.Mutex
 	monoEntropy = ulid.Monotonic(rand.Reader, 0)

@@ -22,7 +22,7 @@ func TestDeriveLength5(t *testing.T) {
 
 func TestDeriveRejectsBadULID(t *testing.T) {
 	_, err := shortid.Derive("not-a-ulid", 4)
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, shortid.ErrInvalidULID)
 }
 
 func TestDeriveRejectsLengthOutOfRange(t *testing.T) {
@@ -87,5 +87,10 @@ func TestParseRejectsLegacyNumber(t *testing.T) {
 
 func TestParseRejectsEmpty(t *testing.T) {
 	_, err := shortid.Parse("")
+	assert.ErrorIs(t, err, shortid.ErrInvalidRef)
+}
+
+func TestParseRejectsEmptyProjectBeforeHash(t *testing.T) {
+	_, err := shortid.Parse("#abc4")
 	assert.ErrorIs(t, err, shortid.ErrInvalidRef)
 }

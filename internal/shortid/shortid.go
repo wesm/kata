@@ -14,7 +14,7 @@ import (
 // will assign to a new issue. MaxLength is the full ULID length.
 const (
 	MinLength = 4
-	MaxLength = 26
+	MaxLength = uid.EncodedLen
 )
 
 var (
