@@ -137,7 +137,10 @@ func (d *DB) appendParentNumbersForChunk(
 	ctx context.Context, projectID int64, chunk []int64, out map[int64]int64,
 ) error {
 	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
-	query := `SELECT l.from_issue_id, parent.number
+	// Result references the parent issue's id while callers transition off
+	// of `number` (Tasks 11/13/14). The map shape is preserved so downstream
+	// list/show code keeps compiling against int64 keys until it migrates.
+	query := `SELECT l.from_issue_id, parent.id
 	          FROM links l
 	          JOIN issues child ON child.id = l.from_issue_id
 	          JOIN issues parent ON parent.id = l.to_issue_id
@@ -190,7 +193,7 @@ func (d *DB) appendBlockNumbersForChunk(
 	ctx context.Context, projectID int64, chunk []int64, out map[int64][]int64,
 ) error {
 	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
-	query := `SELECT l.from_issue_id, blocked.number
+	query := `SELECT l.from_issue_id, blocked.id
 	          FROM links l
 	          JOIN issues blocker ON blocker.id = l.from_issue_id
 	          JOIN issues blocked ON blocked.id = l.to_issue_id
@@ -200,7 +203,7 @@ func (d *DB) appendBlockNumbersForChunk(
 	            AND l.type = 'blocks'
 	            AND blocked.deleted_at IS NULL
 	            AND l.from_issue_id IN (` + placeholders + `)
-	          ORDER BY l.from_issue_id ASC, blocked.number ASC`
+	          ORDER BY l.from_issue_id ASC, blocked.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("block numbers by issues: %w", err)
@@ -247,7 +250,7 @@ func (d *DB) appendBlockedByNumbersForChunk(
 	ctx context.Context, projectID int64, chunk []int64, out map[int64][]int64,
 ) error {
 	placeholders, args := relationshipChunkPlaceholders(projectID, chunk)
-	query := `SELECT l.to_issue_id, blocker.number
+	query := `SELECT l.to_issue_id, blocker.id
 	          FROM links l
 	          JOIN issues blocker ON blocker.id = l.from_issue_id
 	          JOIN issues blocked ON blocked.id = l.to_issue_id
@@ -257,7 +260,7 @@ func (d *DB) appendBlockedByNumbersForChunk(
 	            AND l.type = 'blocks'
 	            AND blocker.deleted_at IS NULL
 	            AND l.to_issue_id IN (` + placeholders + `)
-	          ORDER BY l.to_issue_id ASC, blocker.number ASC`
+	          ORDER BY l.to_issue_id ASC, blocker.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("blocked-by numbers by issues: %w", err)
@@ -304,7 +307,7 @@ func (d *DB) appendRelatedNumbersForChunk(
 	// the other endpoint. Live-only join on the peer side mirrors what
 	// the blocks queries do for soft-delete tolerance.
 	query := `SELECT viewer_id, peer_number FROM (
-	            SELECT l.from_issue_id AS viewer_id, peer.number AS peer_number
+	            SELECT l.from_issue_id AS viewer_id, peer.id AS peer_number
 	              FROM links l
 	              JOIN issues self ON self.id = l.from_issue_id
 	              JOIN issues peer ON peer.id = l.to_issue_id
@@ -315,7 +318,7 @@ func (d *DB) appendRelatedNumbersForChunk(
 	               AND peer.deleted_at IS NULL
 	               AND l.from_issue_id IN (` + placeholders + `)
 	            UNION ALL
-	            SELECT l.to_issue_id AS viewer_id, peer.number AS peer_number
+	            SELECT l.to_issue_id AS viewer_id, peer.id AS peer_number
 	              FROM links l
 	              JOIN issues self ON self.id = l.to_issue_id
 	              JOIN issues peer ON peer.id = l.from_issue_id
@@ -501,18 +504,17 @@ func scanLink(r rowScanner) (Link, error) {
 // LinkEventParams describes the event-emission side of a link mutation. The
 // DB-layer methods CreateLinkAndEvent and DeleteLinkAndEvent split "the link's
 // storage endpoints" (from_issue_id/to_issue_id, possibly canonicalized for
-// related) from "the issue the user acted on" (the URL's {number}, which
+// related) from "the issue the user acted on" (the URL ref, which
 // determines events.issue_id and the updated_at bump). For type=parent and
 // type=blocks these are identical; for type=related they may differ when the
-// user posted from the higher-numbered side and we canonicalized to from < to
+// user posted from one side and we canonicalized to from < to
 // before insertion.
 type LinkEventParams struct {
-	EventType        string // "issue.linked" | "issue.unlinked"
-	EventIssueID     int64  // the issue whose URL the user posted to
-	EventIssueNumber int64  // matching number for that issue
-	FromNumber       int64  // payload field; matches the URL issue's number
-	ToNumber         int64  // payload field; matches the OTHER endpoint
-	Actor            string
+	EventType    string // "issue.linked" | "issue.unlinked"
+	EventIssueID int64  // the issue whose URL the user posted to
+	FromNumber   int64  // payload field; matches the URL issue's ref
+	ToNumber     int64  // payload field; matches the OTHER endpoint
+	Actor        string
 }
 
 // CreateLinkAndEvent inserts a link, emits the matching issue.linked event,
@@ -584,7 +586,6 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 		ProjectID:      p.ProjectID,
 		ProjectName:    projectName,
 		IssueID:        &ev.EventIssueID,
-		IssueNumber:    &ev.EventIssueNumber,
 		RelatedIssueID: &relatedID,
 		Type:           ev.EventType,
 		Actor:          ev.Actor,
@@ -616,7 +617,7 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 
 // DeleteLinkAndEvent deletes a link and emits the matching issue.unlinked
 // event in one TX. The link to delete comes from the link argument; event
-// attribution (events.issue_id/issue_number, updated_at bump, payload
+// attribution (events.issue_id, updated_at bump, payload
 // from_number/to_number) comes from ev. Returns ErrNotFound if the link is
 // already gone — caller maps to 200 no-op envelope per spec §4.5.
 func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventParams) (Event, error) {
@@ -659,7 +660,6 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventPara
 		ProjectID:      link.ProjectID,
 		ProjectName:    projectName,
 		IssueID:        &ev.EventIssueID,
-		IssueNumber:    &ev.EventIssueNumber,
 		RelatedIssueID: &relatedID,
 		Type:           ev.EventType,
 		Actor:          ev.Actor,

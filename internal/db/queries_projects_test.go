@@ -19,7 +19,6 @@ func TestCreateProject_RoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "kata", p.Name)
 	assertValidUID(t, p.UID)
-	// NextIssueNumber removed in Task 3.
 	assert.False(t, p.CreatedAt.IsZero())
 
 	got, err := d.ProjectByName(ctx, "kata")
@@ -58,7 +57,6 @@ func TestRenameProject_UpdatesNameOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, p.ID, renamed.ID)
 	assert.Equal(t, "Kata Tracker", renamed.Name)
-	// NextIssueNumber removed in Task 3.
 
 	got, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
@@ -157,7 +155,7 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	_, _, err := d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 		ProjectID: alpha.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: child.ID, EventIssueNumber: child.ID,
+		EventType: "issue.linked", EventIssueID: child.ID,
 		FromNumber: child.ID, ToNumber: parent.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
@@ -172,7 +170,6 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	assert.Equal(t, int64(2), merged.IssuesMoved)
 	assert.Equal(t, int64(1), merged.AliasesMoved)
 	assert.Equal(t, int64(3), merged.EventsMoved)
-	// merged.Target.NextIssueNumber removed in Task 3.
 
 	// TODO(Task 7): merge collision behavior is rewritten there; for now switch
 	// the lookups to short_id so the test compiles. The merge-collision
@@ -315,7 +312,6 @@ func TestMergeProjects_ImportMappingCollisionReturnsError(t *testing.T) {
 	source := createProject(ctx, t, d, "src")
 	target := createProject(ctx, t, d, "target")
 	sourceIssue := makeIssue(t, ctx, d, source.ID, "source mapped", "tester")
-	require.NoError(t, d.ResetIssueCounter(ctx, target.ID, 100))
 	targetIssue := makeIssue(t, ctx, d, target.ID, "target mapped", "tester")
 
 	_, err := d.UpsertImportMapping(ctx, db.ImportMappingParams{
@@ -336,98 +332,6 @@ func TestMergeProjects_ImportMappingCollisionReturnsError(t *testing.T) {
 		`SELECT count(*) FROM import_mappings WHERE project_id = ?`, source.ID)
 	assertRowCount(ctx, t, d, 1, "target mapping preserved after failed merge",
 		`SELECT count(*) FROM import_mappings WHERE project_id = ?`, target.ID)
-}
-
-func TestResetIssueCounter_EmptyProjectMovesCounter(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-
-	require.NoError(t, d.ResetIssueCounter(ctx, p.ID, 42))
-
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	// NextIssueNumber removed in Task 3; counter value not surfaced on Project.
-	_ = p2
-}
-
-func TestResetIssueCounter_ReturnsTypedErrorWithCount(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-	for range 3 {
-		makeIssue(t, ctx, d, p.ID, "x", "a")
-	}
-	before, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-
-	err = d.ResetIssueCounter(ctx, p.ID, 1)
-	var hasIssues *db.ProjectHasIssuesError
-	require.ErrorAs(t, err, &hasIssues)
-	assert.EqualValues(t, 3, hasIssues.Count)
-
-	after, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	// NextIssueNumber removed in Task 3; Project no longer exposes the counter.
-	_ = before
-	_ = after
-}
-
-func TestResetIssueCounter_ProjectNotFound(t *testing.T) {
-	d := openTestDB(t)
-	err := d.ResetIssueCounter(context.Background(), 9999, 1)
-	assert.ErrorIs(t, err, db.ErrNotFound)
-}
-
-func TestResetIssueCounter_RejectsInvalidTo(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-
-	for _, to := range []int64{0, -1, -42} {
-		err := d.ResetIssueCounter(ctx, p.ID, to)
-		assert.ErrorIs(t, err, db.ErrInvalidCounterValue, "to=%d", to)
-	}
-	// Counter must remain at its initial value.
-	// NextIssueNumber removed in Task 3; not surfaced on Project.
-}
-
-// Covers the production scenario: project accumulated issues that were all
-// purged, then the user resets the counter to start over at 1.
-func TestResetIssueCounter_SucceedsAfterPurge(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-
-	var issueIDs []int64
-	for range 3 {
-		issue := makeIssue(t, ctx, d, p.ID, "x", "a")
-		issueIDs = append(issueIDs, issue.ID)
-	}
-	for _, id := range issueIDs {
-		_, err := d.PurgeIssue(ctx, id, "tester", nil)
-		require.NoError(t, err)
-	}
-
-	require.NoError(t, d.ResetIssueCounter(ctx, p.ID, 1))
-
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	// NextIssueNumber removed in Task 3.
-	_ = p2
-}
-
-// Guards against splitting the gate back into count-then-update — the
-// empty-check must be atomic with the write so a concurrent CreateIssue
-// can't slip between them.
-func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-	makeIssue(t, ctx, d, p.ID, "x", "a")
-
-	before, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-
-	err = d.ResetIssueCounter(ctx, p.ID, 999)
-	var hasIssues *db.ProjectHasIssuesError
-	require.ErrorAs(t, err, &hasIssues)
-
-	after, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	// NextIssueNumber removed in Task 3.
-	_ = before
-	_ = after
 }
 
 func TestBatchProjectStats_EmptyProjectReturnsZeroes(t *testing.T) {
@@ -460,8 +364,6 @@ func TestBatchProjectStats_NoCountInflation(t *testing.T) {
 			first = iss
 		}
 	}
-	// TODO(Task 6): switch back to a short_id lookup once the rest of the
-	// db tests are green; for now reuse the issue returned from makeIssue.
 	iss, err := d.IssueByShortID(ctx, p.ID, first.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{

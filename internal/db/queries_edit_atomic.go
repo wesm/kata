@@ -183,7 +183,6 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 			ProjectID:   issue.ProjectID,
 			ProjectName: projectName,
 			IssueID:     &issue.ID,
-			IssueNumber: nil,
 			Type:        "issue.updated",
 			Actor:       p.Actor,
 			Payload:     "{}",
@@ -216,7 +215,6 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 				ProjectID:   issue.ProjectID,
 				ProjectName: projectName,
 				IssueID:     &issue.ID,
-				IssueNumber: nil,
 				Type:        eventType,
 				Actor:       p.Actor,
 				Payload:     payload,
@@ -254,7 +252,6 @@ func (d *DB) EditIssueAtomic(ctx context.Context, p EditIssueAtomicParams) (Edit
 			ProjectID:       issue.ProjectID,
 			ProjectName:     projectName,
 			IssueID:         &issue.ID,
-			IssueNumber:     nil,
 			RelatedIssueID:  peerID,
 			RelatedIssueUID: peerUID,
 			Type:            "issue.links_changed",
@@ -339,11 +336,11 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 				// to the insert (the end-state user wanted is still
 				// reachable).
 				if rows > 0 {
-					// ParentRemoved carries the numeric parent ref; with
-					// short_id replacing number this field will be updated
-					// in Task 6 (internal/db cleanup pass). For now use 0
-					// as a placeholder so the package compiles.
-					oldNum := int64(0)
+					// ParentRemoved is *int64 today (Task 10 migrates the
+					// public type to short_id). The peer's id stands in
+					// as a temporary numeric ref; ParentRemovedUID is the
+					// stable pointer consumers should rely on.
+					oldNum := oldParent.ID
 					oldUID := oldParent.UID
 					changes.ParentRemoved = &oldNum
 					changes.ParentRemovedUID = &oldUID
@@ -389,8 +386,8 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 		if err != nil {
 			return changed, err
 		}
-		// TODO Task 6: parentIssue.Number was removed; use ID as interim placeholder
-		// until RemoveParent is migrated to short_id.
+		// RemoveParent's int64 ref is interpreted as the parent's row id
+		// for now (Task 10 migrates the public param to short_id).
 		if parentIssue.ID != *p.RemoveParent {
 			return changed, ErrParentMismatch
 		}
@@ -410,7 +407,8 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 		if rows == 0 {
 			return changed, ErrParentMismatch
 		}
-		// TODO Task 6: store short_id-based ref once RemoveParent is migrated.
+		// ParentRemoved is *int64 today; carry the peer's id alongside
+		// ParentRemovedUID until Task 10 migrates the public payload.
 		n := parentIssue.ID
 		uid := parentIssue.UID
 		changes.ParentRemoved = &n
@@ -654,8 +652,9 @@ func lookupIssueByNumberTxIncludingDeleted(ctx context.Context, tx *sql.Tx, proj
 }
 
 func lookupIssueByNumberTxOpts(ctx context.Context, tx *sql.Tx, projectID, number int64, includeDeleted bool) (Issue, error) {
-	// TODO Task 5: migrate callers to short_id lookups. For now, look up by rowid
-	// as a stand-in so the package compiles; the number param is treated as the issue ID.
+	// EditIssueAtomic still takes int64 link refs (api.LinkChanges remains
+	// int64 until Task 10). Until the daemon migrates to short_id refs we
+	// resolve the int64 ref against the issue's row id.
 	const base = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at

@@ -9,7 +9,7 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
-func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
+func TestCreateIssue_AllocatesShortIDAndEmitsEvent(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 
 	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
@@ -19,8 +19,8 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 		Author:    "agent-1",
 	})
 	require.NoError(t, err)
-	// issue.Number removed in Task 3; short_id populated in Task 4.
 	assertValidUID(t, issue.UID)
+	assert.NotEmpty(t, issue.ShortID)
 	assert.Equal(t, p.UID, issue.ProjectUID)
 	assert.Equal(t, "open", issue.Status)
 	assert.Equal(t, "agent-1", issue.Author)
@@ -29,19 +29,20 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 	assert.NotNil(t, evt.IssueID)
 	require.NotNil(t, evt.IssueUID)
 	assert.Equal(t, issue.UID, *evt.IssueUID)
-	// IssueNumber on events is nil after Task 3; Task 12 will re-populate it.
 }
 
-func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
+func TestCreateIssue_ShortIDsAreUniquePerProject(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 
+	seen := map[string]struct{}{}
 	for i := 1; i <= 3; i++ {
 		issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 			ProjectID: p.ID, Title: "x", Author: "a",
 		})
 		require.NoError(t, err)
-		// issue.Number removed in Task 3; sequential short_ids verified in Task 4.
-		_ = issue
+		_, dup := seen[issue.ShortID]
+		assert.False(t, dup, "short_id %q should be unique within the project", issue.ShortID)
+		seen[issue.ShortID] = struct{}{}
 	}
 }
 

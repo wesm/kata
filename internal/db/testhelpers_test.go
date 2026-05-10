@@ -218,9 +218,9 @@ func insertLegacyEvent(ctx context.Context, t *testing.T, d *db.DB, p db.Project
 	eventUID, err := uid.New()
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (uid, origin_instance_uid, project_id, project_name, issue_id, issue_number, type, actor, payload, created_at)
-		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, ?, 'tester', '{}', ?)`,
-		eventUID, p.ID, p.Name, issue.ID, 0, eventType, createdAt)
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_name, issue_id, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'tester', '{}', ?)`,
+		eventUID, p.ID, p.Name, issue.ID, eventType, createdAt)
 	require.NoError(t, err)
 }
 

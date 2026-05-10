@@ -49,7 +49,7 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 		args = append(args, p.ThroughID)
 	}
 	q := `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
-	             e.issue_id, e.issue_uid, e.issue_number, e.related_issue_id, e.related_issue_uid,
+	             e.issue_id, e.issue_uid, e.related_issue_id, e.related_issue_uid,
 	             e.type, e.actor, e.payload, e.created_at
 	      FROM events e
 	      JOIN projects p ON p.id = e.project_id
@@ -64,7 +64,7 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 	for rows.Next() {
 		var e Event
 		if err := rows.Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName,
-			&e.IssueID, &e.IssueUID, &e.IssueNumber, &e.RelatedIssueID, &e.RelatedIssueUID,
+			&e.IssueID, &e.IssueUID, &e.RelatedIssueID, &e.RelatedIssueUID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
@@ -115,7 +115,7 @@ func (d *DB) EventsInWindow(ctx context.Context, p EventsInWindowParams) ([]Even
 		}
 		conds = append(conds, "actor IN ("+strings.Join(placeholders, ",")+")")
 	}
-	q := `SELECT id, project_id, project_name, issue_id, issue_number, related_issue_id,
+	q := `SELECT id, project_id, project_name, issue_id, related_issue_id,
 	             type, actor, payload, created_at
 	      FROM events WHERE ` + strings.Join(conds, " AND ") + ` ORDER BY id ASC`
 	rows, err := d.QueryContext(ctx, q, args...)
@@ -127,7 +127,7 @@ func (d *DB) EventsInWindow(ctx context.Context, p EventsInWindowParams) ([]Even
 	for rows.Next() {
 		var e Event
 		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectName, &e.IssueID,
-			&e.IssueNumber, &e.RelatedIssueID, &e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
+			&e.RelatedIssueID, &e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		out = append(out, e)

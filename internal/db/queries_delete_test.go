@@ -23,7 +23,6 @@ func TestSoftDeleteIssue_SetsDeletedAtAndEmitsEvent(t *testing.T) {
 	assert.JSONEq(t, "{}", string(evt.Payload), "soft_deleted event has empty payload")
 	require.NotNil(t, evt.IssueID)
 	assert.Equal(t, issue.ID, *evt.IssueID, "event refs the soft-deleted issue id")
-	// IssueNumber on events is nil after Task 3; Task 12 will re-populate it.
 	require.NotNil(t, updated.DeletedAt)
 	assert.True(t, updated.UpdatedAt.After(issue.UpdatedAt) || updated.UpdatedAt.Equal(issue.UpdatedAt),
 		"updated_at must not regress on soft-delete")
@@ -109,7 +108,6 @@ func TestRestoreIssue_EmitsEventWithPayloadAndRefs(t *testing.T) {
 	assert.JSONEq(t, "{}", string(evt.Payload), "restored event has empty payload")
 	require.NotNil(t, evt.IssueID)
 	assert.Equal(t, issue.ID, *evt.IssueID)
-	// IssueNumber on events is nil after Task 3; Task 12 will re-populate it.
 	assert.True(t, updated.UpdatedAt.After(issue.UpdatedAt) || updated.UpdatedAt.Equal(issue.UpdatedAt),
 		"updated_at must not regress on restore")
 }
@@ -164,7 +162,7 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 		ProjectID: p.ID, FromIssueID: keeper.ID, ToIssueID: target.ID,
 		Type: "blocks", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: keeper.ID, EventIssueNumber: keeper.ID,
+		EventType: "issue.linked", EventIssueID: keeper.ID,
 		FromNumber: keeper.ID, ToNumber: target.ID, Actor: "tester",
 	})
 	require.NoError(t, err)
@@ -176,7 +174,6 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 	assert.Equal(t, target.UID, *pl.IssueUID)
 	assert.Equal(t, p.UID, *pl.ProjectUID)
 	assert.Equal(t, "kata", pl.ProjectName)
-	// IssueNumber on purge_log is 0 after Task 3; Task 7 rewrites the merge path.
 	assert.Equal(t, "delete me", pl.IssueTitle)
 	assert.Equal(t, "tester", pl.IssueAuthor)
 	assert.Equal(t, int64(1), pl.CommentCount)
@@ -458,9 +455,11 @@ func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	issueUID, err := uid.New()
 	require.NoError(t, err)
+	// short_id is the lowercased trailing-4 ULID suffix (cf. shortid.Derive).
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO issues(uid, project_id, number, title, author) VALUES(?, ?, 1, 'no-events', 'tester')`,
-		issueUID, p.ID)
+		`INSERT INTO issues(uid, project_id, short_id, title, author)
+		 VALUES(?, ?, lower(substr(?, 23, 4)), 'no-events', 'tester')`,
+		issueUID, p.ID, issueUID)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)

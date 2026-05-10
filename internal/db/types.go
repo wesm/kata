@@ -75,7 +75,6 @@ type Event struct {
 	ProjectName       string    `json:"project_name"`
 	IssueID           *int64    `json:"issue_id,omitempty"`
 	IssueUID          *string   `json:"issue_uid,omitempty"`
-	IssueNumber       *int64    `json:"issue_number,omitempty"`
 	RelatedIssueID    *int64    `json:"related_issue_id,omitempty"`
 	RelatedIssueUID   *string   `json:"related_issue_uid,omitempty"`
 	Type              string    `json:"type"`
@@ -149,7 +148,6 @@ type PurgeLog struct {
 	IssueUID               *string   `json:"issue_uid,omitempty"`
 	ProjectUID             *string   `json:"project_uid,omitempty"`
 	ProjectName            string    `json:"project_name"`
-	IssueNumber            int64     `json:"issue_number"`
 	IssueTitle             string    `json:"issue_title"`
 	IssueAuthor            string    `json:"issue_author"`
 	CommentCount           int64     `json:"comment_count"`

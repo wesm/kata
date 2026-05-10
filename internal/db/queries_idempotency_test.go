@@ -247,11 +247,11 @@ func TestLookupIdempotency_OnlyIssueCreatedEvents(t *testing.T) {
 	eventUID, err := uid.New()
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
-		INSERT INTO events (uid, origin_instance_uid, project_id, project_name, issue_id, issue_number, type, actor, payload, created_at)
-		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, ?, 'issue.edited', 'tester',
+		INSERT INTO events (uid, origin_instance_uid, project_id, project_name, issue_id, type, actor, payload, created_at)
+		VALUES (?, (SELECT value FROM meta WHERE key='instance_uid'), ?, ?, ?, 'issue.edited', 'tester',
 		        json_object('idempotency_key', 'K1', 'idempotency_fingerprint', 'fp'),
 		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		eventUID, p.ID, p.Name, issue.ID, 0)
+		eventUID, p.ID, p.Name, issue.ID)
 	require.NoError(t, err)
 
 	got, err := d.LookupIdempotency(ctx, p.ID, "K1", time.Now().Add(-1*time.Hour))

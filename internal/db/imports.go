@@ -314,10 +314,13 @@ func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
 	}
-	// short_id will be set by the auto-extend trigger (Task 4).
-	res, err := tx.ExecContext(ctx, `INSERT INTO issues(uid, project_id, title, body, status, closed_reason, owner, author, created_at, updated_at, closed_at, priority)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.Author, item.CreatedAt, item.UpdatedAt, item.ClosedAt, item.Priority)
+	shortID, err := assignShortID(ctx, tx, p.ProjectID, issueUID)
+	if err != nil {
+		return Issue{}, Event{}, fmt.Errorf("assign import short_id: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO issues(uid, project_id, short_id, title, body, status, closed_reason, owner, author, created_at, updated_at, closed_at, priority)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		issueUID, p.ProjectID, shortID, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.Author, item.CreatedAt, item.UpdatedAt, item.ClosedAt, item.Priority)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert imported issue: %w", err)
 	}
@@ -329,7 +332,7 @@ func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
-	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectUID: projectUID, ProjectName: projectName, IssueID: &issueID, IssueUID: &issueUID, IssueNumber: nil, Type: "issue.created", Actor: p.Actor, Payload: payload})
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectUID: projectUID, ProjectName: projectName, IssueID: &issueID, IssueUID: &issueUID, Type: "issue.created", Actor: p.Actor, Payload: payload})
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
@@ -351,7 +354,7 @@ func (d *DB) updateImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
-	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &existing.ID, IssueNumber: nil, Type: "issue.updated", Actor: p.Actor, Payload: payload})
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &existing.ID, Type: "issue.updated", Actor: p.Actor, Payload: payload})
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
@@ -392,7 +395,7 @@ func (d *DB) importComments(ctx context.Context, tx *sql.Tx, p ImportBatchParams
 		if err != nil {
 			return nil, 0, fmt.Errorf("marshal import comment payload: %w", err)
 		}
-		evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: nil, Type: "issue.commented", Actor: p.Actor, Payload: string(payload)})
+		evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, Type: "issue.commented", Actor: p.Actor, Payload: string(payload)})
 		if err != nil {
 			return nil, 0, err
 		}
@@ -476,7 +479,7 @@ func (d *DB) insertLabelEvent(ctx context.Context, tx *sql.Tx, p ImportBatchPara
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal label payload: %w", err)
 	}
-	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: nil, Type: eventType, Actor: p.Actor, Payload: string(payload)})
+	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
 func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, states map[string]*importIssueState, projectName string) ([]Event, int, error) {
@@ -609,7 +612,7 @@ func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParam
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
-	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: nil, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
+	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
 func issueShortIDByID(ctx context.Context, tx *sql.Tx, issueID int64) (string, error) {

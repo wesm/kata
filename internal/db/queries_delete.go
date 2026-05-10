@@ -61,7 +61,6 @@ func (d *DB) SoftDeleteIssue(ctx context.Context, issueID int64, actor string) (
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: nil,
 		Type:        "issue.soft_deleted",
 		Actor:       actor,
 		Payload:     "{}",
@@ -127,7 +126,6 @@ func (d *DB) RestoreIssue(ctx context.Context, issueID int64, actor string) (Iss
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: nil,
 		Type:        "issue.restored",
 		Actor:       actor,
 		Payload:     "{}",
@@ -322,13 +320,13 @@ func purgeCascade(
 	res, err := c.ExecContext(ctx,
 		`INSERT INTO purge_log(
 		   uid, origin_instance_uid,
-		   project_id, purged_issue_id, issue_uid, project_uid, project_name, issue_number,
+		   project_id, purged_issue_id, issue_uid, project_uid, project_name,
 		   issue_title, issue_author, comment_count, link_count, label_count,
 		   event_count, events_deleted_min_id, events_deleted_max_id,
 		   purge_reset_after_event_id, actor, reason)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		purgeUID, originInstanceUID,
-		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectName, 0,
+		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectName,
 		issue.Title, issue.Author, commentCount, linkCount, labelCount,
 		eventCount, minEventID, maxEventID, reservedCursor, actor, reason)
 	if err != nil {
@@ -385,14 +383,14 @@ func reserveEventSequence(ctx context.Context, c connExec, hadEvents bool) (sql.
 func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) {
 	const q = `
 		SELECT id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid,
-		       project_name, issue_number, issue_title, issue_author, comment_count, link_count, label_count,
+		       project_name, issue_title, issue_author, comment_count, link_count, label_count,
 		       event_count, events_deleted_min_id, events_deleted_max_id,
 		       purge_reset_after_event_id, actor, reason, purged_at
 		FROM purge_log WHERE id = ?`
 	var pl PurgeLog
 	err := r.QueryRowContext(ctx, q, id).Scan(
 		&pl.ID, &pl.UID, &pl.OriginInstanceUID, &pl.ProjectID, &pl.PurgedIssueID, &pl.IssueUID,
-		&pl.ProjectUID, &pl.ProjectName, &pl.IssueNumber, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
+		&pl.ProjectUID, &pl.ProjectName, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
 		&pl.LinkCount, &pl.LabelCount, &pl.EventCount,
 		&pl.EventsDeletedMinID, &pl.EventsDeletedMaxID,
 		&pl.PurgeResetAfterEventID, &pl.Actor, &pl.Reason, &pl.PurgedAt)

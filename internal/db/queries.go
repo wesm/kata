@@ -15,7 +15,7 @@ import (
 // ErrNotFound is returned when a single-row lookup matches zero rows.
 var ErrNotFound = errors.New("not found")
 
-// CreateProject inserts a new projects row with default next_issue_number=1.
+// CreateProject inserts a new projects row.
 func (d *DB) CreateProject(ctx context.Context, name string) (Project, error) {
 	projectUID, err := katauid.New()
 	if err != nil {
@@ -211,85 +211,6 @@ func parseSQLiteTimestamp(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, firstErr
-}
-
-// ProjectHasIssuesError is returned by ResetIssueCounter when the target
-// project still has at least one row in the issues table. Carries the count
-// observed at rejection time so callers can surface it without re-querying.
-type ProjectHasIssuesError struct{ Count int64 }
-
-func (e *ProjectHasIssuesError) Error() string {
-	return fmt.Sprintf("project has %d issues", e.Count)
-}
-
-// CountIssues returns the number of rows currently in the issues table for
-// projectID. Purged rows are gone from the table entirely (queries_delete.go),
-// so a zero count means a clean slate.
-func (d *DB) CountIssues(ctx context.Context, projectID int64) (int64, error) {
-	var n int64
-	if err := d.QueryRowContext(ctx,
-		`SELECT count(*) FROM issues WHERE project_id = ?`, projectID).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count issues: %w", err)
-	}
-	return n, nil
-}
-
-// ErrInvalidCounterValue is returned by ResetIssueCounter when `to < 1`.
-// The CLI and HTTP handler also enforce this; the DB-layer check is
-// defense-in-depth so a buggy future caller can't quietly set the counter
-// to zero or negative.
-var ErrInvalidCounterValue = errors.New("counter value must be >= 1")
-
-// ResetIssueCounter sets projects.next_issue_number to `to` for projectID,
-// but only when the project has no rows in the issues table. The empty-check
-// is folded into the UPDATE's WHERE clause (NOT EXISTS) so the gate is atomic
-// with the write — SQLite's default DEFERRED transaction would not have
-// taken a write lock for a separate count() query, leaving a window for a
-// concurrent CreateIssue between count and update. Returns ErrNotFound when
-// the project does not exist; *ProjectHasIssuesError carrying the observed
-// count when the project is non-empty.
-func (d *DB) ResetIssueCounter(ctx context.Context, projectID, to int64) error {
-	if to < 1 {
-		return ErrInvalidCounterValue
-	}
-	res, err := d.ExecContext(ctx,
-		`UPDATE projects SET next_issue_number = ?
-		 WHERE id = ?
-		   AND NOT EXISTS (SELECT 1 FROM issues WHERE project_id = projects.id)`,
-		to, projectID)
-	if err != nil {
-		return fmt.Errorf("update counter: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if n == 1 {
-		return nil
-	}
-	// Update affected zero rows: either the project doesn't exist or it has
-	// at least one issue. Disambiguate so callers map to 404 vs 409 — at this
-	// point we've already failed the gate, so any drift in the count comes
-	// from concurrent activity that postdated the rejection and is not
-	// load-bearing.
-	if _, perr := d.ProjectByID(ctx, projectID); errors.Is(perr, ErrNotFound) {
-		return ErrNotFound
-	} else if perr != nil {
-		return fmt.Errorf("post-update project lookup: %w", perr)
-	}
-	count, cerr := d.CountIssues(ctx, projectID)
-	if cerr != nil {
-		return fmt.Errorf("post-update count: %w", cerr)
-	}
-	// A concurrent purge between the failed UPDATE and this lookup can drop
-	// the count to zero, but the UPDATE's NOT EXISTS proved the project was
-	// non-empty at the moment we tried to write. Clamp to 1 so the error
-	// payload doesn't claim "has 0 issues" — that would be both confusing
-	// and structurally inconsistent with the rejection itself.
-	if count < 1 {
-		count = 1
-	}
-	return &ProjectHasIssuesError{Count: count}
 }
 
 // AttachAlias inserts a project_aliases row.
@@ -557,9 +478,12 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 			toIssueID  int64
 			toIssueUID string
 		)
+		// Initial-link targets are addressed by their issue ID for now; the
+		// CLI/daemon will be migrated to short_ids in Tasks 11/14. Until
+		// then this lookup intentionally treats ToNumber as a numeric ID.
 		err := tx.QueryRowContext(ctx,
 			`SELECT id, uid FROM issues
-			 WHERE project_id = ? AND number = ? AND deleted_at IS NULL`,
+			 WHERE project_id = ? AND id = ? AND deleted_at IS NULL`,
 			p.ProjectID, l.ToNumber).Scan(&toIssueID, &toIssueUID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrInitialLinkTargetNotFound
@@ -594,7 +518,6 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		ProjectName: projectName,
 		IssueID:     &issueID,
 		IssueUID:    &issueUID,
-		IssueNumber: nil,
 		Type:        "issue.created",
 		Actor:       p.Author,
 		Payload:     payload,
@@ -934,7 +857,6 @@ func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment,
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: nil,
 		Type:        "issue.commented",
 		Actor:       p.Author,
 		Payload:     payload,
@@ -988,7 +910,6 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: nil,
 		Type:        "issue.closed",
 		Actor:       actor,
 		Payload:     payload,
@@ -1034,7 +955,6 @@ func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issu
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: nil,
 		Type:        "issue.reopened",
 		Actor:       actor,
 		Payload:     "{}",
@@ -1102,7 +1022,6 @@ func (d *DB) EditIssue(ctx context.Context, p EditIssueParams) (Issue, *Event, b
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: nil,
 		Type:        "issue.updated",
 		Actor:       p.Actor,
 		Payload:     "{}",
@@ -1177,7 +1096,6 @@ type eventInsert struct {
 	ProjectName     string
 	IssueID         *int64
 	IssueUID        *string
-	IssueNumber     *int64
 	RelatedIssueID  *int64
 	RelatedIssueUID *string
 	Type            string
@@ -1228,7 +1146,6 @@ func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, a
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: nil,
 		Type:        eventType,
 		Actor:       actor,
 		Payload:     payload,
@@ -1295,10 +1212,6 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	if err != nil {
 		return Event{}, fmt.Errorf("generate event uid: %w", err)
 	}
-	// The events table dropped `issue_number` in schema v8; Event.IssueNumber
-	// stays in the Go struct as a transitional always-nil sink that older
-	// readers still scan, but no SQL path binds it. Task 6's cleanup pass
-	// will remove the field entirely.
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, related_issue_id, related_issue_uid, type, actor, payload)
 		 VALUES(
