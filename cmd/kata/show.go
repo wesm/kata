@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,20 +18,7 @@ func newShowCmd() *cobra.Command {
 		Short: "show issue + comments",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			start, err := resolveStartPath(flags.Workspace)
-			if err != nil {
-				return err
-			}
-			baseURL, err := ensureDaemon(ctx)
-			if err != nil {
-				return err
-			}
-			pid, err := resolveProjectID(ctx, baseURL, start)
-			if err != nil {
-				return err
-			}
-			ref, err := resolveIssueRef(ctx, baseURL, pid, args[0])
+			ctx, baseURL, pid, ref, err := resolveIssueRefForCommand(cmd, args[0])
 			if err != nil {
 				return err
 			}
@@ -39,7 +27,7 @@ func newShowCmd() *cobra.Command {
 				return err
 			}
 			httpStatus, bs, err := httpDoJSON(ctx, client, http.MethodGet,
-				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, ref.Number), nil)
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%s", baseURL, pid, url.PathEscape(ref.RefForAPI)), nil)
 			if err != nil {
 				return err
 			}
@@ -56,11 +44,12 @@ func newShowCmd() *cobra.Command {
 			}
 			var b struct {
 				Issue struct {
-					Number int64  `json:"number"`
-					Title  string `json:"title"`
-					Body   string `json:"body"`
-					Status string `json:"status"`
-					Author string `json:"author"`
+					ShortID string `json:"short_id"`
+					UID     string `json:"uid"`
+					Title   string `json:"title"`
+					Body    string `json:"body"`
+					Status  string `json:"status"`
+					Author  string `json:"author"`
 				} `json:"issue"`
 				Comments []struct {
 					Author string `json:"author"`
@@ -70,17 +59,17 @@ func newShowCmd() *cobra.Command {
 					Label string `json:"label"`
 				} `json:"labels"`
 				Links []struct {
-					Type       string `json:"type"`
-					FromNumber int64  `json:"from_number"`
-					ToNumber   int64  `json:"to_number"`
+					Type string         `json:"type"`
+					From linkPeerForCLI `json:"from"`
+					To   linkPeerForCLI `json:"to"`
 				} `json:"links"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			if _, err := fmt.Fprintf(out, "#%d  %s  [%s]  by %s\n",
-				b.Issue.Number,
+			if _, err := fmt.Fprintf(out, "%s  %s  [%s]  by %s\n",
+				b.Issue.ShortID,
 				textsafe.Line(b.Issue.Title),
 				b.Issue.Status,
 				textsafe.Line(b.Issue.Author)); err != nil {
@@ -122,8 +111,8 @@ func newShowCmd() *cobra.Command {
 					return err
 				}
 				for _, l := range b.Links {
-					label, other := linkLabelFromPOV(l.Type, b.Issue.Number, l.FromNumber, l.ToNumber)
-					if _, err := fmt.Fprintf(out, "%s: #%d\n", label, other); err != nil {
+					label, other := linkLabelFromPOV(l.Type, b.Issue.UID, l.From, l.To)
+					if _, err := fmt.Fprintf(out, "%s: %s\n", label, other); err != nil {
 						return err
 					}
 				}
@@ -133,38 +122,39 @@ func newShowCmd() *cobra.Command {
 	}
 }
 
-// linkLabelFromPOV returns the label and the OTHER endpoint number,
-// framed from the viewing issue's point of view. The display matches
-// the relationship-flag vocabulary on `kata create` / `kata edit`:
-// "parent" / "child" for the parent slot (parent points up, child
-// points down), "blocks" / "blocked-by" for the directed blocks
-// edge, and "related" for the symmetric one. This reads unambiguously
-// without arrows: `child: #5` says "this issue's child is #5", which
-// is what the previous `parent ← #5` rendering tried to convey via
-// arrow direction.
-func linkLabelFromPOV(linkType string, viewerNumber, fromNumber, toNumber int64) (label string, other int64) {
-	if fromNumber == viewerNumber {
-		// Viewer is the link's source.
+// linkPeerForCLI mirrors api.LinkPeer for the show command's decode path. UID
+// is the stable handle; short_id is the human-readable display.
+type linkPeerForCLI struct {
+	UID     string `json:"uid"`
+	ShortID string `json:"short_id"`
+}
+
+// linkLabelFromPOV returns the label and the OTHER endpoint's short_id,
+// framed from the viewing issue's point of view. The display matches the
+// relationship-flag vocabulary on `kata create` / `kata edit`: "parent" /
+// "child" for the parent slot, "blocks" / "blocked-by" for the directed
+// blocks edge, and "related" for the symmetric one.
+func linkLabelFromPOV(linkType, viewerUID string, from, to linkPeerForCLI) (label, other string) {
+	if from.UID == viewerUID {
 		switch linkType {
 		case "parent":
-			return "parent", toNumber
+			return "parent", to.ShortID
 		case "blocks":
-			return "blocks", toNumber
+			return "blocks", to.ShortID
 		case "related":
-			return "related", toNumber
+			return "related", to.ShortID
 		default:
-			return linkType, toNumber
+			return linkType, to.ShortID
 		}
 	}
-	// Viewer is the link's target — relabel to reflect the inverse.
 	switch linkType {
 	case "parent":
-		return "child", fromNumber
+		return "child", from.ShortID
 	case "blocks":
-		return "blocked-by", fromNumber
+		return "blocked-by", from.ShortID
 	case "related":
-		return "related", fromNumber
+		return "related", from.ShortID
 	default:
-		return linkType, fromNumber
+		return linkType, from.ShortID
 	}
 }

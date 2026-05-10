@@ -7,11 +7,11 @@ import (
 )
 
 func TestCloseReopen_RoundTrip(t *testing.T) {
-	env, dir, _ := setupWorkspaceWithIssue(t, "test issue")
+	env, dir, _, ref := setupWorkspaceWithIssue(t, "test issue")
 
-	out := runCLI(t, env, dir, "close", "1", "--reason", "wontfix")
+	out := runCLI(t, env, dir, "close", ref, "--reason", "wontfix")
 	assert.Contains(t, out, "closed")
 
-	out = runCLI(t, env, dir, "reopen", "1")
+	out = runCLI(t, env, dir, "reopen", ref)
 	assert.Contains(t, out, "open")
 }

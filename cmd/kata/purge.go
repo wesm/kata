@@ -9,9 +9,9 @@ import (
 // newPurgeCmd returns the cobra.Command for `kata purge`.
 //
 // Spec §3.5 step 5: purge is irreversible and gated by --force plus an
-// X-Kata-Confirm header whose value is the exact string "PURGE #N". The
+// X-Kata-Confirm header whose value is the exact string "PURGE <ref>". The
 // interactive friction is intentionally higher than delete — the prompt
-// requires typing the full "PURGE #N" string, not just the number.
+// requires typing the full "PURGE <ref>" string, not just the ref.
 func newPurgeCmd() *cobra.Command {
 	var force bool
 	var confirm string
@@ -28,11 +28,17 @@ func newPurgeCmd() *cobra.Command {
 					Kind:    kindValidation, ExitCode: ExitValidation,
 				}
 			}
-			_, _, _, issue, err := resolveIssueRefForCommandWithOptions(cmd, args[0], true)
+			ctx, baseURL, pid, issue, err := resolveIssueRefForCommandWithOptions(cmd, args[0], true)
 			if err != nil {
 				return err
 			}
-			expected := fmt.Sprintf("PURGE #%d", issue.Number)
+			// Resolve to the qualified display form so X-Kata-Confirm
+			// works whether the user passed a ULID or a short_id.
+			issue, err = hydrateRefWithQualified(ctx, baseURL, pid, issue, true)
+			if err != nil {
+				return err
+			}
+			expected := fmt.Sprintf("PURGE %s", issue.QualifiedID)
 			confirm, err = resolveConfirm(cmd, confirm, expected,
 				fmt.Sprintf("Type %q to confirm: ", expected), confirmPromptFull)
 			if err != nil {
@@ -42,11 +48,11 @@ func newPurgeCmd() *cobra.Command {
 			if reason != "" {
 				extra = map[string]any{"reason": reason}
 			}
-			return runDestructive(cmd, issue.Number, "purge", confirm, extra)
+			return runDestructive(cmd, issue.RefForAPI, issue.ShortID, "purge", confirm, extra)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "required to perform the purge")
-	cmd.Flags().StringVar(&confirm, "confirm", "", `exact confirmation string ("PURGE #N")`)
+	cmd.Flags().StringVar(&confirm, "confirm", "", `exact confirmation string ("PURGE <short_id>")`)
 	cmd.Flags().StringVar(&reason, "reason", "", "free-text reason recorded in purge_log.reason")
 	return cmd
 }

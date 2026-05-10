@@ -2,14 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/wesm/kata/internal/daemon"
@@ -153,68 +149,29 @@ func streamingClientFor(ctx context.Context, baseURL string) (*http.Client, erro
 	})
 }
 
+// resolvedIssueRef captures everything a CLI command needs after parsing a
+// user-supplied issue ref: the ref string to send to the daemon ({ref} path
+// segment) and the project name the ref binds to. The project name is
+// resolved separately into a numeric project ID before building URLs because
+// the daemon's path params are still {project_id:int}.
+//
+// QualifiedID is only populated by callers that need a "<project>#<short_id>"
+// display string (e.g. the destructive verbs whose X-Kata-Confirm header
+// expects that exact form). It's resolved by the optional daemon lookup
+// resolveQualified does, so most commands leave it empty.
 type resolvedIssueRef struct {
-	Number    int64
-	UID       string
-	ProjectID int64
-}
-
-func resolveIssueRef(ctx context.Context, baseURL string, projectID int64, ref string) (resolvedIssueRef, error) {
-	return resolveIssueRefWithOptions(ctx, baseURL, projectID, ref, false)
-}
-
-func resolveIssueRefWithOptions(ctx context.Context, baseURL string, projectID int64, ref string, includeDeleted bool) (resolvedIssueRef, error) {
-	if n, ok, err := parseIssueNumberRef(ref); ok || err != nil {
-		return resolvedIssueRef{Number: n, ProjectID: projectID}, err
-	}
-	client, err := httpClientFor(ctx, baseURL)
-	if err != nil {
-		return resolvedIssueRef{}, err
-	}
-	path := fmt.Sprintf("%s/api/v1/issues/%s", baseURL, url.PathEscape(ref))
-	if includeDeleted {
-		path += "?include_deleted=true"
-	}
-	status, bs, err := httpDoJSON(ctx, client, http.MethodGet,
-		path, nil)
-	if err != nil {
-		return resolvedIssueRef{}, err
-	}
-	if status >= 400 {
-		return resolvedIssueRef{}, apiErrFromBody(status, bs)
-	}
-	var out struct {
-		Issue struct {
-			Number    int64  `json:"number"`
-			UID       string `json:"uid"`
-			ProjectID int64  `json:"project_id"`
-		} `json:"issue"`
-	}
-	if err := json.Unmarshal(bs, &out); err != nil {
-		return resolvedIssueRef{}, err
-	}
-	if projectID != 0 && out.Issue.ProjectID != projectID {
-		return resolvedIssueRef{}, &cliError{
-			Message:  "issue UID does not belong to the current project",
-			Code:     "issue_not_found",
-			Kind:     kindNotFound,
-			ExitCode: ExitNotFound,
-		}
-	}
-	return resolvedIssueRef{Number: out.Issue.Number, UID: out.Issue.UID, ProjectID: out.Issue.ProjectID}, nil
-}
-
-func parseIssueNumberRef(ref string) (int64, bool, error) {
-	s := strings.TrimPrefix(ref, "#")
-	if s == "" {
-		return 0, true, &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-	}
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		if strings.HasPrefix(ref, "#") {
-			return 0, true, &cliError{Message: "issue number must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-		}
-		return 0, false, nil
-	}
-	return n, true, nil
+	// RefForAPI is the literal path component the daemon expects: either a
+	// bare short_id ("abc4") or a full 26-char ULID.
+	RefForAPI string
+	// ProjectName is the project the ref binds to: a qualified ref
+	// ("kata#abc4") overrides; a bare short_id / ULID inherits the
+	// workspace's project name.
+	ProjectName string
+	// QualifiedID is "<project_name>#<short_id>" for the resolved issue.
+	// Populated by resolveIssueRefForCommandResolved (and its variants),
+	// empty otherwise.
+	QualifiedID string
+	// ShortID is the issue's display short_id after a daemon-side resolve.
+	// Populated by the same variants as QualifiedID; empty otherwise.
+	ShortID string
 }

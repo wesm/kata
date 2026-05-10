@@ -12,10 +12,10 @@ func TestCreate_WithPriority(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
 
-	out := runCLI(t, env, dir, "create", "p1 issue", "--priority", "1")
-	assert.Contains(t, out, "p1 issue")
+	out := runCLI(t, env, dir, "--quiet", "create", "p1 issue", "--priority", "1")
+	short := strings.TrimSpace(out)
 
-	b := fetchIssueViaHTTP(t, env, pid, 1)
+	b := fetchIssueViaHTTP(t, env, pid, short)
 	require.NotNil(t, b.Issue.Priority)
 	assert.Equal(t, int64(1), *b.Issue.Priority)
 }
@@ -31,29 +31,29 @@ func TestCreate_PriorityOutOfRangeRejectsLocally(t *testing.T) {
 func TestEdit_PrioritySetClearsAndSets(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "to be prioritized")
+	subject := createIssue(t, env, pid, "to be prioritized")
 
 	resetFlags(t)
-	runCLI(t, env, dir, "edit", "1", "--priority", "0")
-	b := fetchIssueViaHTTP(t, env, pid, 1)
+	runCLI(t, env, dir, "edit", subject, "--priority", "0")
+	b := fetchIssueViaHTTP(t, env, pid, subject)
 	require.NotNil(t, b.Issue.Priority)
 	assert.Equal(t, int64(0), *b.Issue.Priority)
 
 	resetFlags(t)
-	runCLI(t, env, dir, "edit", "1", "--priority", "-")
-	b = fetchIssueViaHTTP(t, env, pid, 1)
+	runCLI(t, env, dir, "edit", subject, "--priority", "-")
+	b = fetchIssueViaHTTP(t, env, pid, subject)
 	assert.Nil(t, b.Issue.Priority)
 }
 
 func TestEdit_PriorityCombinedWithTitle(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "old title")
+	subject := createIssue(t, env, pid, "old title")
 
 	resetFlags(t)
-	runCLI(t, env, dir, "edit", "1", "--title", "new title", "--priority", "2")
+	runCLI(t, env, dir, "edit", subject, "--title", "new title", "--priority", "2")
 
-	b := fetchIssueViaHTTP(t, env, pid, 1)
+	b := fetchIssueViaHTTP(t, env, pid, subject)
 	require.NotNil(t, b.Issue.Priority)
 	assert.Equal(t, int64(2), *b.Issue.Priority)
 }
@@ -61,15 +61,15 @@ func TestEdit_PriorityCombinedWithTitle(t *testing.T) {
 func TestEdit_PriorityInvalidValueRejected(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "x")
+	subject := createIssue(t, env, pid, "x")
 
 	resetFlags(t)
-	_, err := runCLICapture(t, env, dir, "edit", "1", "--priority", "9")
+	_, err := runCLICapture(t, env, dir, "edit", subject, "--priority", "9")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "0 and 4")
 
 	resetFlags(t)
-	_, err = runCLICapture(t, env, dir, "edit", "1", "--priority", "abc")
+	_, err = runCLICapture(t, env, dir, "edit", subject, "--priority", "abc")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "integer 0..4 or '-'")
 }
@@ -77,15 +77,15 @@ func TestEdit_PriorityInvalidValueRejected(t *testing.T) {
 func TestList_FiltersByPriority(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "p0 issue")
-	createIssue(t, env, pid, "p2 issue")
+	p0 := createIssue(t, env, pid, "p0 issue")
+	p2 := createIssue(t, env, pid, "p2 issue")
 	createIssue(t, env, pid, "no prio issue")
 
 	// Set priorities via edit so the list query exercises the priority column.
 	resetFlags(t)
-	runCLI(t, env, dir, "edit", "1", "--priority", "0")
+	runCLI(t, env, dir, "edit", p0, "--priority", "0")
 	resetFlags(t)
-	runCLI(t, env, dir, "edit", "2", "--priority", "2")
+	runCLI(t, env, dir, "edit", p2, "--priority", "2")
 
 	resetFlags(t)
 	out := runCLI(t, env, dir, "list", "--priority", "0")

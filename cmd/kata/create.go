@@ -110,40 +110,40 @@ func newCreateCmd() *cobra.Command {
 		if len(labels) > 0 {
 			req["labels"] = labels
 		}
-		// Resolve every link-target ref to its issue number before building
-		// the wire payload. Refs accept the same forms as `kata show`:
-		// numeric (#N or N), full UID, or 8+ char UID prefix. Numeric refs
-		// resolve client-side; UID refs roundtrip to the daemon.
+		// Resolve every link-target ref to its wire ref string before
+		// building the payload. Refs accept the same forms as `kata show`:
+		// bare short_id, qualified ("kata#abc4"), or full ULID. The daemon
+		// resolves each ref against the project at request time.
 		var links []map[string]any
-		var parentNum int64
+		var parentRef string
 		if cmd.Flags().Changed("parent") {
-			n, err := resolveSingletonRefToNumber(ctx, baseURL, projectID, parentRefSlice, "--parent", false)
+			r, err := resolveSingletonRefToWire(ctx, baseURL, projectID, parentRefSlice, "--parent", false)
 			if err != nil {
 				return err
 			}
-			parentNum = n
-			links = append(links, map[string]any{"type": "parent", "to_number": n})
+			parentRef = r
+			links = append(links, map[string]any{"type": "parent", "to_ref": r})
 		}
-		blocksNums, err := resolveRefSliceToNumbers(ctx, baseURL, projectID, blocks, "--blocks")
+		blocksRefs, err := resolveRefSliceToWire(ctx, baseURL, projectID, blocks, "--blocks")
 		if err != nil {
 			return err
 		}
-		for _, n := range blocksNums {
-			links = append(links, map[string]any{"type": "blocks", "to_number": n})
+		for _, r := range blocksRefs {
+			links = append(links, map[string]any{"type": "blocks", "to_ref": r})
 		}
-		blockedByNums, err := resolveRefSliceToNumbers(ctx, baseURL, projectID, blockedBy, "--blocked-by")
+		blockedByRefs, err := resolveRefSliceToWire(ctx, baseURL, projectID, blockedBy, "--blocked-by")
 		if err != nil {
 			return err
 		}
-		for _, n := range blockedByNums {
-			links = append(links, map[string]any{"type": "blocks", "to_number": n, "incoming": true})
+		for _, r := range blockedByRefs {
+			links = append(links, map[string]any{"type": "blocks", "to_ref": r, "incoming": true})
 		}
-		relatedNums, err := resolveRefSliceToNumbers(ctx, baseURL, projectID, related, "--related")
+		relatedRefs, err := resolveRefSliceToWire(ctx, baseURL, projectID, related, "--related")
 		if err != nil {
 			return err
 		}
-		for _, n := range relatedNums {
-			links = append(links, map[string]any{"type": "related", "to_number": n})
+		for _, r := range relatedRefs {
+			links = append(links, map[string]any{"type": "related", "to_ref": r})
 		}
 		if len(links) > 0 {
 			req["links"] = links
@@ -167,58 +167,72 @@ func newCreateCmd() *cobra.Command {
 		}
 		// The /issues create response doesn't carry a `changes` block (it
 		// lives on the PATCH path). Synthesize one from the resolved
-		// initial-link numbers so human-mode `kata create` echoes a
-		// `links: +parent #N, +blocks #M, ...` summary, mirroring the
-		// per-link diff a `kata edit` PATCH produces. Reverse direction
-		// (`--blocked-by` adding to `blocked_by_added` rather than
-		// `blocks_added`) preserves the user's POV.
-		applied := initialLinksAsChanges(parentNum, blocksNums, blockedByNums, relatedNums)
+		// initial-link refs so human-mode `kata create` echoes a
+		// `links: +parent <ref>, +blocks <ref>, ...` summary, mirroring
+		// the per-link diff a `kata edit` PATCH produces. Reverse
+		// direction (`--blocked-by` adding to `blocked_by_added` rather
+		// than `blocks_added`) preserves the user's POV.
+		applied := initialLinksAsChanges(parentRef, blocksRefs, blockedByRefs, relatedRefs)
 		return printMutationWithApplied(cmd, bs, applied)
 	}
 	return cmd
 }
 
 // initialLinksAsChanges builds a synthetic mutationChanges from the
-// resolved initial-link numbers so create's human output can mirror
-// edit's `links: +parent #N` diff format. parentNum is 0 when no
+// resolved initial-link refs so create's human output can mirror
+// edit's `links: +parent <ref>` diff format. parentRef is "" when no
 // `--parent` was passed; the other slices may be nil/empty. Returns
 // nil when no link flags were used.
 //
 // Dedupes each slice before storing so a request like
-// `--blocks 2 --blocks 2` summarizes as a single `+blocks #2`,
+// `--blocks abc4 --blocks abc4` summarizes as a single `+blocks abc4`,
 // matching the daemon's CreateIssue path which dedupes initial links
 // before persisting. Without this, the human-mode summary would
 // over-report what actually landed.
-func initialLinksAsChanges(parentNum int64, blocks, blockedBy, related []int64) *mutationChanges {
-	if parentNum == 0 && len(blocks) == 0 && len(blockedBy) == 0 && len(related) == 0 {
+func initialLinksAsChanges(parentRef string, blocks, blockedBy, related []string) *mutationChanges {
+	if parentRef == "" && len(blocks) == 0 && len(blockedBy) == 0 && len(related) == 0 {
 		return nil
 	}
 	c := &mutationChanges{}
-	if parentNum != 0 {
-		n := parentNum
-		c.ParentSet = &n
+	if parentRef != "" {
+		ref := parentRef
+		c.ParentSet = &linkPeerForChanges{ShortID: ref}
 	}
-	c.BlocksAdded = dedupeInt64s(blocks)
-	c.BlockedByAdded = dedupeInt64s(blockedBy)
-	c.RelatedAdded = dedupeInt64s(related)
+	c.BlocksAdded = stringSliceToPeers(dedupeStrings(blocks))
+	c.BlockedByAdded = stringSliceToPeers(dedupeStrings(blockedBy))
+	c.RelatedAdded = stringSliceToPeers(dedupeStrings(related))
 	return c
 }
 
-// dedupeInt64s returns a copy of in with duplicate entries dropped,
+// dedupeStrings returns a copy of in with duplicate entries dropped,
 // preserving first-occurrence order. Returns nil for empty input so
 // the caller's omitempty JSON tags do the right thing.
-func dedupeInt64s(in []int64) []int64 {
+func dedupeStrings(in []string) []string {
 	if len(in) == 0 {
 		return nil
 	}
-	seen := make(map[int64]struct{}, len(in))
-	out := make([]int64, 0, len(in))
-	for _, n := range in {
-		if _, ok := seen[n]; ok {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
 			continue
 		}
-		seen[n] = struct{}{}
-		out = append(out, n)
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// stringSliceToPeers wraps each ref into a linkPeerForChanges with ShortID
+// set; used by initialLinksAsChanges so create's synthetic changes shape
+// matches the daemon's edit-response shape.
+func stringSliceToPeers(refs []string) []linkPeerForChanges {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]linkPeerForChanges, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, linkPeerForChanges{ShortID: r})
 	}
 	return out
 }
@@ -249,9 +263,18 @@ func validateCreateLabels(labels []string) error {
 // parsed before the daemon call so malformed config fails with a direct fix-it
 // error instead of being hidden behind daemon-side path resolution.
 func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, error) {
+	id, _, err := resolveProjectIDAndName(ctx, baseURL, startPath)
+	return id, err
+}
+
+// resolveProjectIDAndName is resolveProjectID plus the project's canonical
+// name. Used by ref-consuming commands that need the project name to format
+// qualified IDs ("<project>#<short_id>") for display or for the destructive
+// confirmation header.
+func resolveProjectIDAndName(ctx context.Context, baseURL, startPath string) (int64, string, error) {
 	client, err := httpClientFor(ctx, baseURL)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	body := map[string]any{}
 	if project := strings.TrimSpace(flags.Project); project != "" {
@@ -262,11 +285,7 @@ func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, er
 		case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
 			body["start_path"] = startPath
 		default:
-			// Found a .kata.toml but couldn't read or parse it. Surface
-			// that loud and clear instead of silently asking the daemon
-			// to resolve a path it may not even be able to stat (remote
-			// mode), which would mask the actual fix-it error.
-			return 0, &cliError{
+			return 0, "", &cliError{
 				Message:  "read .kata.toml: " + err.Error(),
 				Kind:     kindValidation,
 				ExitCode: ExitValidation,
@@ -276,18 +295,21 @@ func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, er
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
 		baseURL+"/api/v1/projects/resolve", body)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if status >= 400 {
-		return 0, apiErrFromBody(status, bs)
+		return 0, "", apiErrFromBody(status, bs)
 	}
 	var b struct {
-		Project struct{ ID int64 } `json:"project"`
+		Project struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		} `json:"project"`
 	}
 	if err := json.Unmarshal(bs, &b); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return b.Project.ID, nil
+	return b.Project.ID, b.Project.Name, nil
 }
 
 // printMutation formats a mutation response (issue create/edit/close/reopen)
@@ -312,9 +334,9 @@ func printMutation(cmd *cobra.Command, bs []byte) error {
 func printMutationWithApplied(cmd *cobra.Command, bs []byte, applied *mutationChanges) error {
 	var b struct {
 		Issue struct {
-			Number int64  `json:"number"`
-			Title  string `json:"title"`
-			Status string `json:"status"`
+			ShortID string `json:"short_id"`
+			Title   string `json:"title"`
+			Status  string `json:"status"`
 		} `json:"issue"`
 		Changed bool             `json:"changed"`
 		Changes *mutationChanges `json:"changes,omitempty"`
@@ -331,11 +353,11 @@ func printMutationWithApplied(cmd *cobra.Command, bs []byte, applied *mutationCh
 		return err
 	}
 	if flags.Quiet {
-		_, err := fmt.Fprintln(cmd.OutOrStdout(), b.Issue.Number)
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), b.Issue.ShortID)
 		return err
 	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d %s [%s]",
-		b.Issue.Number, textsafe.Line(b.Issue.Title), b.Issue.Status); err != nil {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s %s [%s]",
+		b.Issue.ShortID, textsafe.Line(b.Issue.Title), b.Issue.Status); err != nil {
 		return err
 	}
 	changes := b.Changes
@@ -360,18 +382,27 @@ func printMutationWithApplied(cmd *cobra.Command, bs []byte, applied *mutationCh
 	return err
 }
 
+// linkPeerForChanges mirrors api.LinkPeer's wire shape so the CLI's
+// changes-decoder can pluck the short_id off each link mutation entry. UID
+// is decoded too in case the CLI ever needs to disambiguate, but the human
+// summary only renders short_id.
+type linkPeerForChanges struct {
+	UID     string `json:"uid"`
+	ShortID string `json:"short_id"`
+}
+
 // mutationChanges mirrors the wire `changes` block produced by `kata edit`
-// for link mutations. Decoded so the human-mode renderer can summarize
-// what happened without round-tripping the full payload.
+// for link mutations. Each entry is a LinkPeer (UID + short_id) so the human
+// renderer can show "<short_id>" without resolving anything.
 type mutationChanges struct {
-	ParentSet        *int64  `json:"parent_set,omitempty"`
-	ParentRemoved    *int64  `json:"parent_removed,omitempty"`
-	BlocksAdded      []int64 `json:"blocks_added,omitempty"`
-	BlocksRemoved    []int64 `json:"blocks_removed,omitempty"`
-	BlockedByAdded   []int64 `json:"blocked_by_added,omitempty"`
-	BlockedByRemoved []int64 `json:"blocked_by_removed,omitempty"`
-	RelatedAdded     []int64 `json:"related_added,omitempty"`
-	RelatedRemoved   []int64 `json:"related_removed,omitempty"`
+	ParentSet        *linkPeerForChanges  `json:"parent_set,omitempty"`
+	ParentRemoved    *linkPeerForChanges  `json:"parent_removed,omitempty"`
+	BlocksAdded      []linkPeerForChanges `json:"blocks_added,omitempty"`
+	BlocksRemoved    []linkPeerForChanges `json:"blocks_removed,omitempty"`
+	BlockedByAdded   []linkPeerForChanges `json:"blocked_by_added,omitempty"`
+	BlockedByRemoved []linkPeerForChanges `json:"blocked_by_removed,omitempty"`
+	RelatedAdded     []linkPeerForChanges `json:"related_added,omitempty"`
+	RelatedRemoved   []linkPeerForChanges `json:"related_removed,omitempty"`
 }
 
 // summarizeChanges renders a human-mode tail for the printMutation
@@ -383,29 +414,29 @@ func summarizeChanges(c *mutationChanges, changed bool) string {
 	}
 	parts := make([]string, 0, 8)
 	if c.ParentSet != nil && c.ParentRemoved != nil {
-		parts = append(parts, fmt.Sprintf("parent #%d→#%d", *c.ParentRemoved, *c.ParentSet))
+		parts = append(parts, fmt.Sprintf("parent %s→%s", c.ParentRemoved.ShortID, c.ParentSet.ShortID))
 	} else if c.ParentSet != nil {
-		parts = append(parts, fmt.Sprintf("+parent #%d", *c.ParentSet))
+		parts = append(parts, fmt.Sprintf("+parent %s", c.ParentSet.ShortID))
 	} else if c.ParentRemoved != nil {
-		parts = append(parts, fmt.Sprintf("-parent #%d", *c.ParentRemoved))
+		parts = append(parts, fmt.Sprintf("-parent %s", c.ParentRemoved.ShortID))
 	}
-	for _, n := range c.BlocksAdded {
-		parts = append(parts, fmt.Sprintf("+blocks #%d", n))
+	for _, p := range c.BlocksAdded {
+		parts = append(parts, fmt.Sprintf("+blocks %s", p.ShortID))
 	}
-	for _, n := range c.BlocksRemoved {
-		parts = append(parts, fmt.Sprintf("-blocks #%d", n))
+	for _, p := range c.BlocksRemoved {
+		parts = append(parts, fmt.Sprintf("-blocks %s", p.ShortID))
 	}
-	for _, n := range c.BlockedByAdded {
-		parts = append(parts, fmt.Sprintf("+blocked_by #%d", n))
+	for _, p := range c.BlockedByAdded {
+		parts = append(parts, fmt.Sprintf("+blocked_by %s", p.ShortID))
 	}
-	for _, n := range c.BlockedByRemoved {
-		parts = append(parts, fmt.Sprintf("-blocked_by #%d", n))
+	for _, p := range c.BlockedByRemoved {
+		parts = append(parts, fmt.Sprintf("-blocked_by %s", p.ShortID))
 	}
-	for _, n := range c.RelatedAdded {
-		parts = append(parts, fmt.Sprintf("+related #%d", n))
+	for _, p := range c.RelatedAdded {
+		parts = append(parts, fmt.Sprintf("+related %s", p.ShortID))
 	}
-	for _, n := range c.RelatedRemoved {
-		parts = append(parts, fmt.Sprintf("-related #%d", n))
+	for _, p := range c.RelatedRemoved {
+		parts = append(parts, fmt.Sprintf("-related %s", p.ShortID))
 	}
 	if len(parts) == 0 {
 		// `changes` was present but every entry was an idempotent no-op.

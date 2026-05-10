@@ -47,14 +47,24 @@ func TestImportBeadsMissingProjectUnattended(t *testing.T) {
 }
 
 func TestImportBeadsFromLiveBD(t *testing.T) {
-	env, dir, _ := setupCLIWorkspace(t)
+	env, dir, pid := setupCLIWorkspace(t)
 	installFakeBD(t)
 
 	out, err := runCLICapture(t, env, dir, "import", "--format", "beads", "--as", "importer")
 	require.NoError(t, err)
 	assert.Contains(t, out, "imported beads: created 1, updated 0, unchanged 0, comments 1, links 0")
 
-	show := runCLI(t, env, dir, "show", "1")
+	// The importer created exactly one issue; look it up via the DB to get
+	// its short_id, then show it.
+	rows, err := env.DB.QueryContext(context.Background(),
+		"SELECT short_id FROM issues WHERE project_id = ? LIMIT 1", pid)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	require.True(t, rows.Next(), "imported issue not found")
+	var short string
+	require.NoError(t, rows.Scan(&short))
+
+	show := runCLI(t, env, dir, "show", short)
 	assert.Contains(t, show, "Imported from Beads")
 	assert.Contains(t, show, "beads_id: b1")
 	assert.Contains(t, show, "Comment body from beads")

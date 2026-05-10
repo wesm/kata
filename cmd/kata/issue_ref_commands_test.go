@@ -10,14 +10,14 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
-func TestIssueRefCommandsAcceptUIDs(t *testing.T) {
+func TestIssueRefCommandsAcceptUIDsAndShortIDs(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
 
 	issue := func(title string) db.Issue {
 		t.Helper()
-		num := createIssueViaHTTP(t, env, dir, title)
-		iss, err := env.DB.IssueByNumber(context.Background(), pid, num)
+		created := createIssueViaHTTPFull(t, env, dir, title)
+		iss, err := env.DB.IssueByShortID(context.Background(), pid, created.ShortID, db.IncludeDeletedNo)
 		require.NoError(t, err)
 		return iss
 	}
@@ -31,7 +31,7 @@ func TestIssueRefCommandsAcceptUIDs(t *testing.T) {
 	out := run("assign", assign.UID, "alice")
 	require.Contains(t, out, "alice")
 
-	out = run("unassign", assign.UID[:12])
+	out = run("unassign", assign.ShortID)
 	require.Contains(t, out, "unassigned")
 
 	comment := issue("comment by uid")
@@ -41,7 +41,7 @@ func TestIssueRefCommandsAcceptUIDs(t *testing.T) {
 	label := issue("label by uid")
 	out = run("label", "add", label.UID, "uid-label")
 	require.Contains(t, out, "uid-label")
-	out = run("label", "rm", label.UID[:12], "uid-label")
+	out = run("label", "rm", label.ShortID, "uid-label")
 	require.True(t, strings.Contains(out, "removed") || strings.Contains(out, "unlabeled"))
 
 	edit := issue("edit by uid")
@@ -51,16 +51,16 @@ func TestIssueRefCommandsAcceptUIDs(t *testing.T) {
 	closeReopen := issue("close by uid")
 	out = run("close", closeReopen.UID, "--reason", "wontfix")
 	require.Contains(t, out, "closed")
-	out = run("reopen", closeReopen.UID[:12])
+	out = run("reopen", closeReopen.ShortID)
 	require.Contains(t, out, "open")
 
 	deleteRestore := issue("delete by uid")
-	out = run("delete", deleteRestore.UID, "--force", "--confirm", fmt.Sprintf("DELETE #%d", deleteRestore.Number))
+	out = run("delete", deleteRestore.UID, "--force", "--confirm", fmt.Sprintf("DELETE kata#%s", deleteRestore.ShortID))
 	require.Contains(t, out, "deleted")
-	out = run("restore", deleteRestore.UID[:12])
+	out = run("restore", deleteRestore.ShortID)
 	require.Contains(t, out, "restored")
 
 	purge := issue("purge by uid")
-	out = run("purge", purge.UID, "--force", "--confirm", fmt.Sprintf("PURGE #%d", purge.Number))
+	out = run("purge", purge.UID, "--force", "--confirm", fmt.Sprintf("PURGE kata#%s", purge.ShortID))
 	require.Contains(t, out, "purged")
 }

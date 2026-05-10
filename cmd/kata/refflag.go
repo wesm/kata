@@ -20,8 +20,16 @@ type ResolvedRef struct {
 // ("kata#abc4"), a bare short_id ("abc4"), or a 26-char ULID. workspaceProject
 // is the project name read from .kata.toml; it is required for the bare and
 // ULID forms.
+//
+// All-digit refs shorter than shortid.MinLength ("12", "kata#42") are
+// rejected with a guidance message because no valid short_id is that short
+// — they almost certainly originate from legacy `kata show 12` muscle
+// memory. All-digit refs ≥ MinLength digits ("1234") parse normally; ~1% of
+// auto-generated short_ids are all-digit so rejecting them would break the
+// CLI for those issues.
 func ResolveRef(arg, workspaceProject string) (ResolvedRef, error) {
-	if _, err := strconv.Atoi(arg); err == nil {
+	if n, err := strconv.Atoi(arg); err == nil && len(arg) < shortid.MinLength {
+		_ = n
 		return ResolvedRef{}, fmt.Errorf("%q looks like a legacy issue number; use a short_id (e.g. abc4) or kata#abc4", arg)
 	}
 	parsed, err := shortid.Parse(arg)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -98,25 +99,25 @@ func newEditCmd() *cobra.Command {
 		}
 
 		// --parent and --remove-parent are at-most-one but accept any of
-		// #N, N, UID, or UID prefix. resolveSingletonRefToNumber rejects
+		// short_id, qualified, or ULID. resolveSingletonRefToWire rejects
 		// only when distinct refs resolve to *different* issues, so
-		// equivalent forms (e.g. `--parent 2 --parent #2`) succeed.
-		var parentNum, removeParentNum int64
+		// equivalent forms (e.g. `--parent abc4 --parent kata#abc4`) succeed.
+		var parentRef, removeParentRef string
 		if cmd.Flags().Changed("parent") {
-			parentNum, err = resolveSingletonRefToNumber(ctx, baseURL, pid, parentRefSlice, "--parent", false)
+			parentRef, err = resolveSingletonRefToWire(ctx, baseURL, pid, parentRefSlice, "--parent", false)
 			if err != nil {
 				return err
 			}
 		}
 		if cmd.Flags().Changed("remove-parent") {
-			removeParentNum, err = resolveSingletonRefToNumber(ctx, baseURL, pid, removeParentRefSlice, "--remove-parent", true)
+			removeParentRef, err = resolveSingletonRefToWire(ctx, baseURL, pid, removeParentRefSlice, "--remove-parent", true)
 			if err != nil {
 				return err
 			}
 		}
 		linksDelta, err := buildLinksDelta(ctx, cmd, baseURL, pid,
-			parentNum, blocks, blockedBy, related,
-			removeParentNum, removeBlocks, removeBlockedBy, removeRelated)
+			parentRef, blocks, blockedBy, related,
+			removeParentRef, removeBlocks, removeBlockedBy, removeRelated)
 		if err != nil {
 			return err
 		}
@@ -148,7 +149,7 @@ func newEditCmd() *cobra.Command {
 				return err
 			}
 			_, bs, err := httpDoJSON(ctx, client, http.MethodGet,
-				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, issue.Number),
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%s", baseURL, pid, url.PathEscape(issue.RefForAPI)),
 				nil)
 			if err != nil {
 				return err
@@ -176,7 +177,7 @@ func newEditCmd() *cobra.Command {
 			return err
 		}
 		status, bs, err := httpDoJSON(ctx, client, http.MethodPatch,
-			fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, issue.Number),
+			fmt.Sprintf("%s/api/v1/projects/%d/issues/%s", baseURL, pid, url.PathEscape(issue.RefForAPI)),
 			payload)
 		if err != nil {
 			return err
@@ -191,16 +192,16 @@ func newEditCmd() *cobra.Command {
 
 // buildLinksDelta translates the edit command's link flags into a wire-format
 // links_delta map. Returns nil when no link flag was passed. Resolves every
-// ref (#N, N, UID, or prefix) to its issue number before building the
-// payload, then runs client-side conflict checks so an obviously-broken
+// ref (short_id, qualified, or ULID) to its wire ref string before building
+// the payload, then runs client-side conflict checks so an obviously-broken
 // delta never reaches the daemon.
 func buildLinksDelta(
 	ctx context.Context,
 	cmd *cobra.Command,
 	baseURL string, projectID int64,
-	parentNum int64,
+	parentRef string,
 	blocks, blockedBy, related []string,
-	removeParentNum int64,
+	removeParentRef string,
 	removeBlocks, removeBlockedBy, removeRelated []string,
 ) (map[string]any, error) {
 	parentSet := cmd.Flags().Changed("parent")
@@ -218,57 +219,55 @@ func buildLinksDelta(
 		}
 	}
 
-	// parentNum / removeParentNum arrived already resolved from the
+	// parentRef / removeParentRef arrived already resolved from the
 	// at-most-one collapse helper. Multi-valued flags resolve here
 	// (each entry independently). Errors short-circuit the whole edit
 	// so a malformed ref never lands a partial mutation.
 	var (
-		blocksNums, blockedByNums, relatedNums                   []int64
-		removeBlocksNums, removeBlockedByNums, removeRelatedNums []int64
+		blocksRefs, blockedByRefs, relatedRefs                   []string
+		removeBlocksRefs, removeBlockedByRefs, removeRelatedRefs []string
 		err                                                      error
 	)
-	if blocksNums, err = resolveRefSliceToNumbers(ctx, baseURL, projectID, blocks, "--blocks"); err != nil {
+	if blocksRefs, err = resolveRefSliceToWire(ctx, baseURL, projectID, blocks, "--blocks"); err != nil {
 		return nil, err
 	}
-	if blockedByNums, err = resolveRefSliceToNumbers(ctx, baseURL, projectID, blockedBy, "--blocked-by"); err != nil {
+	if blockedByRefs, err = resolveRefSliceToWire(ctx, baseURL, projectID, blockedBy, "--blocked-by"); err != nil {
 		return nil, err
 	}
-	if relatedNums, err = resolveRefSliceToNumbers(ctx, baseURL, projectID, related, "--related"); err != nil {
+	if relatedRefs, err = resolveRefSliceToWire(ctx, baseURL, projectID, related, "--related"); err != nil {
 		return nil, err
 	}
 	// Remove flags are idempotent at the contract level: removing a link
-	// that doesn't exist is a no-op. The resolver tolerates soft-deleted
-	// peers (link row is real even when the peer is hidden) AND missing
-	// peers entirely (the desired end-state — "no link to N" — already
-	// holds when there is no N). Other resolution errors still fail
-	// loudly so genuine typos surface (e.g. ambiguous prefix).
-	if removeBlocksNums, err = resolveRefSliceToNumbersIdempotentRemove(ctx, baseURL, projectID, removeBlocks, "--remove-blocks"); err != nil {
+	// that doesn't exist is a no-op. The daemon's resolver tolerates
+	// soft-deleted peers (the link row is real); idempotent remove of a
+	// completely-missing peer is handled daemon-side too.
+	if removeBlocksRefs, err = resolveRefSliceToWireIdempotentRemove(ctx, baseURL, projectID, removeBlocks, "--remove-blocks"); err != nil {
 		return nil, err
 	}
-	if removeBlockedByNums, err = resolveRefSliceToNumbersIdempotentRemove(ctx, baseURL, projectID, removeBlockedBy, "--remove-blocked-by"); err != nil {
+	if removeBlockedByRefs, err = resolveRefSliceToWireIdempotentRemove(ctx, baseURL, projectID, removeBlockedBy, "--remove-blocked-by"); err != nil {
 		return nil, err
 	}
-	if removeRelatedNums, err = resolveRefSliceToNumbersIdempotentRemove(ctx, baseURL, projectID, removeRelated, "--remove-related"); err != nil {
+	if removeRelatedRefs, err = resolveRefSliceToWireIdempotentRemove(ctx, baseURL, projectID, removeRelated, "--remove-related"); err != nil {
 		return nil, err
 	}
 
-	if conflict := firstIntOverlap(blocksNums, removeBlocksNums); conflict != 0 {
+	if conflict := firstStringOverlap(blocksRefs, removeBlocksRefs); conflict != "" {
 		return nil, &cliError{
-			Message:  fmt.Sprintf("--blocks and --remove-blocks both target #%d", conflict),
+			Message:  fmt.Sprintf("--blocks and --remove-blocks both target %s", conflict),
 			Kind:     kindValidation,
 			ExitCode: ExitValidation,
 		}
 	}
-	if conflict := firstIntOverlap(blockedByNums, removeBlockedByNums); conflict != 0 {
+	if conflict := firstStringOverlap(blockedByRefs, removeBlockedByRefs); conflict != "" {
 		return nil, &cliError{
-			Message:  fmt.Sprintf("--blocked-by and --remove-blocked-by both target #%d", conflict),
+			Message:  fmt.Sprintf("--blocked-by and --remove-blocked-by both target %s", conflict),
 			Kind:     kindValidation,
 			ExitCode: ExitValidation,
 		}
 	}
-	if conflict := firstIntOverlap(relatedNums, removeRelatedNums); conflict != 0 {
+	if conflict := firstStringOverlap(relatedRefs, removeRelatedRefs); conflict != "" {
 		return nil, &cliError{
-			Message:  fmt.Sprintf("--related and --remove-related both target #%d", conflict),
+			Message:  fmt.Sprintf("--related and --remove-related both target %s", conflict),
 			Kind:     kindValidation,
 			ExitCode: ExitValidation,
 		}
@@ -276,35 +275,30 @@ func buildLinksDelta(
 
 	delta := map[string]any{}
 	if parentSet {
-		delta["set_parent"] = parentNum
+		delta["set_parent"] = parentRef
 	}
 	if parentRm {
-		delta["remove_parent"] = removeParentNum
+		delta["remove_parent"] = removeParentRef
 	}
-	if len(blocksNums) > 0 {
-		delta["add_blocks"] = blocksNums
+	if len(blocksRefs) > 0 {
+		delta["add_blocks"] = blocksRefs
 	}
-	if len(blockedByNums) > 0 {
-		delta["add_blocked_by"] = blockedByNums
+	if len(blockedByRefs) > 0 {
+		delta["add_blocked_by"] = blockedByRefs
 	}
-	if len(relatedNums) > 0 {
-		delta["add_related"] = relatedNums
+	if len(relatedRefs) > 0 {
+		delta["add_related"] = relatedRefs
 	}
-	if len(removeBlocksNums) > 0 {
-		delta["remove_blocks"] = removeBlocksNums
+	if len(removeBlocksRefs) > 0 {
+		delta["remove_blocks"] = removeBlocksRefs
 	}
-	if len(removeBlockedByNums) > 0 {
-		delta["remove_blocked_by"] = removeBlockedByNums
+	if len(removeBlockedByRefs) > 0 {
+		delta["remove_blocked_by"] = removeBlockedByRefs
 	}
-	if len(removeRelatedNums) > 0 {
-		delta["remove_related"] = removeRelatedNums
+	if len(removeRelatedRefs) > 0 {
+		delta["remove_related"] = removeRelatedRefs
 	}
 	if len(delta) == 0 {
-		// All requested ops resolved away (idempotent --remove-* refs to
-		// missing peers). Return nil so the caller can decide between
-		// "skip the daemon roundtrip" and "send an empty links_delta",
-		// rather than emitting `links_delta: {}` which the daemon
-		// rejects as an empty mutation.
 		return nil, nil
 	}
 	return delta, nil
@@ -334,20 +328,20 @@ func syntheticNoopFromShow(showBody []byte) []byte {
 	return bs
 }
 
-func firstIntOverlap(a, b []int64) int64 {
+func firstStringOverlap(a, b []string) string {
 	if len(a) == 0 || len(b) == 0 {
-		return 0
+		return ""
 	}
-	seen := make(map[int64]struct{}, len(a))
-	for _, n := range a {
-		seen[n] = struct{}{}
+	seen := make(map[string]struct{}, len(a))
+	for _, s := range a {
+		seen[s] = struct{}{}
 	}
-	for _, n := range b {
-		if _, ok := seen[n]; ok {
-			return n
+	for _, s := range b {
+		if _, ok := seen[s]; ok {
+			return s
 		}
 	}
-	return 0
+	return ""
 }
 
 // parseEditPriority interprets the --priority value: "-" clears, an integer

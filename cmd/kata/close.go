@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/spf13/cobra"
 )
@@ -39,7 +40,7 @@ func runAction(cmd *cobra.Command, raw, action string, extra map[string]any) err
 		return err
 	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
-		fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, issue.Number, action),
+		fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/%s", baseURL, pid, url.PathEscape(issue.RefForAPI), action),
 		body)
 	if err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/spf13/cobra"
 )
@@ -47,7 +48,7 @@ func runAssign(cmd *cobra.Command, raw, owner string, unassign bool) error {
 		action = "unassign"
 		body = map[string]any{"actor": actor}
 	}
-	postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, issue.Number, action)
+	postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/%s", baseURL, pid, url.PathEscape(issue.RefForAPI), action)
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost, postURL, body)
 	if err != nil {
 		return err
@@ -72,8 +73,8 @@ func printAssignMutation(cmd *cobra.Command, bs []byte, unassign bool) error {
 	}
 	var b struct {
 		Issue struct {
-			Number int64   `json:"number"`
-			Owner  *string `json:"owner"`
+			ShortID string  `json:"short_id"`
+			Owner   *string `json:"owner"`
 		} `json:"issue"`
 		Changed bool `json:"changed"`
 	}
@@ -88,17 +89,17 @@ func printAssignMutation(cmd *cobra.Command, bs []byte, unassign bool) error {
 		if b.Issue.Owner != nil {
 			state = "assigned to " + *b.Issue.Owner
 		}
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d already %s (no-op)\n", b.Issue.Number, state)
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s already %s (no-op)\n", b.Issue.ShortID, state)
 		return err
 	}
 	if unassign {
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d unassigned\n", b.Issue.Number)
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s unassigned\n", b.Issue.ShortID)
 		return err
 	}
 	owner := ""
 	if b.Issue.Owner != nil {
 		owner = *b.Issue.Owner
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d assigned to %s\n", b.Issue.Number, owner)
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s assigned to %s\n", b.Issue.ShortID, owner)
 	return err
 }

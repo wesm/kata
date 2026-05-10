@@ -8,9 +8,9 @@ import (
 
 func TestRestore_ClearsDeletedAt(t *testing.T) {
 	env, dir, pid := setupCLIWorkspace(t)
-	createIssue(t, env, pid, "delete me")
+	short := createIssue(t, env, pid, "delete me")
 
-	runCLI(t, env, dir, "delete", "1", "--force", "--confirm", "DELETE #1")
-	output := runCLI(t, env, dir, "restore", "1")
+	runCLI(t, env, dir, "delete", short, "--force", "--confirm", "DELETE kata#"+short)
+	output := runCLI(t, env, dir, "restore", short)
 	assert.Contains(t, output, "restored")
 }

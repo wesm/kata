@@ -9,10 +9,10 @@ import (
 
 func TestReady_FiltersBlocked(t *testing.T) {
 	env, dir, pid := setupCLIWorkspace(t)
-	createIssue(t, env, pid, "blocker")
-	createIssue(t, env, pid, "blocked")
+	blocker := createIssue(t, env, pid, "blocker")
+	blocked := createIssue(t, env, pid, "blocked")
 	createIssue(t, env, pid, "standalone")
-	createLinkViaHTTP(t, env, pid, 1, "blocks", 2)
+	createLinkViaHTTP(t, env, pid, blocker, "blocks", blocked)
 
 	out := runCLI(t, env, dir, "ready")
 	assert.Contains(t, out, "blocker")

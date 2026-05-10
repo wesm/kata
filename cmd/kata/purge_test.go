@@ -10,17 +10,17 @@ import (
 
 func TestPurge_NoForceIsValidationError(t *testing.T) {
 	f := newCLIFixture(t)
-	createIssueViaHTTP(t, f.env, f.dir, "vaporize")
+	short := createIssueViaHTTP(t, f.env, f.dir, "vaporize")
 
-	err := f.execute("purge", "1")
+	err := f.execute("purge", short)
 	_ = requireCLIError(t, err, ExitValidation)
 }
 
 func TestPurge_ForceWithConfirmRemovesEverything(t *testing.T) {
 	f := newCLIFixture(t)
-	createIssueViaHTTP(t, f.env, f.dir, "vaporize")
+	short := createIssueViaHTTP(t, f.env, f.dir, "vaporize")
 
-	require.NoError(t, f.execute("purge", "1", "--force", "--confirm", "PURGE #1"))
+	require.NoError(t, f.execute("purge", short, "--force", "--confirm", "PURGE kata#"+short))
 	assert.Contains(t, f.buf.String(), "purged")
 }
 
@@ -30,9 +30,9 @@ func TestPurge_ForceWithConfirmRemovesEverything(t *testing.T) {
 func TestPurge_NoTTYNoConfirmIsConfirmRequired(t *testing.T) {
 	stubIsTTY(t, false)
 	f := newCLIFixture(t)
-	createIssueViaHTTP(t, f.env, f.dir, "vaporize")
+	short := createIssueViaHTTP(t, f.env, f.dir, "vaporize")
 
-	err := f.execute("purge", "1", "--force")
+	err := f.execute("purge", short, "--force")
 	ce := requireCLIError(t, err, ExitConfirm)
 	assert.Equal(t, "confirm_required", ce.Code)
 }
@@ -42,11 +42,11 @@ func TestPurge_NoTTYNoConfirmIsConfirmRequired(t *testing.T) {
 // column captures the operator's free-text justification.
 func TestPurge_ReasonFlagPersistsToPurgeLog(t *testing.T) {
 	f := newCLIFixture(t)
-	createIssueViaHTTP(t, f.env, f.dir, "vaporize")
+	short := createIssueViaHTTP(t, f.env, f.dir, "vaporize")
 
 	const wantReason = "spam test data"
-	require.NoError(t, f.execute("purge", "1",
-		"--force", "--confirm", "PURGE #1", "--reason", wantReason))
+	require.NoError(t, f.execute("purge", short,
+		"--force", "--confirm", "PURGE kata#"+short, "--reason", wantReason))
 
 	var got *string
 	err := f.env.DB.QueryRowContext(context.Background(),
