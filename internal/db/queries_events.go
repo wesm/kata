@@ -32,7 +32,10 @@ type EventsAfterParams struct {
 	Limit     int
 }
 
-// EventsAfter returns up to Limit events ordered by id ASC.
+// EventsAfter returns up to Limit events ordered by id ASC. The issue and
+// related_issue short_ids are joined from the live `issues` table so events
+// render with display ids that stay current even after `kata projects merge`
+// or a future federation merge shifts a peer's short_id. UIDs remain stable.
 func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, error) {
 	var (
 		conds []string
@@ -49,10 +52,12 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 		args = append(args, p.ThroughID)
 	}
 	q := `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
-	             e.issue_id, e.issue_uid, e.related_issue_id, e.related_issue_uid,
+	             e.issue_id, e.issue_uid, i.short_id, e.related_issue_id, e.related_issue_uid, ri.short_id,
 	             e.type, e.actor, e.payload, e.created_at
 	      FROM events e
 	      JOIN projects p ON p.id = e.project_id
+	      LEFT JOIN issues i ON i.id = e.issue_id
+	      LEFT JOIN issues ri ON ri.id = e.related_issue_id
 	      WHERE ` + strings.Join(conds, " AND ") + ` ORDER BY e.id ASC LIMIT ?`
 	args = append(args, p.Limit)
 	rows, err := d.QueryContext(ctx, q, args...)
@@ -64,7 +69,8 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 	for rows.Next() {
 		var e Event
 		if err := rows.Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName,
-			&e.IssueID, &e.IssueUID, &e.RelatedIssueID, &e.RelatedIssueUID,
+			&e.IssueID, &e.IssueUID, &e.IssueShortID,
+			&e.RelatedIssueID, &e.RelatedIssueUID, &e.RelatedIssueShortID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
@@ -99,12 +105,12 @@ func (d *DB) EventsInWindow(ctx context.Context, p EventsInWindowParams) ([]Even
 		conds []string
 		args  []any
 	)
-	conds = append(conds, "created_at >= ?")
+	conds = append(conds, "e.created_at >= ?")
 	args = append(args, p.Since)
-	conds = append(conds, "created_at <= ?")
+	conds = append(conds, "e.created_at <= ?")
 	args = append(args, p.Until)
 	if p.ProjectID != 0 {
-		conds = append(conds, "project_id = ?")
+		conds = append(conds, "e.project_id = ?")
 		args = append(args, p.ProjectID)
 	}
 	if len(p.Actors) > 0 {
@@ -113,11 +119,15 @@ func (d *DB) EventsInWindow(ctx context.Context, p EventsInWindowParams) ([]Even
 			placeholders[i] = "?"
 			args = append(args, a)
 		}
-		conds = append(conds, "actor IN ("+strings.Join(placeholders, ",")+")")
+		conds = append(conds, "e.actor IN ("+strings.Join(placeholders, ",")+")")
 	}
-	q := `SELECT id, project_id, project_name, issue_id, related_issue_id,
-	             type, actor, payload, created_at
-	      FROM events WHERE ` + strings.Join(conds, " AND ") + ` ORDER BY id ASC`
+	q := `SELECT e.id, e.project_id, e.project_name, e.issue_id, e.issue_uid, i.short_id,
+	             e.related_issue_id, e.related_issue_uid, ri.short_id,
+	             e.type, e.actor, e.payload, e.created_at
+	      FROM events e
+	      LEFT JOIN issues i ON i.id = e.issue_id
+	      LEFT JOIN issues ri ON ri.id = e.related_issue_id
+	      WHERE ` + strings.Join(conds, " AND ") + ` ORDER BY e.id ASC`
 	rows, err := d.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("events in window: %w", err)
@@ -126,8 +136,9 @@ func (d *DB) EventsInWindow(ctx context.Context, p EventsInWindowParams) ([]Even
 	var out []Event
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectName, &e.IssueID,
-			&e.RelatedIssueID, &e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectName, &e.IssueID, &e.IssueUID, &e.IssueShortID,
+			&e.RelatedIssueID, &e.RelatedIssueUID, &e.RelatedIssueShortID,
+			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		out = append(out, e)

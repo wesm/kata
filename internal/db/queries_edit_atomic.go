@@ -46,37 +46,32 @@ type EditIssueAtomicParams struct {
 }
 
 // AtomicEditChanges describes which link mutations actually applied.
-// The number-keyed fields mirror api.LinkChanges field-for-field; the
-// handler 1:1 maps them onto the wire response.
-//
-// Each number-keyed field has a parallel UID-keyed sibling (same length
-// and order). The aggregated issue.links_changed event payload carries
-// both forms: numbers for human-readable display, UIDs for stable peer
-// identity. UIDs are required for purgeEventsCleanupWhere to identify
-// referenced peers safely after a project's number sequence has been
-// reset (numbers can collide across resets; UIDs cannot).
+// Each entry pairs the peer's short_id (display snapshot) with its UID
+// (stable identity) — the aggregated issue.links_changed event payload
+// carries both forms so consumers can render display strings and key on
+// UIDs for cross-cutover stability.
 type AtomicEditChanges struct {
-	ParentSet        *int64  `json:"parent_set,omitempty"`
-	ParentSetUID     *string `json:"parent_set_uid,omitempty"`
-	ParentRemoved    *int64  `json:"parent_removed,omitempty"`
-	ParentRemovedUID *string `json:"parent_removed_uid,omitempty"`
+	ParentSet           *string `json:"parent_set,omitempty"`
+	ParentSetUID        *string `json:"parent_set_uid,omitempty"`
+	ParentRemoved       *string `json:"parent_removed,omitempty"`
+	ParentRemovedUID    *string `json:"parent_removed_uid,omitempty"`
 
-	BlocksAdded     []int64  `json:"blocks_added,omitempty"`
+	BlocksAdded     []string `json:"blocks_added,omitempty"`
 	BlocksAddedUIDs []string `json:"blocks_added_uids,omitempty"`
 
-	BlocksRemoved     []int64  `json:"blocks_removed,omitempty"`
+	BlocksRemoved     []string `json:"blocks_removed,omitempty"`
 	BlocksRemovedUIDs []string `json:"blocks_removed_uids,omitempty"`
 
-	BlockedByAdded     []int64  `json:"blocked_by_added,omitempty"`
+	BlockedByAdded     []string `json:"blocked_by_added,omitempty"`
 	BlockedByAddedUIDs []string `json:"blocked_by_added_uids,omitempty"`
 
-	BlockedByRemoved     []int64  `json:"blocked_by_removed,omitempty"`
+	BlockedByRemoved     []string `json:"blocked_by_removed,omitempty"`
 	BlockedByRemovedUIDs []string `json:"blocked_by_removed_uids,omitempty"`
 
-	RelatedAdded     []int64  `json:"related_added,omitempty"`
+	RelatedAdded     []string `json:"related_added,omitempty"`
 	RelatedAddedUIDs []string `json:"related_added_uids,omitempty"`
 
-	RelatedRemoved     []int64  `json:"related_removed,omitempty"`
+	RelatedRemoved     []string `json:"related_removed,omitempty"`
 	RelatedRemovedUIDs []string `json:"related_removed_uids,omitempty"`
 }
 
@@ -312,7 +307,7 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 		if !hasExisting || existing.ToIssueID != target.ID {
 			recordedRemoval := false
 			if hasExisting {
-				// Capture the OLD parent's number AND uid so the change
+				// Capture the OLD parent's short_id AND uid so the change
 				// payload surfaces a parent_removed entry with both forms.
 				// Use the soft-delete-tolerant lookup: the peer of an
 				// existing link may have been soft-deleted, but we still
@@ -336,13 +331,9 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 				// to the insert (the end-state user wanted is still
 				// reachable).
 				if rows > 0 {
-					// ParentRemoved is *int64 today (Task 10 migrates the
-					// public type to short_id). The peer's id stands in
-					// as a temporary numeric ref; ParentRemovedUID is the
-					// stable pointer consumers should rely on.
-					oldNum := oldParent.ID
+					oldShort := oldParent.ShortID
 					oldUID := oldParent.UID
-					changes.ParentRemoved = &oldNum
+					changes.ParentRemoved = &oldShort
 					changes.ParentRemovedUID = &oldUID
 					recordedRemoval = true
 				}
@@ -361,9 +352,9 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 			case err != nil:
 				return changed, err
 			default:
-				n := *p.SetParent
+				short := target.ShortID
 				uid := target.UID
-				changes.ParentSet = &n
+				changes.ParentSet = &short
 				changes.ParentSetUID = &uid
 				changed = true
 			}
@@ -407,83 +398,81 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 		if rows == 0 {
 			return changed, ErrParentMismatch
 		}
-		// ParentRemoved is *int64 today; carry the peer's id alongside
-		// ParentRemovedUID until Task 10 migrates the public payload.
-		n := parentIssue.ID
+		short := parentIssue.ShortID
 		uid := parentIssue.UID
-		changes.ParentRemoved = &n
+		changes.ParentRemoved = &short
 		changes.ParentRemovedUID = &uid
 		changed = true
 	}
 
 	// add_blocks: URL issue → N (type=blocks).
 	for _, n := range p.AddBlocks {
-		added, targetUID, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "blocks", p.Actor, false)
+		added, peer, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "blocks", p.Actor, false)
 		if err != nil {
 			return changed, err
 		}
 		if added {
-			changes.BlocksAdded = append(changes.BlocksAdded, n)
-			changes.BlocksAddedUIDs = append(changes.BlocksAddedUIDs, targetUID)
+			changes.BlocksAdded = append(changes.BlocksAdded, peer.ShortID)
+			changes.BlocksAddedUIDs = append(changes.BlocksAddedUIDs, peer.UID)
 			changed = true
 		}
 	}
 	// add_blocked_by: N → URL issue (type=blocks, reversed).
 	for _, n := range p.AddBlockedBy {
-		added, targetUID, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "blocks", p.Actor, true)
+		added, peer, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "blocks", p.Actor, true)
 		if err != nil {
 			return changed, err
 		}
 		if added {
-			changes.BlockedByAdded = append(changes.BlockedByAdded, n)
-			changes.BlockedByAddedUIDs = append(changes.BlockedByAddedUIDs, targetUID)
+			changes.BlockedByAdded = append(changes.BlockedByAdded, peer.ShortID)
+			changes.BlockedByAddedUIDs = append(changes.BlockedByAddedUIDs, peer.UID)
 			changed = true
 		}
 	}
 	// add_related: URL issue ↔ N (type=related, canonicalized).
 	for _, n := range p.AddRelated {
-		added, targetUID, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "related", p.Actor, false)
+		added, peer, err := addEdgeTx(ctx, tx, issue, p.ProjectIDFor(issue), n, "related", p.Actor, false)
 		if err != nil {
 			return changed, err
 		}
 		if added {
-			changes.RelatedAdded = append(changes.RelatedAdded, n)
-			changes.RelatedAddedUIDs = append(changes.RelatedAddedUIDs, targetUID)
+			changes.RelatedAdded = append(changes.RelatedAdded, peer.ShortID)
+			changes.RelatedAddedUIDs = append(changes.RelatedAddedUIDs, peer.UID)
 			changed = true
 		}
 	}
 
 	// remove_*: idempotent.
 	for _, n := range p.RemoveBlocks {
-		removed, targetUID, err := removeEdgeTx(ctx, tx, issue, n, "blocks", false)
+		removed, peer, err := removeEdgeTx(ctx, tx, issue, n, "blocks", false)
 		if err != nil {
 			return changed, err
 		}
 		if removed {
-			changes.BlocksRemoved = append(changes.BlocksRemoved, n)
-			changes.BlocksRemovedUIDs = append(changes.BlocksRemovedUIDs, targetUID)
+			changes.BlocksRemoved = append(changes.BlocksRemoved, peer.ShortID)
+			changes.BlocksRemovedUIDs = append(changes.BlocksRemovedUIDs, peer.UID)
 			changed = true
 		}
 	}
 	for _, n := range p.RemoveBlockedBy {
-		removed, targetUID, err := removeEdgeTx(ctx, tx, issue, n, "blocks", true)
+		removed, peer, err := removeEdgeTx(ctx, tx, issue, n, "blocks", true)
 		if err != nil {
 			return changed, err
 		}
 		if removed {
-			changes.BlockedByRemoved = append(changes.BlockedByRemoved, n)
-			changes.BlockedByRemovedUIDs = append(changes.BlockedByRemovedUIDs, targetUID)
+			changes.BlockedByRemoved = append(changes.BlockedByRemoved, peer.ShortID)
+			changes.BlockedByRemovedUIDs = append(changes.BlockedByRemovedUIDs, peer.UID)
 			changed = true
 		}
 	}
 	for _, n := range p.RemoveRelated {
-		removed, targetUID, err := removeEdgeTx(ctx, tx, issue, n, "related", false)
+		removed, peer, err := removeEdgeTx(ctx, tx, issue, n, "related", false)
 		if err != nil {
 			return changed, err
 		}
 		if removed {
-			changes.RelatedRemoved = append(changes.RelatedRemoved, n)
-			changes.RelatedRemovedUIDs = append(changes.RelatedRemovedUIDs, targetUID)
+			changes.RelatedRemoved = append(changes.RelatedRemoved, peer.ShortID)
+			changes.RelatedRemovedUIDs = append(changes.RelatedRemovedUIDs, peer.UID)
 			changed = true
 		}
 	}
@@ -502,20 +491,27 @@ func (d *DB) applyLinksDeltaTx(ctx context.Context, tx *sql.Tx, issue Issue, p E
 // loops above read cleanly.
 func (EditIssueAtomicParams) ProjectIDFor(i Issue) int64 { return i.ProjectID }
 
+// linkPeerRef captures the identity of a link's peer (UID + short_id) for
+// payload emission. UIDs are canonical; short_ids are display snapshots.
+type linkPeerRef struct {
+	UID     string
+	ShortID string
+}
+
 // addEdgeTx inserts a link of the given type within the existing TX. When
 // reverseDirection is true, the URL issue becomes the link's target and the
 // numbered issue becomes the source (used for blocked_by). Idempotent on
 // duplicate. Self-link returns ErrSelfLink.
-func addEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, projectID, targetNum int64, linkType, actor string, reverseDirection bool) (bool, string, error) {
+func addEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, projectID, targetNum int64, linkType, actor string, reverseDirection bool) (bool, linkPeerRef, error) {
 	target, err := lookupIssueByNumberTx(ctx, tx, projectID, targetNum)
 	if errors.Is(err, ErrNotFound) {
-		return false, "", &LinkTargetNotFoundError{Number: targetNum}
+		return false, linkPeerRef{}, &LinkTargetNotFoundError{Number: targetNum}
 	}
 	if err != nil {
-		return false, "", err
+		return false, linkPeerRef{}, err
 	}
 	if target.ID == urlIssue.ID {
-		return false, "", ErrSelfLink
+		return false, linkPeerRef{}, ErrSelfLink
 	}
 	from, to := urlIssue.ID, target.ID
 	if reverseDirection {
@@ -527,9 +523,9 @@ func addEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, projectID, targe
 	// Detect duplicate before INSERT to make the no-op path cheap and to
 	// avoid relying on a UNIQUE-violation error path.
 	if _, err := lookupLinkByEndpointsTx(ctx, tx, from, to, linkType); err == nil {
-		return false, "", nil
+		return false, linkPeerRef{}, nil
 	} else if !errors.Is(err, ErrNotFound) {
-		return false, "", err
+		return false, linkPeerRef{}, err
 	}
 	if err := insertLinkRowTx(ctx, tx, projectID, from, to, linkType, actor); err != nil {
 		// A concurrent edit may have inserted the same link between the
@@ -540,20 +536,20 @@ func addEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, projectID, targe
 		// (used by the TUI) has the same behavior; mapping ErrLinkExists
 		// to a 500 here would be a regression.
 		if errors.Is(err, ErrLinkExists) {
-			return false, "", nil
+			return false, linkPeerRef{}, nil
 		}
-		return false, "", err
+		return false, linkPeerRef{}, err
 	}
-	return true, target.UID, nil
+	return true, linkPeerRef{UID: target.UID, ShortID: target.ShortID}, nil
 }
 
 // removeEdgeTx deletes a link of the given type within the existing TX.
 //
 // Behavior matrix:
-//   - target exists, link exists → delete the link, return (true, uid, nil)
-//   - target exists, link absent → idempotent no-op, return (false, "", nil)
+//   - target exists, link exists → delete the link, return (true, peer, nil)
+//   - target exists, link absent → idempotent no-op, return (false, {}, nil)
 //   - target does not exist (typo, never created, or hard-purged) →
-//     idempotent no-op, return (false, "", nil). The contract is "no
+//     idempotent no-op, return (false, {}, nil). The contract is "no
 //     link to N"; if there's no N at all, the desired end state already
 //     holds, so the request succeeds. CLI-side resolution already
 //     short-circuits this for UID/prefix refs (which never reach the
@@ -563,13 +559,13 @@ func addEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, projectID, targe
 // Soft-delete-tolerant: a soft-deleted target's row still exists, so its
 // number resolves and the link can be removed. The lookup uses the
 // includes-deleted variant so a hidden peer doesn't mask the link row.
-func removeEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, targetNum int64, linkType string, reverseDirection bool) (bool, string, error) {
+func removeEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, targetNum int64, linkType string, reverseDirection bool) (bool, linkPeerRef, error) {
 	target, err := lookupIssueByNumberTxIncludingDeleted(ctx, tx, urlIssue.ProjectID, targetNum)
 	if errors.Is(err, ErrNotFound) {
-		return false, "", nil
+		return false, linkPeerRef{}, nil
 	}
 	if err != nil {
-		return false, "", err
+		return false, linkPeerRef{}, err
 	}
 	from, to := urlIssue.ID, target.ID
 	if reverseDirection {
@@ -580,18 +576,18 @@ func removeEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, targetNum int
 	}
 	link, err := lookupLinkByEndpointsTx(ctx, tx, from, to, linkType)
 	if errors.Is(err, ErrNotFound) {
-		return false, "", nil
+		return false, linkPeerRef{}, nil
 	}
 	if err != nil {
-		return false, "", err
+		return false, linkPeerRef{}, err
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM links WHERE id = ?`, link.ID)
 	if err != nil {
-		return false, "", fmt.Errorf("delete link: %w", err)
+		return false, linkPeerRef{}, fmt.Errorf("delete link: %w", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return false, "", fmt.Errorf("delete link rows affected: %w", err)
+		return false, linkPeerRef{}, fmt.Errorf("delete link rows affected: %w", err)
 	}
 	// rows == 0 means a concurrent edit deleted the link between our
 	// lookup and our DELETE — treat as the same idempotent no-op the
@@ -599,9 +595,9 @@ func removeEdgeTx(ctx context.Context, tx *sql.Tx, urlIssue Issue, targetNum int
 	// the caller append a phantom entry to the change payload for a
 	// removal that didn't actually happen this transaction.
 	if rows == 0 {
-		return false, "", nil
+		return false, linkPeerRef{}, nil
 	}
-	return true, target.UID, nil
+	return true, linkPeerRef{UID: target.UID, ShortID: target.ShortID}, nil
 }
 
 // insertLinkRowTx inserts one row into the `links` table within an existing

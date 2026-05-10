@@ -230,15 +230,15 @@ func TestCreateIssue_WithAllInitialState(t *testing.T) {
 	payload := unmarshalPayload[struct {
 		Labels []string `json:"labels"`
 		Links  []struct {
-			Type     string `json:"type"`
-			ToNumber int64  `json:"to_number"`
+			Type      string `json:"type"`
+			ToShortID string `json:"to_short_id"`
 		} `json:"links"`
 		Owner string `json:"owner"`
 	}](t, evt.Payload)
 	assert.Equal(t, []string{"bug", "priority:high"}, payload.Labels)
 	require.Len(t, payload.Links, 1)
 	assert.Equal(t, "parent", payload.Links[0].Type)
-	assert.Equal(t, parent.ID, payload.Links[0].ToNumber)
+	assert.Equal(t, parent.ShortID, payload.Links[0].ToShortID)
 	assert.Equal(t, "alice", payload.Owner)
 }
 

@@ -473,35 +473,36 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	// Initial links — resolve to_number → (to_issue_id, to_issue_uid)
-	// within the same project, excluding soft-deleted targets. The
-	// schema's same-project trigger enforces the cross-project check,
-	// but we'd rather surface a typed not-found than a generic constraint
-	// failure. The peer UID is captured here and folded into the
-	// issue.created event payload for stable peer identity across
-	// counter resets.
-	resolvedTargetUIDs := make([]string, 0, len(links))
+	// Initial links — resolve to_number → (to_issue_id, to_issue_uid,
+	// to_issue_short_id) within the same project, excluding soft-deleted
+	// targets. The schema's same-project trigger enforces the cross-project
+	// check, but we'd rather surface a typed not-found than a generic
+	// constraint failure. The peer UID and short_id are captured here and
+	// folded into the issue.created event payload: UID is canonical, short_id
+	// is the rendered display value (spec §11).
+	resolvedTargets := make([]createdLinkTarget, 0, len(links))
 	for _, l := range links {
 		var (
-			toIssueID  int64
-			toIssueUID string
+			toIssueID      int64
+			toIssueUID     string
+			toIssueShortID string
 		)
 		// Initial-link targets are addressed by their issue ID for now; the
 		// CLI/daemon will be migrated to short_ids in Tasks 11/14. Until
 		// then this lookup intentionally treats ToNumber as a numeric ID.
 		err := tx.QueryRowContext(ctx,
-			`SELECT id, uid FROM issues
+			`SELECT id, uid, short_id FROM issues
 			 WHERE project_id = ? AND id = ? AND deleted_at IS NULL`,
-			p.ProjectID, l.ToNumber).Scan(&toIssueID, &toIssueUID)
+			p.ProjectID, l.ToNumber).Scan(&toIssueID, &toIssueUID, &toIssueShortID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrInitialLinkTargetNotFound
 		}
 		if err != nil {
 			return Issue{}, Event{}, fmt.Errorf("resolve initial link target: %w", err)
 		}
-		resolvedTargetUIDs = append(resolvedTargetUIDs, toIssueUID)
-		// Canonical ordering is a storage concern: the payload still reports
-		// the caller's to_number unchanged, so the wire shape isn't affected.
+		resolvedTargets = append(resolvedTargets, createdLinkTarget{UID: toIssueUID, ShortID: toIssueShortID})
+		// Canonical ordering is a storage concern: the payload reports the
+		// peer's stable identity (UID + short_id), not a numeric ref.
 		fromID, toID := issueID, toIssueID
 		if l.Incoming && l.Type == "blocks" {
 			// "this issue is blocked by N" → link runs FROM N TO new issue.
@@ -518,7 +519,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	payload := buildCreatedPayload(labels, links, resolvedTargetUIDs, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
+	payload := buildCreatedPayload(labels, links, resolvedTargets, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
 
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:   p.ProjectID,
@@ -545,18 +546,26 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	return issue, evt, nil
 }
 
+// createdLinkTarget captures the (uid, short_id) pair for one resolved
+// initial-link peer. The pair is folded into the issue.created event
+// payload (spec §11): UIDs are canonical, short_ids are display snapshots.
+type createdLinkTarget struct {
+	UID     string
+	ShortID string
+}
+
 // buildCreatedPayload returns the issue.created event payload as JSON. Empty
 // initial state → "{}". Otherwise emits keys for whichever components are set,
 // preserving determinism (sorted labels) so events are byte-stable.
 //
-// targetUIDs is parallel to links (same length and order). Each link's
-// to_issue_uid is captured at insertion time so the payload can identify
-// peers stably across `kata reset-counter` (numbers can be reused;
-// UIDs cannot). Pass nil/empty when no links are being recorded.
-func buildCreatedPayload(labels []string, links []InitialLink, targetUIDs []string, owner *string, priority *int64, idempotencyKey, idempotencyFingerprint string) string {
+// targets is parallel to links (same length and order). Each link's peer
+// is captured at insertion time so the payload identifies the target
+// stably (UID) and renderably (short_id). Pass nil/empty when no links
+// are being recorded.
+func buildCreatedPayload(labels []string, links []InitialLink, targets []createdLinkTarget, owner *string, priority *int64, idempotencyKey, idempotencyFingerprint string) string {
 	type linkOut struct {
 		Type       string `json:"type"`
-		ToNumber   int64  `json:"to_number"`
+		ToShortID  string `json:"to_short_id,omitempty"`
 		ToIssueUID string `json:"to_issue_uid,omitempty"`
 		Incoming   bool   `json:"incoming,omitempty"`
 	}
@@ -575,14 +584,14 @@ func buildCreatedPayload(labels []string, links []InitialLink, targetUIDs []stri
 	if len(links) > 0 {
 		o.Links = make([]linkOut, 0, len(links))
 		for i, l := range links {
-			var uid string
-			if i < len(targetUIDs) {
-				uid = targetUIDs[i]
+			var t createdLinkTarget
+			if i < len(targets) {
+				t = targets[i]
 			}
 			o.Links = append(o.Links, linkOut{
 				Type:       l.Type,
-				ToNumber:   l.ToNumber,
-				ToIssueUID: uid,
+				ToShortID:  t.ShortID,
+				ToIssueUID: t.UID,
 				Incoming:   l.Incoming,
 			})
 		}

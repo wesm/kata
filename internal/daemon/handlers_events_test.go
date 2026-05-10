@@ -90,10 +90,11 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	var b struct {
 		ResetRequired bool `json:"reset_required"`
 		Events        []struct {
-			EventID    int64   `json:"event_id"`
-			Type       string  `json:"type"`
-			ProjectUID string  `json:"project_uid"`
-			IssueUID   *string `json:"issue_uid"`
+			EventID      int64   `json:"event_id"`
+			Type         string  `json:"type"`
+			ProjectUID   string  `json:"project_uid"`
+			IssueUID     *string `json:"issue_uid"`
+			IssueShortID *string `json:"issue_short_id"`
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
@@ -105,8 +106,32 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	assert.Equal(t, project.UID, b.Events[0].ProjectUID)
 	require.NotNil(t, b.Events[0].IssueUID)
 	assert.Equal(t, first.UID, *b.Events[0].IssueUID)
+	require.NotNil(t, b.Events[0].IssueShortID, "envelope must surface joined issue_short_id")
+	assert.Equal(t, first.ShortID, *b.Events[0].IssueShortID)
 	assert.Equal(t, int64(2), b.NextAfterID, "advances to max event id")
 	assert.False(t, b.ResetRequired)
+}
+
+// TestEvents_PayloadIncludesShortIDNotNumber pins the wire-level rename:
+// each event row emits issue_short_id (joined from issues.short_id) and
+// issue_uid, and does NOT carry an issue_number field. The check is on raw
+// JSON keys (not a typed struct) so a regression that re-introduces
+// issue_number would surface.
+func TestEvents_PayloadIncludesShortIDNotNumber(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	created := mkIssue(t, env, pid, "evtest")
+
+	var raw struct {
+		Events []map[string]any `json:"events"`
+	}
+	envGetJSON(t, env, "/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/events?after_id=0&limit=10", &raw)
+	require.NotEmpty(t, raw.Events, "expected at least one event")
+	first := raw.Events[0]
+	assert.Equal(t, created.ShortID, first["issue_short_id"])
+	assert.Equal(t, created.UID, first["issue_uid"])
+	_, hasNum := first["issue_number"]
+	assert.False(t, hasNum, "issue_number must not appear in event envelope")
 }
 
 func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
@@ -120,16 +145,19 @@ func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
 		ProjectID: pid, FromIssueID: from.ID, ToIssueID: to.ID, Type: "blocks", Author: "tester",
 	}, db.LinkEventParams{
 		EventType: "issue.linked", EventIssueID: from.ID,
-		FromNumber: from.ID, ToNumber: to.ID, Actor: "tester",
+		FromShortID: from.ShortID, FromUID: from.UID,
+		ToShortID: to.ShortID, ToUID: to.UID, Actor: "tester",
 	})
 	require.NoError(t, err)
 
 	var b struct {
 		Events []struct {
-			Type            string  `json:"type"`
-			ProjectUID      string  `json:"project_uid"`
-			IssueUID        *string `json:"issue_uid"`
-			RelatedIssueUID *string `json:"related_issue_uid"`
+			Type                string  `json:"type"`
+			ProjectUID          string  `json:"project_uid"`
+			IssueUID            *string `json:"issue_uid"`
+			IssueShortID        *string `json:"issue_short_id"`
+			RelatedIssueUID     *string `json:"related_issue_uid"`
+			RelatedIssueShortID *string `json:"related_issue_short_id"`
 		} `json:"events"`
 	}
 	envGetJSON(t, env, "/api/v1/events?after_id=2&limit=10", &b)
@@ -140,6 +168,10 @@ func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
 	require.NotNil(t, b.Events[0].RelatedIssueUID)
 	assert.Equal(t, from.UID, *b.Events[0].IssueUID)
 	assert.Equal(t, to.UID, *b.Events[0].RelatedIssueUID)
+	require.NotNil(t, b.Events[0].IssueShortID, "envelope must surface issue_short_id for linked events")
+	require.NotNil(t, b.Events[0].RelatedIssueShortID, "envelope must surface related_issue_short_id for linked events")
+	assert.Equal(t, from.ShortID, *b.Events[0].IssueShortID)
+	assert.Equal(t, to.ShortID, *b.Events[0].RelatedIssueShortID)
 }
 
 func TestPollEvents_NextAfterIDEchoesAfterIDOnEmpty(t *testing.T) {

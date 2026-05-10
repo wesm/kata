@@ -558,10 +558,12 @@ func TestListProjects_DefaultShape(t *testing.T) {
 	require.Len(t, parsed.Projects, 1)
 	p := parsed.Projects[0]
 
-	for _, key := range []string{"id", "uid", "name", "created_at", "next_issue_number"} {
+	for _, key := range []string{"id", "uid", "name", "created_at"} {
 		_, ok := p[key]
 		assert.True(t, ok, "missing key %q in projects[0]: %s", key, body)
 	}
+	_, hasCounter := p["next_issue_number"]
+	assert.False(t, hasCounter, "next_issue_number must be absent after spec §9.5: %s", body)
 	_, hasStats := p["stats"]
 	assert.False(t, hasStats, "stats must not appear in default response: %s", body)
 	_, hasUpdated := p["updated_at"]

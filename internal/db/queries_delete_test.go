@@ -162,8 +162,11 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 		ProjectID: p.ID, FromIssueID: keeper.ID, ToIssueID: target.ID,
 		Type: "blocks", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: keeper.ID,
-		FromNumber: keeper.ID, ToNumber: target.ID, Actor: "tester",
+		EventType:   "issue.linked",
+		EventIssueID: keeper.ID,
+		FromShortID: keeper.ShortID, FromUID: keeper.UID,
+		ToShortID: target.ShortID, ToUID: target.UID,
+		Actor: "tester",
 	})
 	require.NoError(t, err)
 

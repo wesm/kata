@@ -155,8 +155,11 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	_, _, err := d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 		ProjectID: alpha.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: child.ID,
-		FromNumber: child.ID, ToNumber: parent.ID, Actor: "tester",
+		EventType:   "issue.linked",
+		EventIssueID: child.ID,
+		FromShortID: child.ShortID, FromUID: child.UID,
+		ToShortID: parent.ShortID, ToUID: parent.UID,
+		Actor: "tester",
 	})
 	require.NoError(t, err)
 

@@ -41,12 +41,12 @@ func makeIssueResolver(store *db.DB) func(context.Context, int64) (hooks.IssueSn
 			owner = *issue.Owner
 		}
 		return hooks.IssueSnapshot{
-			Number: issue.Number,
-			Title:  issue.Title,
-			Status: issue.Status,
-			Labels: labels,
-			Owner:  owner,
-			Author: issue.Author,
+			ShortID: issue.ShortID,
+			Title:   issue.Title,
+			Status:  issue.Status,
+			Labels:  labels,
+			Owner:   owner,
+			Author:  issue.Author,
 		}, nil
 	}
 }

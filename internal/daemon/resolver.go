@@ -156,72 +156,40 @@ func fillLinksDeltaParams(ctx context.Context, store *db.DB, projectID int64, d 
 }
 
 // buildLinkChanges projects db.AtomicEditChanges into the wire-facing
-// api.LinkChanges. The db layer reports parallel slices of (id, uid); the
-// daemon resolves each id to short_id for display.
-func buildLinkChanges(ctx context.Context, store *db.DB, changes db.AtomicEditChanges) (*api.LinkChanges, error) {
-	peer := func(id int64, uid string) (api.LinkPeer, error) {
-		// uid is the stable peer id; short_id requires a lookup. Skip the
-		// lookup when uid is empty (defensive — the db layer fills it).
-		if uid == "" {
-			return api.LinkPeer{}, nil
-		}
-		issue, err := store.IssueByUID(ctx, uid, db.IncludeDeletedYes)
-		if err != nil {
-			return api.LinkPeer{}, err
-		}
-		return api.LinkPeer{UID: issue.UID, ShortID: issue.ShortID}, nil
+// api.LinkChanges. The db layer reports parallel slices of (short_id, uid);
+// peers project 1:1 onto LinkPeer.
+func buildLinkChanges(_ context.Context, _ *db.DB, changes db.AtomicEditChanges) (*api.LinkChanges, error) {
+	peer := func(short string, uid string) api.LinkPeer {
+		return api.LinkPeer{UID: uid, ShortID: short}
 	}
-	peers := func(ids []int64, uids []string) ([]api.LinkPeer, error) {
-		if len(ids) == 0 {
-			return nil, nil
+	peers := func(shorts, uids []string) []api.LinkPeer {
+		if len(shorts) == 0 {
+			return nil
 		}
-		out := make([]api.LinkPeer, 0, len(ids))
-		for i, id := range ids {
+		out := make([]api.LinkPeer, 0, len(shorts))
+		for i, s := range shorts {
 			var u string
 			if i < len(uids) {
 				u = uids[i]
 			}
-			p, err := peer(id, u)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, p)
+			out = append(out, peer(s, u))
 		}
-		return out, nil
+		return out
 	}
 	out := &api.LinkChanges{}
 	if changes.ParentSet != nil && changes.ParentSetUID != nil {
-		p, err := peer(*changes.ParentSet, *changes.ParentSetUID)
-		if err != nil {
-			return nil, err
-		}
+		p := peer(*changes.ParentSet, *changes.ParentSetUID)
 		out.ParentSet = &p
 	}
 	if changes.ParentRemoved != nil && changes.ParentRemovedUID != nil {
-		p, err := peer(*changes.ParentRemoved, *changes.ParentRemovedUID)
-		if err != nil {
-			return nil, err
-		}
+		p := peer(*changes.ParentRemoved, *changes.ParentRemovedUID)
 		out.ParentRemoved = &p
 	}
-	var err error
-	if out.BlocksAdded, err = peers(changes.BlocksAdded, changes.BlocksAddedUIDs); err != nil {
-		return nil, err
-	}
-	if out.BlocksRemoved, err = peers(changes.BlocksRemoved, changes.BlocksRemovedUIDs); err != nil {
-		return nil, err
-	}
-	if out.BlockedByAdded, err = peers(changes.BlockedByAdded, changes.BlockedByAddedUIDs); err != nil {
-		return nil, err
-	}
-	if out.BlockedByRemoved, err = peers(changes.BlockedByRemoved, changes.BlockedByRemovedUIDs); err != nil {
-		return nil, err
-	}
-	if out.RelatedAdded, err = peers(changes.RelatedAdded, changes.RelatedAddedUIDs); err != nil {
-		return nil, err
-	}
-	if out.RelatedRemoved, err = peers(changes.RelatedRemoved, changes.RelatedRemovedUIDs); err != nil {
-		return nil, err
-	}
+	out.BlocksAdded = peers(changes.BlocksAdded, changes.BlocksAddedUIDs)
+	out.BlocksRemoved = peers(changes.BlocksRemoved, changes.BlocksRemovedUIDs)
+	out.BlockedByAdded = peers(changes.BlockedByAdded, changes.BlockedByAddedUIDs)
+	out.BlockedByRemoved = peers(changes.BlockedByRemoved, changes.BlockedByRemovedUIDs)
+	out.RelatedAdded = peers(changes.RelatedAdded, changes.RelatedAddedUIDs)
+	out.RelatedRemoved = peers(changes.RelatedRemoved, changes.RelatedRemovedUIDs)
 	return out, nil
 }

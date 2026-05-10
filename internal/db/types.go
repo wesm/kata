@@ -65,22 +65,28 @@ type Comment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Event mirrors a row in events.
+// Event mirrors a row in events. IssueShortID and RelatedIssueShortID are
+// not columns on events; they are joined from issues.short_id at read time
+// so old events render correctly across short_id-shifting events (project
+// merge, federation merge) — UIDs remain canonical, short_ids are display
+// snapshots resolved on every read.
 type Event struct {
-	ID                int64     `json:"id"`
-	UID               string    `json:"uid"`
-	OriginInstanceUID string    `json:"origin_instance_uid"`
-	ProjectID         int64     `json:"project_id"`
-	ProjectUID        string    `json:"project_uid"`
-	ProjectName       string    `json:"project_name"`
-	IssueID           *int64    `json:"issue_id,omitempty"`
-	IssueUID          *string   `json:"issue_uid,omitempty"`
-	RelatedIssueID    *int64    `json:"related_issue_id,omitempty"`
-	RelatedIssueUID   *string   `json:"related_issue_uid,omitempty"`
-	Type              string    `json:"type"`
-	Actor             string    `json:"actor"`
-	Payload           string    `json:"payload"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID                  int64     `json:"id"`
+	UID                 string    `json:"uid"`
+	OriginInstanceUID   string    `json:"origin_instance_uid"`
+	ProjectID           int64     `json:"project_id"`
+	ProjectUID          string    `json:"project_uid"`
+	ProjectName         string    `json:"project_name"`
+	IssueID             *int64    `json:"issue_id,omitempty"`
+	IssueUID            *string   `json:"issue_uid,omitempty"`
+	IssueShortID        *string   `json:"issue_short_id,omitempty"`
+	RelatedIssueID      *int64    `json:"related_issue_id,omitempty"`
+	RelatedIssueUID     *string   `json:"related_issue_uid,omitempty"`
+	RelatedIssueShortID *string   `json:"related_issue_short_id,omitempty"`
+	Type                string    `json:"type"`
+	Actor               string    `json:"actor"`
+	Payload             string    `json:"payload"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 // Link mirrors a row in links.

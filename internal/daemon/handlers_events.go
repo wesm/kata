@@ -148,14 +148,16 @@ func eventToEnvelope(e db.Event) api.EventEnvelope {
 		ProjectName:       e.ProjectName,
 		IssueID:           e.IssueID,
 		IssueUID:          e.IssueUID,
-		// IssueShortID is not yet joined from issues here — Task 12 owns the
-		// projection rewrite that adds it. Until then the envelope carries
-		// the canonical IssueUID and consumers fall back to it.
-		RelatedIssueID:  e.RelatedIssueID,
-		RelatedIssueUID: e.RelatedIssueUID,
-		Actor:           e.Actor,
-		Payload:         payload,
-		CreatedAt:       e.CreatedAt,
+		// IssueShortID / RelatedIssueShortID are joined from issues.short_id
+		// at query time so old events render correctly across short_id
+		// shifts (project merge, federation merge). UIDs remain canonical.
+		IssueShortID:        e.IssueShortID,
+		RelatedIssueID:      e.RelatedIssueID,
+		RelatedIssueUID:     e.RelatedIssueUID,
+		RelatedIssueShortID: e.RelatedIssueShortID,
+		Actor:               e.Actor,
+		Payload:             payload,
+		CreatedAt:           e.CreatedAt,
 	}
 }
 

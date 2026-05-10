@@ -118,8 +118,11 @@ func TestExportNoIncludeDeletedOmitsSoftDeletedIssueDependents(t *testing.T) {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: deleted.ID,
-		FromNumber: deleted.ID, ToNumber: kept.ID, Actor: "tester",
+		EventType:   "issue.linked",
+		EventIssueID: deleted.ID,
+		FromShortID: deleted.ShortID, FromUID: deleted.UID,
+		ToShortID: kept.ShortID, ToUID: kept.UID,
+		Actor: "tester",
 	})
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `UPDATE issues SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, deleted.ID)

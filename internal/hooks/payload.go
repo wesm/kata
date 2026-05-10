@@ -102,11 +102,11 @@ func buildIssueBlock(ctx context.Context, evt db.Event, ri issueResolver, log lo
 		return nil
 	}
 	block := map[string]any{
-		"number": isnap.Number,
-		"status": isnap.Status,
-		"owner":  isnap.Owner,
-		"author": isnap.Author,
-		"labels": isnap.Labels,
+		"short_id": isnap.ShortID,
+		"status":   isnap.Status,
+		"owner":    isnap.Owner,
+		"author":   isnap.Author,
+		"labels":   isnap.Labels,
 	}
 	truncStringField(block, "title", isnap.Title, maxIssueTitleBytes)
 	return block

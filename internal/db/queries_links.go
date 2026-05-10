@@ -509,11 +509,18 @@ func scanLink(r rowScanner) (Link, error) {
 // type=blocks these are identical; for type=related they may differ when the
 // user posted from one side and we canonicalized to from < to
 // before insertion.
+//
+// Payload identifiers are paired: from_short_id is the URL issue's display
+// ref, from_uid is its canonical pointer; to_short_id/to_uid identify the
+// OTHER endpoint. UIDs survive a short_id cutover or federation merge
+// unchanged, so consumers keying on identity should read the UIDs.
 type LinkEventParams struct {
 	EventType    string // "issue.linked" | "issue.unlinked"
 	EventIssueID int64  // the issue whose URL the user posted to
-	FromNumber   int64  // payload field; matches the URL issue's ref
-	ToNumber     int64  // payload field; matches the OTHER endpoint
+	FromShortID  string // payload field; matches the URL issue's short_id
+	FromUID      string // payload field; canonical pointer to the URL issue
+	ToShortID    string // payload field; matches the OTHER endpoint's short_id
+	ToUID        string // payload field; canonical pointer to the other endpoint
 	Actor        string
 }
 
@@ -574,10 +581,12 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 		relatedID = p.FromIssueID
 	}
 	payload, err := json.Marshal(map[string]any{
-		"link_id":     linkID,
-		"type":        p.Type,
-		"from_number": ev.FromNumber,
-		"to_number":   ev.ToNumber,
+		"link_id":       linkID,
+		"type":          p.Type,
+		"from_short_id": ev.FromShortID,
+		"from_uid":      ev.FromUID,
+		"to_short_id":   ev.ToShortID,
+		"to_uid":        ev.ToUID,
 	})
 	if err != nil {
 		return Link{}, Event{}, fmt.Errorf("marshal link payload: %w", err)
@@ -618,8 +627,8 @@ func (d *DB) CreateLinkAndEvent(ctx context.Context, p CreateLinkParams, ev Link
 // DeleteLinkAndEvent deletes a link and emits the matching issue.unlinked
 // event in one TX. The link to delete comes from the link argument; event
 // attribution (events.issue_id, updated_at bump, payload
-// from_number/to_number) comes from ev. Returns ErrNotFound if the link is
-// already gone — caller maps to 200 no-op envelope per spec §4.5.
+// from_short_id/to_short_id/uid) comes from ev. Returns ErrNotFound if the
+// link is already gone — caller maps to 200 no-op envelope per spec §4.5.
 func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventParams) (Event, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -648,10 +657,12 @@ func (d *DB) DeleteLinkAndEvent(ctx context.Context, link Link, ev LinkEventPara
 		relatedID = link.FromIssueID
 	}
 	payload, err := json.Marshal(map[string]any{
-		"link_id":     link.ID,
-		"type":        link.Type,
-		"from_number": ev.FromNumber,
-		"to_number":   ev.ToNumber,
+		"link_id":       link.ID,
+		"type":          link.Type,
+		"from_short_id": ev.FromShortID,
+		"from_uid":      ev.FromUID,
+		"to_short_id":   ev.ToShortID,
+		"to_uid":        ev.ToUID,
 	})
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal unlink payload: %w", err)

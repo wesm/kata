@@ -88,8 +88,10 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 				unlinkEv := db.LinkEventParams{
 					EventType:    "issue.unlinked",
 					EventIssueID: from.ID,
-					FromNumber:   from.ID,
-					ToNumber:     oldParentIssue.ID,
+					FromShortID:  from.ShortID,
+					FromUID:      from.UID,
+					ToShortID:    oldParentIssue.ShortID,
+					ToUID:        oldParentIssue.UID,
 					Actor:        in.Body.Actor,
 				}
 				unlinkEvt, err := cfg.DB.DeleteLinkAndEvent(ctx, existing, unlinkEv)
@@ -108,8 +110,10 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		linkEv := db.LinkEventParams{
 			EventType:    "issue.linked",
 			EventIssueID: from.ID,
-			FromNumber:   from.ID,
-			ToNumber:     to.ID,
+			FromShortID:  from.ShortID,
+			FromUID:      from.UID,
+			ToShortID:    to.ShortID,
+			ToUID:        to.UID,
 			Actor:        in.Body.Actor,
 		}
 		link, evt, err := cfg.DB.CreateLinkAndEvent(ctx, db.CreateLinkParams{
@@ -181,11 +185,25 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 			return nil, api.NewError(404, "link_not_found", "link not attached to this issue", "", nil)
 		}
 
+		// Resolve the link's storage endpoints so the payload carries each
+		// peer's short_id + UID. For parent/blocks links this matches the
+		// URL issue and its peer; for canonicalized related links the
+		// storage from/to may differ from the URL side.
+		linkFrom, err := cfg.DB.IssueByID(ctx, link.FromIssueID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		linkTo, err := cfg.DB.IssueByID(ctx, link.ToIssueID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
 		ev := db.LinkEventParams{
 			EventType:    "issue.unlinked",
 			EventIssueID: from.ID,
-			FromNumber:   link.FromIssueID,
-			ToNumber:     link.ToIssueID,
+			FromShortID:  linkFrom.ShortID,
+			FromUID:      linkFrom.UID,
+			ToShortID:    linkTo.ShortID,
+			ToUID:        linkTo.UID,
 			Actor:        in.Actor,
 		}
 		evt, err := cfg.DB.DeleteLinkAndEvent(ctx, link, ev)

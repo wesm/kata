@@ -70,13 +70,19 @@ type HookJob struct {
 
 // IssueSnapshot is the resolver output that fills the issue block of
 // the stdin payload. Read at fire time, not enqueue time.
+//
+// ShortID replaces the legacy per-project Number sequence (spec §9.7);
+// hook subscribers that need a stable reference key should consume the
+// event envelope's `issue_uid` rather than ShortID, which is a display
+// snapshot. ShortID still appears in the issue block so hooks rendering
+// "issue {short_id}: {title}" can avoid a follow-up lookup.
 type IssueSnapshot struct {
-	Number int64
-	Title  string
-	Status string
-	Labels []string // sorted for determinism
-	Owner  string
-	Author string
+	ShortID string
+	Title   string
+	Status  string
+	Labels  []string // sorted for determinism
+	Owner   string
+	Author  string
 }
 
 // CommentSnapshot fills payload.comment_body for issue.commented events.

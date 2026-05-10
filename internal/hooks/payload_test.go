@@ -32,7 +32,7 @@ func sampleEvent(t string) db.Event {
 
 func okIssue(_ context.Context, _ int64) (IssueSnapshot, error) {
 	return IssueSnapshot{
-		Number: 7, Title: "fix login crash on Safari", Status: "open",
+		ShortID: "abc4", Title: "fix login crash on Safari", Status: "open",
 		Labels: []string{"bug", "safari"}, Owner: "claude-4.7-wesm-laptop", Author: "claude-4.7-wesm-laptop",
 	}, nil
 }
@@ -173,7 +173,7 @@ func TestBuildStdin_NonCommentEvent_SkipsCommentResolver(t *testing.T) {
 func TestBuildStdin_TitleTruncated(t *testing.T) {
 	bigTitle := strings.Repeat("A", 2*1024)
 	bigIssue := func(_ context.Context, _ int64) (IssueSnapshot, error) {
-		return IssueSnapshot{Number: 1, Title: bigTitle, Status: "open"}, nil
+		return IssueSnapshot{ShortID: "abc4", Title: bigTitle, Status: "open"}, nil
 	}
 	_, got, _ := runBuild(t, sampleEvent("issue.created"), withIssue(bigIssue))
 	issue := got["issue"].(map[string]any)
@@ -191,7 +191,7 @@ func TestBuildStdin_TitleTruncation_RuneBoundary(t *testing.T) {
 	// the cut lands inside the 257th rune.
 	bigTitle := strings.Repeat("😀", 257)
 	bigIssue := func(_ context.Context, _ int64) (IssueSnapshot, error) {
-		return IssueSnapshot{Number: 1, Title: bigTitle, Status: "open"}, nil
+		return IssueSnapshot{ShortID: "abc4", Title: bigTitle, Status: "open"}, nil
 	}
 	_, got, _ := runBuild(t, sampleEvent("issue.created"), withIssue(bigIssue))
 	issue := got["issue"].(map[string]any)
@@ -210,7 +210,7 @@ func TestBuildStdin_TopLevelTruncation_DropsOptionalFields(t *testing.T) {
 	evt := sampleEvent("issue.commented")
 	bigBody := strings.Repeat("X", 16*1024)
 	bigIssue := func(_ context.Context, _ int64) (IssueSnapshot, error) {
-		return IssueSnapshot{Number: 1, Title: strings.Repeat("T", 600), Status: "open"}, nil
+		return IssueSnapshot{ShortID: "abc4", Title: strings.Repeat("T", 600), Status: "open"}, nil
 	}
 	bigComment := func(_ context.Context, _ int64) (CommentSnapshot, error) {
 		return CommentSnapshot{ID: 1, Body: bigBody}, nil
