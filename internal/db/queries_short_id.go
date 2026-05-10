@@ -14,7 +14,7 @@ import (
 // short_ids so `kata restore` is stable; purged rows are gone from the table
 // and free their suffixes for reuse.
 func assignShortID(ctx context.Context, tx *sql.Tx, projectID int64, ulid string) (string, error) {
-	return assignShortIDIn(ctx, tx, []int64{projectID}, ulid)
+	return assignShortIDIn(ctx, tx, []int64{projectID}, ulid, shortid.MinLength)
 }
 
 // resolveShortID picks the short_id for a new issue. When override is empty,
@@ -47,17 +47,23 @@ func resolveShortID(ctx context.Context, tx *sql.Tx, projectID int64, ulid, over
 }
 
 // assignShortIDIn is the generalized form of assignShortID that returns the
-// smallest-length short_id (>= shortid.MinLength) derived from ulid that
-// doesn't collide with any issue in the given project set. Rows whose uid
-// matches ulid are excluded from the collision count, so re-keying an issue
-// in place doesn't count its own row as a self-collision. Used by project
-// merge (across (source, target)) and single-project creates alike.
-func assignShortIDIn(ctx context.Context, tx *sql.Tx, projectIDs []int64, ulid string) (string, error) {
+// smallest-length short_id (>= minLength) derived from ulid that doesn't
+// collide with any issue in the given project set. Rows whose uid matches
+// ulid are excluded from the collision count, so re-keying an issue in place
+// doesn't count its own row as a self-collision. minLength must be in
+// [shortid.MinLength, shortid.MaxLength]; the merge rekey path passes
+// len(currentShortID)+1 so a rekey can only extend, never shorten (spec
+// §5.2). Single-project creates pass shortid.MinLength via assignShortID.
+func assignShortIDIn(ctx context.Context, tx *sql.Tx, projectIDs []int64, ulid string, minLength int) (string, error) {
 	if len(projectIDs) == 0 {
 		return "", fmt.Errorf("assignShortIDIn: empty projectIDs")
 	}
+	if minLength < shortid.MinLength || minLength > shortid.MaxLength {
+		return "", fmt.Errorf("assignShortIDIn: minLength %d out of range [%d, %d]",
+			minLength, shortid.MinLength, shortid.MaxLength)
+	}
 	placeholders, args := projectIDPlaceholders(projectIDs)
-	for length := shortid.MinLength; length <= shortid.MaxLength; length++ {
+	for length := minLength; length <= shortid.MaxLength; length++ {
 		candidate, err := shortid.Derive(ulid, length)
 		if err != nil {
 			return "", fmt.Errorf("derive short_id at length %d: %w", length, err)

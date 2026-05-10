@@ -249,7 +249,13 @@ func extendCollidingSourceShortIDs(
 
 	var extensions []ShortIDExtension
 	for _, c := range colliders {
-		newShortID, err := assignShortIDIn(ctx, tx, []int64{sourceID, targetID}, c.uid)
+		// Search strictly longer than the colliding length: spec §5.2 forbids
+		// shortening on merge, and the current length is known to collide
+		// against a target row (otherwise this issue wouldn't be a collider).
+		// Without the +1 floor, a source issue that was extended past
+		// shortid.MinLength to dodge source-side neighbors which were later
+		// purged would be re-keyed down to MinLength here, violating the rule.
+		newShortID, err := assignShortIDIn(ctx, tx, []int64{sourceID, targetID}, c.uid, len(c.oldShort)+1)
 		if err != nil {
 			return nil, fmt.Errorf("auto-extend short_id for %s: %w", c.uid, err)
 		}

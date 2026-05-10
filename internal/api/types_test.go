@@ -40,25 +40,33 @@ func TestIssueRefHasShortIDAndQualifiedID(t *testing.T) {
 // TestIssueOutHasShortIDFamily covers the list/search row projection that the
 // daemon hydrates: short_id, qualified_id, parent_short_id, plus structured
 // peer arrays for blocks/blocked_by/related (UID + short_id).
+//
+// ShortID/QualifiedID and the three peer arrays are required: a regression
+// that deletes any of them is a wire-shape break, not an optional change.
+// Number/ParentNumber stay as explicit absence checks — those are the v7
+// fields whose disappearance the cutover is meant to enforce.
 func TestIssueOutHasShortIDFamily(t *testing.T) {
 	typ := reflect.TypeOf(api.IssueOut{})
+	// ShortID lives on the embedded db.Issue but reflect's FieldByName
+	// traverses anonymous fields, so the lookup still resolves.
+	requireFieldHasJSONTag(t, typ, "ShortID", "short_id")
 	requireFieldHasJSONTag(t, typ, "QualifiedID", "qualified_id")
 	requireFieldHasJSONTag(t, typ, "ParentShortID", "parent_short_id")
-	for _, f := range []string{"ParentNumber", "Blocks", "BlockedBy", "Related"} {
-		// ParentNumber must disappear; the int64 link arrays are replaced by
-		// LinkPeer slices so consumers get UID + short_id together.
+	for _, f := range []string{"Number", "ParentNumber"} {
 		_, has := typ.FieldByName(f)
-		if f == "ParentNumber" {
-			assert.False(t, has, "IssueOut.%s must disappear", f)
+		assert.Falsef(t, has, "IssueOut.%s must disappear", f)
+	}
+	peerSlice := reflect.SliceOf(reflect.TypeOf(api.LinkPeer{}))
+	for _, f := range []string{"Blocks", "BlockedBy", "Related"} {
+		// The int64 link arrays are replaced by LinkPeer slices so
+		// consumers get UID + short_id together; a missing field would
+		// quietly drop the peer projection from the wire and must fail.
+		field, ok := typ.FieldByName(f)
+		if !ok {
+			t.Errorf("IssueOut.%s field missing", f)
 			continue
 		}
-		if !has {
-			continue // optional fields may be absent on a default zero-value Type
-		}
-		field, _ := typ.FieldByName(f)
-		assert.Equalf(t, reflect.Slice, field.Type.Kind(), "IssueOut.%s must be a slice", f)
-		assert.Equalf(t, reflect.TypeOf(api.LinkPeer{}), field.Type.Elem(),
-			"IssueOut.%s elements must be LinkPeer", f)
+		assert.Equalf(t, peerSlice, field.Type, "IssueOut.%s must be []LinkPeer", f)
 	}
 }
 

@@ -306,6 +306,81 @@ func TestMergeProjects_ExtendsCollidingSourceShortIDs(t *testing.T) {
 	assert.Equal(t, srcIssue.UID, got.UID)
 }
 
+// TestMergeProjects_DoesNotShortenExistingShortIDs pins the §5.2 invariant
+// that a merge rekey only ever extends a colliding source short_id; it must
+// never produce a shorter one. The bug this guards against: when a source
+// issue is stored at length L > MinLength because earlier neighbors at the
+// same length-MinLength suffix have since been purged, the namespace at
+// MinLength on the source side is free again. A naive rekey that searches
+// from MinLength would shorten the issue's display ID — silently breaking
+// every external reference that already cited the longer form.
+//
+// The setup uses ShortIDOverride on both sides to seed the exact pathological
+// state without recreating the neighbor-then-purge dance: source B and target
+// T both carry short_id "xd4ex" (length 5) under UIDs whose length-4 suffix
+// "d4ex" is unoccupied on either side. Merge must rekey B to a length >= 6.
+func TestMergeProjects_DoesNotShortenExistingShortIDs(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	src := createProject(ctx, t, d, "src")
+	dst := createProject(ctx, t, d, "dst")
+
+	// Source B at length 5: UID ends in "XD4EX" so the length-4 suffix is
+	// "d4ex" and the length-5 suffix is "xd4ex". ShortIDOverride lets us
+	// skip the auto-extend search and persist length 5 directly, simulating
+	// a state where earlier source-side neighbors at "d4ex" have been
+	// purged but B itself was already extended to length 5.
+	srcIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       src.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		ShortIDOverride: "xd4ex",
+		Title:           "src",
+		Author:          "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "xd4ex", srcIssue.ShortID)
+
+	// Target T at the same length-5 short_id, under a distinct UID that
+	// also ends in "XD4EX". The collision basis is (project_id, short_id),
+	// so the two rows coexist across projects but will clash on merge.
+	dstIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       dst.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MACXD4EX",
+		ShortIDOverride: "xd4ex",
+		Title:           "dst",
+		Author:          "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "xd4ex", dstIssue.ShortID)
+
+	res, err := d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: src.ID,
+		TargetProjectID: dst.ID,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.ShortIDExtensions, 1)
+	ext := res.ShortIDExtensions[0]
+	assert.Equal(t, srcIssue.UID, ext.UID)
+	assert.Equal(t, "xd4ex", ext.PreMergeShortID)
+	// The core assertion: the post-merge short_id is strictly longer than
+	// the pre-merge value. Without the floor, length 4 ("d4ex") is free on
+	// both projects, so the buggy path would assign that — a shortening.
+	assert.Greaterf(t, len(ext.PostMergeShortID), len(ext.PreMergeShortID),
+		"rekeyed short_id %q must be longer than pre-merge %q",
+		ext.PostMergeShortID, ext.PreMergeShortID)
+	assert.GreaterOrEqual(t, len(ext.PostMergeShortID), 6,
+		"rekey must search at lengths strictly greater than the colliding length")
+
+	// Target's original short_id stays put (existing target ids are not bumped).
+	got, err := d.IssueByShortID(ctx, dst.ID, "xd4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, dstIssue.UID, got.UID)
+	// Source row resolves at its new (longer) short_id on the merged target.
+	got, err = d.IssueByShortID(ctx, dst.ID, ext.PostMergeShortID, db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, srcIssue.UID, got.UID)
+}
+
 func TestMergeProjects_MovesImportMappingsToTargetProject(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
