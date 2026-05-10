@@ -701,7 +701,7 @@ type DigestIssueActions struct {
 }
 
 // DigestActorEntry is one actor's slice of the digest. Issues is sorted by
-// issue number for stable rendering.
+// issue UID for stable rendering.
 type DigestActorEntry struct {
 	Actor  string               `json:"actor"`
 	Totals DigestTotals         `json:"totals"`
