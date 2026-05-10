@@ -256,23 +256,54 @@ func TestMergeProjects_RejectsArchivedTarget(t *testing.T) {
 	assert.ErrorIs(t, err, db.ErrProjectMergeArchivedTarget)
 }
 
-func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
+// TestMergeProjects_ExtendsCollidingSourceShortIDs pins the §5.2 merge rule:
+// source-side issues whose short_ids collide with target-side issues are
+// auto-extended to the next non-colliding length. Existing target short_ids
+// stay put. The merge response lists each shifted issue's pre/post short_id.
+func TestMergeProjects_ExtendsCollidingSourceShortIDs(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	source := createProject(ctx, t, d, "alpha")
-	target := createProject(ctx, t, d, "beta")
-	makeIssue(t, ctx, d, source.ID, "source issue", "tester")
-	makeIssue(t, ctx, d, target.ID, "target issue", "tester")
+	src := createProject(ctx, t, d, "src")
+	dst := createProject(ctx, t, d, "dst")
 
-	_, err := d.MergeProjects(ctx, db.MergeProjectsParams{
-		SourceProjectID: source.ID,
-		TargetProjectID: target.ID,
+	// Two issues whose ULIDs share the last 4 chars; one in each project.
+	// Because short_ids are assigned per project, both land at "d4ex" on
+	// their own side. The merge has to break the tie.
+	dstIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: dst.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "dst",
+		Author:    "tester",
 	})
-	require.ErrorIs(t, err, db.ErrProjectMergeIssueNumberCollision)
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", dstIssue.ShortID)
+	srcIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: src.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "src",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", srcIssue.ShortID) // independent assignment per project
 
-	got, lookupErr := d.ProjectByID(ctx, source.ID)
-	require.NoError(t, lookupErr)
-	assert.Equal(t, "alpha", got.Name)
+	res, err := d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: src.ID,
+		TargetProjectID: dst.ID,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.ShortIDExtensions, 1)
+	ext := res.ShortIDExtensions[0]
+	assert.Equal(t, srcIssue.UID, ext.UID)
+	assert.Equal(t, "d4ex", ext.PreMergeShortID)
+	assert.Equal(t, "xd4ex", ext.PostMergeShortID)
+
+	// Both issues now visible on dst with distinct short_ids.
+	got, err := d.IssueByShortID(ctx, dst.ID, "d4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, dstIssue.UID, got.UID)
+	got, err = d.IssueByShortID(ctx, dst.ID, "xd4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, srcIssue.UID, got.UID)
 }
 
 func TestMergeProjects_MovesImportMappingsToTargetProject(t *testing.T) {
