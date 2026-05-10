@@ -71,8 +71,8 @@ The minimum L is 4. The maximum L is 26 (the full ULID, unique by construction);
 
 Both designs were considered. Auto-extend wins for three reasons:
 
-- **One mechanism.** The display ID is always "enough chars of the ULID to be unique in this project." There is no synthetic counter, no per-daemon arrival order to track, no `-1`/`-2` suffix to render.
-- **Globally derivable given a shared issue set.** Any daemon that holds the same set of issues for a project derives the same minimum length and the same display string for each issue — no per-daemon arrival order enters the calculation. (Across daemons that have *not* synced, two daemons may independently pick `length=4` for issues whose ULIDs share a 4-char suffix; that is the federation collision case in §4.3.)
+- **One mechanism.** The display ID is always "enough chars of the ULID to be unique in this project." There is no synthetic counter, no `-1`/`-2` suffix to render.
+- **Deterministic given a canonical processing order.** The §5 algorithm is order-dependent: if X and Y are issues whose ULIDs both end in `abc4`, processing X→Y gives `X=abc4, Y=yabc4` while processing Y→X gives `Y=abc4, X=xabc4`. The algorithm picks a deterministic answer when the order is fixed. **The canonical order is ULID-ascending** (i.e., creation-time order). The cutover replays in this order; in steady-state local creation, every new issue has the latest ULID and is therefore processed last, which matches the canonical order automatically. Out-of-order arrivals — federation merges (§4.3) and explicit `kata projects merge` (§9) — break the canonical order and may produce different display strings than a fresh ULID-ascending replay would. The merge handlers run the auto-extend algorithm on the imported side, leaving existing local short_ids stable; §4.3 covers the resulting cross-daemon disagreement.
 - **Precedent.** Git uses this mechanism for short commit hashes. Beads uses it for issue IDs (confirmed in `/Users/wesm/code/beads/internal/storage/issueops/helpers.go:122-162`). The model is familiar.
 
 ### 4.3 What happens across unsynced daemons
@@ -201,58 +201,79 @@ The JSONL `issue` envelope at the new version carries `short_id` and drops `numb
 
 ## 9. CLI, API, and schema surface
 
-The number-bearing surface is wider than `issues.number` alone. Every place that currently exposes or stores a project-scoped issue number is enumerated here with an explicit decision. The hard cut applies uniformly at cutover, matching the precedent in `2026-05-07-kata-relationship-flags.md` §2.7.
+The number-bearing surface is wide. This section enumerates the categories with their decisions and names the prominent concrete instances; the implementation plan is responsible for sweeping the codebase and applying the per-category rule to every site (a `grep` for `number` and `Number` inside `cmd/kata/`, `internal/api/`, `internal/daemon/`, and `internal/tui/` returns dozens of hits across CLI structs, API request/response types, and TUI client shapes — all are in scope). The hard cut applies uniformly at cutover, matching the precedent in `2026-05-07-kata-relationship-flags.md` §2.7.
 
-### 9.1 Schema columns dropped or renamed
+### 9.1 Schema columns dropped
 
 - `issues.number` — **dropped**.
 - `projects.next_issue_number` — **dropped** (no counter).
-- `events.issue_number`, `events.related_issue_number` — **dropped**. The events table already carries `issue_uid` (and `related_issue_uid` where applicable); display callers render the short_id at the API/SSE boundary by joining against `issues.short_id`. Historical events therefore reflect the *current* short_id of the referenced issue, which is what consumers want; if the cutover or a federation merge later shifts the short_id, old events render correctly via the join.
+- `events.issue_number` — **dropped**. The events table retains `issue_uid` and `related_issue_uid`, which remain the canonical references for historical events. Display callers render `short_id` at the API/SSE boundary by joining against `issues.short_id`; if a cutover or federation merge later shifts the short_id, old events render correctly via the join.
 - `purge_log.issue_number` — **dropped**. `purge_log.issue_uid` remains as the audit reference.
 
-(If the codebase has additional `*_number` columns on tables not yet enumerated, the cutover surfaces them in the schema-completeness test and the spec is amended.)
+`events.related_issue_number` does **not** exist in the current schema (it has `related_issue_id` and `related_issue_uid` only, per `internal/db/schema.sql`); no removal there. If the implementation discovers any `*_number` column not enumerated above, the cutover's schema-completeness test (`internal/db/schema_completeness_test.go`) flags it and the spec is amended.
 
 ### 9.2 Wire/payload field changes
 
-REST and SSE payloads renamed in lockstep with the schema:
+REST, SSE, and event payloads change in lockstep with the schema. Rule for every site that currently emits an integer issue number:
 
-- Link payloads (`POST /api/v1/projects/{p}/issues/{ref}/links`, link arrays in create/edit, link records in API responses): `from_number` and `to_number` are dropped; replaced with `from` and `to` objects of shape `{"uid": "01H...", "short_id": "abc4"}`. Wire input on `kata create`/`kata edit` link flags accepts a string ref (`abc4`, `kata#abc4`, or a 26-char ULID) and the daemon resolves it to both forms in the response.
-- Issue references on event payloads (`issue.created`, `issue.commented`, `issue.linked`, `issue.links_changed`, etc.): drop `issue_number`, `to_number`, `from_number`, `parent_number`, `related_issue_number` from the payload. Add `issue_short_id`, `to_short_id`, `from_short_id`, `parent_short_id`, `related_short_id` denormalized at emit time. UID fields (`issue_uid`, `to_uid`, `from_uid`, `parent_uid`, `related_uid`) remain canonical; short_ids in stored event payloads are display snapshots and may be stale across a cutover or federation merge — that is acceptable because UIDs are the source of truth for downstream resolution.
-- Idempotency mismatch responses (when `kata create` is called with a key that matches a prior request whose body differs): the response identifies the existing issue by `{"uid": "...", "short_id": "abc4", "qualified_id": "kata#abc4"}`. The previous `number` field is dropped.
-- `kata create` / `kata show` / `kata list` JSON: replace `number` with `short_id`. Add `qualified_id` (`"kata#abc4"`). `uid` is unchanged.
+- **References to issues** (link arrays in create/edit requests and responses, idempotency mismatches, event payloads, hooks, API responses on every issue-bearing endpoint): replace `number` / `issue_number` / `to_number` / `from_number` / `parent_number` with the corresponding `short_id` / `issue_short_id` / `to_short_id` / `from_short_id` / `parent_short_id`, and (where convenient for consumers) bundle UID + short_id together as `{"uid": "01H...", "short_id": "abc4"}` in nested objects (link records, idempotency mismatch responses).
+- **Wire input** on `kata create` / `kata edit` link flags and any other ref-accepting input accepts a string (`abc4`, `kata#abc4`, or a 26-char ULID); the daemon resolves it to both forms in the response.
+- **Stored event payloads.** UIDs (`issue_uid`, `to_uid`, etc.) are canonical; short_ids in stored payloads are display snapshots that may be stale across a cutover or federation merge. Consumers needing stable peer identity read UIDs.
 
-### 9.3 REST URL paths
+Concrete CLI/API outputs to update (non-exhaustive, but specifically named in review):
 
-Issue-scoped paths change from `/issues/{number}` to `/issues/{ref}`:
+- `kata create` JSON response: emit `qualified_id`, `short_id`, `uid`; drop `number`.
+- `kata show`, `kata list`, `kata search` JSON: emit `short_id`, `qualified_id`, `uid` per issue; drop `number` and `parent_number`. Link records carry `from`/`to` objects.
+- `kata events --json` (per `cmd/kata/events.go`): emit `issue_short_id`, `issue_uid`, drop `issue_number`. Same rule for any other ref fields in the event envelope.
+- `kata digest --json` (per `cmd/kata/digest.go`): emit `issue_short_id`, `issue_uid`, drop `issue_number`.
+- `kata ready --json` (per `cmd/kata/ready.go`): emit `short_id`, `qualified_id`, `uid` per row; drop `number`.
+- `kata projects --json` and the project response shape `internal/api/types.go` `Project`: drop `next_issue_number` field. Project records emit `name`, `uid`, timestamps, and the new field set; **no counter is reported anywhere**.
+
+### 9.3 REST URL paths and request types
+
+Issue-scoped paths change from `/issues/{number}` to `/issues/{ref}` (the path parameter spells `ref` to make the type-flexibility explicit):
 
 - `GET /api/v1/projects/{pid}/issues/{ref}`
 - `PATCH /api/v1/projects/{pid}/issues/{ref}`
 - `POST /api/v1/projects/{pid}/issues/{ref}/comments`
 - `POST /api/v1/projects/{pid}/issues/{ref}/links`
 - `POST /api/v1/projects/{pid}/issues/{ref}/actions/{action}`
-- (and any others where the path component is currently `{number}` or `{n}`)
+- (and every other issue-scoped path defined in `internal/api/types.go` — the `*Request` types currently carry `Number int64 \`path:"number" required:"true"\`` and become `Ref string \`path:"ref" required:"true"\`` instead)
 
-`{ref}` accepts a 4-to-26-char Crockford-base32 short_id, optionally with `#`-style qualification (`kata#abc4` URL-encoded if needed), or a 26-char ULID. The daemon's path resolver picks the appropriate column at query time.
+`{ref}` accepts a 4-to-26-char Crockford-base32 short_id, optionally with `#`-style qualification (`kata#abc4`, URL-encoded as needed), or a 26-char ULID. The daemon's path resolver picks the appropriate column at query time. The corresponding huma OpenAPI definitions are updated to reflect the path-component rename.
 
-### 9.4 CLI commands
+### 9.4 Project-merge endpoint
 
-- `kata show <ref>`, `kata edit <ref>`, `kata close <ref>`, `kata reopen <ref>`, `kata comment <ref>`, `kata label <ref>`, `kata delete <ref>`, `kata restore <ref>`, `kata purge <ref>`: accept `abc4` (bare, in workspace), `kata#abc4` (qualified), or a 26-char ULID. `12` and `kata#12` no longer resolve.
-- `kata create` returns the new issue's `qualified_id`, `short_id`, and `uid` in JSON. The `number` field is dropped.
-- `kata list` / `kata search` JSON output drops `number`, adds `short_id` and `qualified_id`.
-- **`kata reset-counter` is removed.** With `next_issue_number` gone there is no counter to reset. The command's CLI registration, daemon endpoint (if any), TUI affordances, and tests are deleted.
+`POST /api/v1/projects/{pid}/merge` (`projectsMergeCmd` in `cmd/kata/projects.go`, `mergeProject` handler in `internal/daemon/handlers_projects.go`) currently fails with the error code `project_merge_issue_number_collision` when source and target share any issue numbers, because the schema enforces `UNIQUE(project_id, number)` and merge would violate it.
+
+After cutover:
+
+- The collision basis is `(project_id, short_id)`, not `(project_id, number)`.
+- The merge handler runs the §5 auto-extend algorithm on each source-side issue when grafting it onto the target, in ULID order, extending any source issue whose short_id collides with an already-present target short_id. Existing target short_ids are not bumped (matching the §5.2 stability rule and the §4.3 federation-merge framing).
+- The error code `project_merge_issue_number_collision` is **removed**. `db.ProjectMergeCollisionError`, `ErrProjectMergeIssueNumberCollision`, and the corresponding `api.NewError(409, ...)` mapping all go away. Tests that asserted the old behavior are rewritten to assert that the merge succeeds and that the source-side issues report the correct (possibly extended) post-merge short_ids in the response.
+- The merge response body includes a per-issue list of `{uid, pre_merge_short_id, post_merge_short_id}` so an operator can see which issues' display IDs shifted. This is a small new field, parallel to `purge_logs_moved` and the other counts the merge already returns.
+
+`db.ProjectMergeImportMappingCollisionError` (about import mappings, not numbers) is unaffected.
+
+### 9.5 CLI commands
+
+- `kata show <ref>`, `kata edit <ref>`, `kata close <ref>`, `kata reopen <ref>`, `kata comment <ref>`, `kata label <ref>`, `kata delete <ref>`, `kata restore <ref>`, `kata purge <ref>`, `kata assign <ref>`: accept `abc4` (bare, in workspace), `kata#abc4` (qualified), or a 26-char ULID. `12` and `kata#12` no longer resolve.
+- `kata create`, `kata list`, `kata search`, `kata ready`, `kata events`, `kata digest`: emit `short_id`/`qualified_id`/`uid`; drop `number`.
+- **`kata projects reset-counter` is removed** along with its REST endpoint `/api/v1/projects/{pid}/reset-counter` and the `api.ResetCounterRequest` / `api.ResetCounterResponse` types in `internal/api/types.go`. With `next_issue_number` gone there is no counter to reset. CLI registration in `cmd/kata/projects.go` (`projectsResetCounterCmd`), the handler in `internal/daemon/handlers_projects.go`, the `--to` flag, the human-readable output line, and all tests covering the command are deleted.
+- `kata projects merge` keeps working but with the new collision behavior described in §9.4. The post-merge stdout line that currently reports `next #%d` has the `next #N` clause removed (no counter).
 - Destructive-confirmation prompts (`kata purge`, project archival/removal) display the qualified short_id (`kata#abc4`), not `#12`.
 
-### 9.5 TUI
+### 9.6 TUI
 
 - The `#N` column in list views becomes the short_id column.
 - Detail-pane headers render `kata#abc4`.
-- All client types in `internal/tui/client_types.go` swap `Number int64` / `*int64` fields for `ShortID string` (and where appropriate, `Qualified string`); `*Uid string` fields remain. The TUI's UID-aware peer matching machinery (currently used for `kata reset-counter` survival in `internal/tui/sse_update_test.go`) keeps working unchanged because UIDs are the keys.
+- All client types in `internal/tui/client_types.go` swap `Number int64` / `*int64` and `ParentNumber *int64` fields for `ShortID string` and `ParentShortID *string` (plus `Qualified string` where appropriate); `*Uid string` fields remain. SSE event parsing in `internal/tui/events_sse_parse.go` switches `IssueNumber *int64` and the `to_number` / `from_number` envelopes to their short_id equivalents. The TUI's UID-aware peer matching machinery keeps working unchanged because UIDs are the keys.
 
-### 9.6 Hooks
+### 9.7 Hooks
 
 Hook payloads follow the same shape as event payloads (§9.2): UIDs are canonical, short_ids denormalized for display. Subscribers reading `issue_number` must migrate to `issue_short_id` (or `issue_uid` for stable references) at the same release.
 
-### 9.7 Non-breaking
+### 9.8 Non-breaking
 
 - `uid` in JSON output is unchanged everywhere.
 - Link records reference issues by UID in the database (existing schema). Display rendering converts UIDs to short IDs at the API/TUI boundary.
@@ -277,8 +298,10 @@ This is consistent with the existing importer's treatment of Beads-origin metada
 - **Cutover refusal.** A fixture with a project name containing `#` fails the cutover with the documented error message naming the offending project.
 - **Soft-delete carveouts.** `kata show` and other normal paths return "not found" for a soft-deleted issue's short_id; `kata restore`, `kata delete` (idempotent re-call), `kata purge`, and idempotency-key collision detection all resolve the soft-deleted row.
 - **CLI lookup.** `kata show abc4`, `kata show kata#abc4`, and `kata show 01HZ...` (matching ULID) resolve to the same issue. `kata show 12` and `kata show kata#12` return "not found." `kata show xabc4` does not resolve to an issue stored as `abc4` (no prefix expansion).
-- **Wire-format renames.** `kata create --json` includes `short_id`, `qualified_id`, and `uid` and excludes `number`. Idempotency mismatch responses include `{uid, short_id, qualified_id}`. Event payloads emitted on the SSE stream include `*_short_id` and `*_uid` fields and exclude `*_number` fields.
-- **`kata reset-counter` is gone.** Cobra registration tests assert the command is absent. Daemon endpoint tests assert any matching path returns 404. TUI snapshot tests assert no UI surface offers the affordance.
+- **Wire-format renames.** `kata create --json` includes `short_id`, `qualified_id`, and `uid` and excludes `number`. `kata events --json`, `kata digest --json`, `kata ready --json`, and `kata projects --json` outputs are checked against fixtures asserting the new field set and the absence of `*_number` / `next_issue_number`. Idempotency mismatch responses include `{uid, short_id, qualified_id}`. Event payloads emitted on the SSE stream include `*_short_id` and `*_uid` fields and exclude `*_number` fields.
+- **Order-dependence is documented, not hidden.** A unit test creates two issues with deliberately colliding 4-char ULID suffixes, asserts their short_ids in ULID-ascending creation order, then runs the same fixture through cutover replay and asserts the same result. A second unit test imports them in reverse order through a simulated merge path and asserts the documented behavior (existing local short_id stays; imported issue extends).
+- **`kata reset-counter` is gone.** Cobra registration tests assert the command is absent. Daemon endpoint tests assert `POST /api/v1/projects/{pid}/reset-counter` returns 404. The `api.ResetCounterRequest` / `api.ResetCounterResponse` types are absent from the OpenAPI spec. TUI snapshot tests assert no UI surface offers the affordance.
+- **`kata projects merge` collision behavior.** A fixture with two projects, each holding an issue whose ULIDs share a 4-char suffix, merges successfully after cutover. The response identifies the issue whose short_id was extended (`pre_merge_short_id` ≠ `post_merge_short_id`). The old `project_merge_issue_number_collision` 409 path is asserted absent.
 - **TUI snapshots.** List-view, detail-view, and event-pane snapshots update to assert `kata#abc4` rendering and the absence of `#N`.
 
 ## 12. Decisions
