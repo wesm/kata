@@ -37,7 +37,10 @@ func (o *OptionalInt) OnParamSet(isSet bool, _ any) {
 	o.IsSet = isSet
 }
 
-// EventEnvelope is the wire shape for a single event row.
+// EventEnvelope is the wire shape for a single event row. IssueUID is the
+// canonical reference; IssueShortID is the rendered display value the daemon
+// joins from the live issues table at response time (so old events render
+// correctly across cutovers and federation merges).
 type EventEnvelope struct {
 	EventID           int64   `json:"event_id"`
 	EventUID          string  `json:"event_uid"`
@@ -48,7 +51,7 @@ type EventEnvelope struct {
 	ProjectName       string  `json:"project_name"`
 	IssueID           *int64  `json:"issue_id,omitempty"`
 	IssueUID          *string `json:"issue_uid,omitempty"`
-	IssueNumber       *int64  `json:"issue_number,omitempty"`
+	IssueShortID      *string `json:"issue_short_id,omitempty"`
 	RelatedIssueID    *int64  `json:"related_issue_id,omitempty"`
 	RelatedIssueUID   *string `json:"related_issue_uid,omitempty"`
 	Actor             string  `json:"actor"`

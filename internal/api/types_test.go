@@ -1,0 +1,256 @@
+package api_test
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/wesm/kata/internal/api"
+)
+
+// TestShowIssueResponseHasShortIDAndNoNumber pins the wire-side rename:
+// every issue endpoint's response body now exposes short_id (+ qualified_id)
+// instead of the legacy integer number. The plan's example referenced an
+// IssueResponse alias; this codebase uses ShowIssueResponse for the per-issue
+// read payload, whose Body.Issue embeds db.Issue (so ShortID/UID live on the
+// embedded struct).
+func TestShowIssueResponseHasShortIDAndNoNumber(t *testing.T) {
+	body := reflect.TypeOf(api.ShowIssueResponse{}.Body)
+	issueField, ok := body.FieldByName("Issue")
+	if !ok {
+		t.Fatalf("ShowIssueResponse.Body.Issue field missing")
+	}
+	requireFieldHasJSONTag(t, issueField.Type, "ShortID", "short_id")
+	requireFieldHasJSONTag(t, issueField.Type, "UID", "uid")
+	_, hasNumber := issueField.Type.FieldByName("Number")
+	assert.False(t, hasNumber, "db.Issue must not have a Number field")
+}
+
+// TestIssueRefHasShortIDAndQualifiedID covers the compact parent-context type
+// used inside ShowIssueResponse.Parent.
+func TestIssueRefHasShortIDAndQualifiedID(t *testing.T) {
+	typ := reflect.TypeOf(api.IssueRef{})
+	requireFieldHasJSONTag(t, typ, "ShortID", "short_id")
+	requireFieldHasJSONTag(t, typ, "QualifiedID", "qualified_id")
+	_, hasNumber := typ.FieldByName("Number")
+	assert.False(t, hasNumber, "IssueRef must not have a Number field")
+}
+
+// TestIssueOutHasShortIDFamily covers the list/search row projection that the
+// daemon hydrates: short_id, qualified_id, parent_short_id, plus structured
+// peer arrays for blocks/blocked_by/related (UID + short_id).
+func TestIssueOutHasShortIDFamily(t *testing.T) {
+	typ := reflect.TypeOf(api.IssueOut{})
+	requireFieldHasJSONTag(t, typ, "QualifiedID", "qualified_id")
+	requireFieldHasJSONTag(t, typ, "ParentShortID", "parent_short_id")
+	for _, f := range []string{"ParentNumber", "Blocks", "BlockedBy", "Related"} {
+		// ParentNumber must disappear; the int64 link arrays are replaced by
+		// LinkPeer slices so consumers get UID + short_id together.
+		_, has := typ.FieldByName(f)
+		if f == "ParentNumber" {
+			assert.False(t, has, "IssueOut.%s must disappear", f)
+			continue
+		}
+		if !has {
+			continue // optional fields may be absent on a default zero-value Type
+		}
+		field, _ := typ.FieldByName(f)
+		assert.Equalf(t, reflect.Slice, field.Type.Kind(), "IssueOut.%s must be a slice", f)
+		assert.Equalf(t, reflect.TypeOf(api.LinkPeer{}), field.Type.Elem(),
+			"IssueOut.%s elements must be LinkPeer", f)
+	}
+}
+
+// TestProjectOutHasNoNextIssueNumber checks the project projection lost its
+// counter field. The plan calls this ProjectResponse but the codebase exposes
+// the projection as ProjectOut (embedded in ListProjectsResponse, ShowProject
+// Response, etc.).
+func TestProjectOutHasNoNextIssueNumber(t *testing.T) {
+	typ := reflect.TypeOf(api.ProjectOut{})
+	_, has := typ.FieldByName("NextIssueNumber")
+	assert.False(t, has, "ProjectOut.NextIssueNumber must be gone")
+}
+
+// TestLinkPeerShape pins the structured replacement for from_number/to_number
+// on link records.
+func TestLinkPeerShape(t *testing.T) {
+	typ := reflect.TypeOf(api.LinkPeer{})
+	requireFieldHasJSONTag(t, typ, "UID", "uid")
+	requireFieldHasJSONTag(t, typ, "ShortID", "short_id")
+}
+
+// TestLinkOutUsesLinkPeer covers the wire projection of one link: from/to are
+// now structured peer objects rather than flat integer numbers.
+func TestLinkOutUsesLinkPeer(t *testing.T) {
+	typ := reflect.TypeOf(api.LinkOut{})
+	for _, field := range []string{"FromNumber", "FromIssueUID", "ToNumber", "ToIssueUID"} {
+		_, has := typ.FieldByName(field)
+		assert.Falsef(t, has, "LinkOut.%s must be replaced by structured From/To peers", field)
+	}
+	for _, field := range []string{"From", "To"} {
+		f, ok := typ.FieldByName(field)
+		if !ok {
+			t.Fatalf("LinkOut.%s missing", field)
+		}
+		assert.Equalf(t, reflect.TypeOf(api.LinkPeer{}), f.Type,
+			"LinkOut.%s must be LinkPeer", field)
+	}
+}
+
+// TestPathRequestsUseRef pins the request-struct switch from {number} path
+// params to {ref} (a string that the daemon resolves to short_id or UID).
+// Iterates every issue-scoped request type listed in spec §9.3.
+func TestPathRequestsUseRef(t *testing.T) {
+	cases := []any{
+		api.ShowIssueRequest{},
+		api.EditIssueRequest{},
+		api.CommentRequest{},
+		api.ActionRequest{},
+		api.CreateLinkRequest{},
+		api.DeleteLinkRequest{},
+		api.AddLabelRequest{},
+		api.RemoveLabelRequest{},
+		api.AssignRequest{},
+		api.PriorityRequest{},
+		api.UnassignRequest{},
+		api.DestructiveActionRequest{},
+		api.RestoreRequest{},
+	}
+	for _, c := range cases {
+		typ := reflect.TypeOf(c)
+		_, hasNumber := typ.FieldByName("Number")
+		assert.Falsef(t, hasNumber, "%s.Number must be gone", typ.Name())
+		f, ok := typ.FieldByName("Ref")
+		if !ok {
+			t.Errorf("%s.Ref missing", typ.Name())
+			continue
+		}
+		got, _, _ := strings.Cut(f.Tag.Get("path"), ",")
+		assert.Equalf(t, "ref", got, "%s.Ref must carry path:\"ref\"", typ.Name())
+		assert.Equalf(t, "true", f.Tag.Get("required"), "%s.Ref must be required", typ.Name())
+		assert.Equalf(t, reflect.String, f.Type.Kind(), "%s.Ref must be a string", typ.Name())
+	}
+}
+
+// TestCreateInitialLinkBodyUsesRef pins the JSON input switch on the create
+// link body: to_number (int) becomes to_ref (string).
+func TestCreateInitialLinkBodyUsesRef(t *testing.T) {
+	typ := reflect.TypeOf(api.CreateInitialLinkBody{})
+	_, hasOld := typ.FieldByName("ToNumber")
+	assert.False(t, hasOld, "CreateInitialLinkBody.ToNumber must be replaced by ToRef")
+	requireFieldHasJSONTag(t, typ, "ToRef", "to_ref")
+}
+
+// TestCreateLinkRequestBodyUsesRef covers the same rename for the standalone
+// POST /links endpoint.
+func TestCreateLinkRequestBodyUsesRef(t *testing.T) {
+	body := reflect.TypeOf(api.CreateLinkRequest{}.Body)
+	_, hasOld := body.FieldByName("ToNumber")
+	assert.False(t, hasOld, "CreateLinkRequest.Body.ToNumber must be replaced by ToRef")
+	requireFieldHasJSONTag(t, body, "ToRef", "to_ref")
+}
+
+// TestLinksDeltaUsesRefStrings checks the bulk relationship payload swapped
+// every int64 link list for a []string of refs.
+func TestLinksDeltaUsesRefStrings(t *testing.T) {
+	typ := reflect.TypeOf(api.LinksDelta{})
+	stringPtrFields := []string{"SetParent", "RemoveParent"}
+	for _, name := range stringPtrFields {
+		f, ok := typ.FieldByName(name)
+		if !ok {
+			t.Errorf("LinksDelta.%s missing", name)
+			continue
+		}
+		assert.Equalf(t, reflect.Ptr, f.Type.Kind(), "LinksDelta.%s must be *string", name)
+		assert.Equalf(t, reflect.String, f.Type.Elem().Kind(), "LinksDelta.%s must be *string", name)
+	}
+	sliceFields := []string{"AddBlocks", "AddBlockedBy", "AddRelated", "RemoveBlocks", "RemoveBlockedBy", "RemoveRelated"}
+	for _, name := range sliceFields {
+		f, ok := typ.FieldByName(name)
+		if !ok {
+			t.Errorf("LinksDelta.%s missing", name)
+			continue
+		}
+		assert.Equalf(t, reflect.Slice, f.Type.Kind(), "LinksDelta.%s must be a slice", name)
+		assert.Equalf(t, reflect.String, f.Type.Elem().Kind(), "LinksDelta.%s elements must be strings", name)
+	}
+}
+
+// TestLinkChangesUsesLinkPeer pins the post-mutation reporting type: every
+// applied link change is reported as a LinkPeer (UID + short_id) so callers
+// know both forms without joining.
+func TestLinkChangesUsesLinkPeer(t *testing.T) {
+	typ := reflect.TypeOf(api.LinkChanges{})
+	peerType := reflect.TypeOf(api.LinkPeer{})
+	peerPtrType := reflect.PtrTo(peerType)
+	peerSliceType := reflect.SliceOf(peerType)
+
+	ptrFields := []string{"ParentSet", "ParentRemoved"}
+	for _, name := range ptrFields {
+		f, ok := typ.FieldByName(name)
+		if !ok {
+			t.Errorf("LinkChanges.%s missing", name)
+			continue
+		}
+		assert.Equalf(t, peerPtrType, f.Type, "LinkChanges.%s must be *LinkPeer", name)
+	}
+	sliceFields := []string{
+		"BlocksAdded", "BlocksRemoved",
+		"BlockedByAdded", "BlockedByRemoved",
+		"RelatedAdded", "RelatedRemoved",
+	}
+	for _, name := range sliceFields {
+		f, ok := typ.FieldByName(name)
+		if !ok {
+			t.Errorf("LinkChanges.%s missing", name)
+			continue
+		}
+		assert.Equalf(t, peerSliceType, f.Type, "LinkChanges.%s must be []LinkPeer", name)
+	}
+}
+
+// TestEventEnvelopeUsesShortID pins the SSE/poll event payload: issue_number
+// disappears in favor of issue_short_id (UID stays as the stable reference).
+func TestEventEnvelopeUsesShortID(t *testing.T) {
+	typ := reflect.TypeOf(api.EventEnvelope{})
+	_, hasOld := typ.FieldByName("IssueNumber")
+	assert.False(t, hasOld, "EventEnvelope.IssueNumber must be replaced by IssueShortID")
+	requireFieldHasJSONTag(t, typ, "IssueShortID", "issue_short_id")
+}
+
+// TestDigestIssueActionsUsesShortID pins the digest payload: issue_number is
+// replaced by issue_short_id (issue_uid is added as the stable reference).
+func TestDigestIssueActionsUsesShortID(t *testing.T) {
+	typ := reflect.TypeOf(api.DigestIssueActions{})
+	_, hasOld := typ.FieldByName("IssueNumber")
+	assert.False(t, hasOld, "DigestIssueActions.IssueNumber must disappear")
+	requireFieldHasJSONTag(t, typ, "IssueShortID", "issue_short_id")
+	requireFieldHasJSONTag(t, typ, "IssueUID", "issue_uid")
+}
+
+// TestMergeProjectResponseSurfacesExtensions checks that the merge response
+// plumbs the db.ShortIDExtensions field through the API projection so callers
+// see which source-side issues had their short_id shifted to break collisions.
+func TestMergeProjectResponseSurfacesExtensions(t *testing.T) {
+	typ := reflect.TypeOf(api.MergeProjectResponse{}.Body)
+	f, ok := typ.FieldByName("ShortIDExtensions")
+	if !ok {
+		t.Fatalf("MergeProjectResponse.Body.ShortIDExtensions missing")
+	}
+	got, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	assert.Equal(t, "short_id_extensions", got)
+	assert.Equal(t, reflect.Slice, f.Type.Kind())
+}
+
+func requireFieldHasJSONTag(t *testing.T, typ reflect.Type, name, jsonTag string) {
+	t.Helper()
+	f, ok := typ.FieldByName(name)
+	if !ok {
+		t.Fatalf("%s.%s field missing", typ.Name(), name)
+	}
+	got, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	if got != jsonTag {
+		t.Fatalf("%s.%s json tag = %q; want %q", typ.Name(), name, got, jsonTag)
+	}
+}
