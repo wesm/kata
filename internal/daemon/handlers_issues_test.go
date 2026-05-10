@@ -66,6 +66,28 @@ func TestGetIssue_ResolvesByULID(t *testing.T) {
 	assert.Equal(t, created.UID, issue["uid"])
 }
 
+// TestGetIssue_ULIDInWrongProjectReturns404 pins the cross-project guard in
+// resolveIssueRef: a ULID that belongs to project A must not be reachable
+// via /api/v1/projects/{B}/issues/{ULID}. Without this guard a caller could
+// probe other projects' issue existence via the wrong-project URL.
+func TestGetIssue_ULIDInWrongProjectReturns404(t *testing.T) {
+	h, projectA := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	ctx := context.Background()
+	projectB, err := h.DB().CreateProject(ctx, "other-project")
+	require.NoError(t, err)
+	created, _, err := h.DB().CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: projectA,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "lives in project A",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+
+	resp, bs := getStatusBody(t, ts, "/api/v1/projects/"+strconv.FormatInt(projectB.ID, 10)+"/issues/"+created.UID)
+	assertAPIError(t, resp.StatusCode, bs, 404, "issue_not_found")
+}
+
 // TestGetIssue_LegacyNumberReturns404 pins that legacy /issues/<int> requests
 // (small integers below shortid.MinLength) 404. Spec §6: bare numeric refs
 // like "12" no longer resolve after the cutover.
