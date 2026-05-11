@@ -202,12 +202,19 @@ CREATE TABLE purge_log (
   events_deleted_min_id       INTEGER,            -- audit (min events.id deleted; NULL if none)
   events_deleted_max_id       INTEGER,            -- audit (max events.id deleted; NULL if none)
   purge_reset_after_event_id  INTEGER,            -- SSE reset cursor; subscribers with cursor < this must reset
+  short_id                    TEXT,                -- short_id at purge time; tombstones reuse by future creates whose ULID suffix matches. NULL for v7→v8 cutover entries (pre-short_id era).
   actor                       TEXT NOT NULL,
   reason                      TEXT,
   purged_at                   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   CHECK (length(trim(actor)) > 0),
   CHECK (length(uid) = 26),
-  CHECK (length(origin_instance_uid) = 26)
+  CHECK (length(origin_instance_uid) = 26),
+  CHECK (
+    short_id IS NULL OR (
+      length(short_id) BETWEEN 4 AND 26
+      AND short_id NOT GLOB '*[^0-9abcdefghjkmnpqrstvwxyz]*'
+    )
+  )
 );
 CREATE INDEX idx_purge_log_reset
   ON purge_log(purge_reset_after_event_id) WHERE purge_reset_after_event_id IS NOT NULL;
@@ -217,6 +224,8 @@ CREATE INDEX idx_purge_log_issue  ON purge_log(purged_issue_id);
 CREATE INDEX idx_purge_log_issue_uid ON purge_log(issue_uid) WHERE issue_uid IS NOT NULL;
 CREATE INDEX idx_purge_log_project_uid ON purge_log(project_uid) WHERE project_uid IS NOT NULL;
 CREATE INDEX idx_purge_log_origin_instance ON purge_log(origin_instance_uid);
+CREATE INDEX idx_purge_log_short_id
+  ON purge_log(project_id, short_id) WHERE short_id IS NOT NULL;
 
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,

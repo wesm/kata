@@ -309,6 +309,54 @@ func TestMergeProjects_ExtendsCollidingSourceShortIDs(t *testing.T) {
 	assert.Equal(t, srcIssue.UID, got.UID)
 }
 
+// TestMergeProjects_ExtendsAgainstTargetPurgeLogTombstone pins the
+// tombstone-aware merge rule: a source-side issue whose short_id collides
+// with a target-side purge_log tombstone (not a live target issue) is
+// auto-extended too. Without this, a purged-then-merged-into target would
+// silently re-issue the slot the tombstone owned.
+func TestMergeProjects_ExtendsAgainstTargetPurgeLogTombstone(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	src := createProject(ctx, t, d, "src")
+	dst := createProject(ctx, t, d, "dst")
+
+	// Target side: create issue with short_id "d4ex", then purge it. The
+	// purge_log row tombstones "d4ex" against future creates in dst.
+	dstGone, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: dst.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "dst (will be purged)",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", dstGone.ShortID)
+	_, err = d.PurgeIssue(ctx, dstGone.ID, "agent", nil)
+	require.NoError(t, err)
+
+	// Source side: a different ULID with the same last 4 chars. On the source
+	// project alone, it lands at "d4ex" — no live siblings.
+	srcIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: src.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "src",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", srcIssue.ShortID)
+
+	// Merge: src.d4ex must auto-extend because dst's purge_log already
+	// claims "d4ex".
+	res, err := d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: src.ID,
+		TargetProjectID: dst.ID,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.ShortIDExtensions, 1)
+	assert.Equal(t, srcIssue.UID, res.ShortIDExtensions[0].UID)
+	assert.Equal(t, "d4ex", res.ShortIDExtensions[0].PreMergeShortID)
+	assert.Equal(t, "xd4ex", res.ShortIDExtensions[0].PostMergeShortID)
+}
+
 // TestMergeProjects_DoesNotShortenExistingShortIDs pins the §5.2 invariant
 // that a merge rekey only ever extends a colliding source short_id; it must
 // never produce a shorter one. The bug this guards against: when a source

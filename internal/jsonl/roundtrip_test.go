@@ -87,6 +87,53 @@ func normalizeSearchHits(hits []db.SearchCandidate) []map[string]any {
 	return out
 }
 
+// TestRoundtrip_PurgeLogEnvelopeCarriesShortID pins the purge-tombstone
+// extension: a purge_log row's short_id snapshot must survive export and
+// land on the destination so the tombstone keeps gating reuse after a
+// cutover or backup restore.
+func TestRoundtrip_PurgeLogEnvelopeCarriesShortID(t *testing.T) {
+	ctx := context.Background()
+	d := openExportTestDB(t)
+	p, err := d.CreateProject(ctx, "demo")
+	require.NoError(t, err)
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "to be purged",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, issue.ShortID)
+	_, err = d.PurgeIssue(ctx, issue.ID, "tester", nil)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, d, &buf, jsonl.ExportOptions{}))
+	exported := buf.Bytes()
+
+	scanner := bufio.NewScanner(bytes.NewReader(exported))
+	var purgePayload map[string]any
+	for scanner.Scan() {
+		var env jsonl.Envelope
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &env))
+		if env.Kind == jsonl.KindPurgeLog {
+			require.NoError(t, json.Unmarshal(env.Data, &purgePayload))
+			break
+		}
+	}
+	require.NotNil(t, purgePayload, "exported stream must include a purge_log envelope")
+	assert.Equal(t, issue.ShortID, purgePayload["short_id"])
+
+	dst := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, bytes.NewReader(exported), dst))
+
+	var got *string
+	require.NoError(t, dst.QueryRowContext(ctx,
+		`SELECT short_id FROM purge_log WHERE project_id = ?`, p.ID).Scan(&got))
+	require.NotNil(t, got)
+	assert.Equal(t, issue.ShortID, *got)
+}
+
 // TestRoundtrip_IssueEnvelopeCarriesShortID pins spec §8.1: the JSONL issue
 // envelope carries a short_id field at the current schema version and drops
 // the legacy number field. The cutover (Task 9) handles older inputs.

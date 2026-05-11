@@ -211,6 +211,10 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 // at which the candidate is free in BOTH source and target — checking both
 // projects together avoids transient duplicates on the source side before
 // the bulk UPDATE runs.
+//
+// Target-side purge_log tombstones are honored as collisions too: a source
+// issue moving into a target whose purge_log already claims that short_id
+// would otherwise silently take a slot a previously-purged issue owned.
 func extendCollidingSourceShortIDs(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -219,10 +223,15 @@ func extendCollidingSourceShortIDs(
 	rows, err := tx.QueryContext(ctx, `
 		SELECT s.id, s.uid, s.short_id
 		FROM issues s
-		INNER JOIN issues t
-		  ON t.project_id = ? AND t.short_id = s.short_id
 		WHERE s.project_id = ?
-		ORDER BY s.uid ASC`, targetID, sourceID)
+		  AND (
+		    EXISTS (SELECT 1 FROM issues t
+		             WHERE t.project_id = ? AND t.short_id = s.short_id)
+		    OR
+		    EXISTS (SELECT 1 FROM purge_log p
+		             WHERE p.project_id = ? AND p.short_id = s.short_id)
+		  )
+		ORDER BY s.uid ASC`, sourceID, targetID, targetID)
 	if err != nil {
 		return nil, fmt.Errorf("scan source/target short_id collisions: %w", err)
 	}

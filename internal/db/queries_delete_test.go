@@ -531,3 +531,76 @@ func TestPurgeIssue_OnSoftDeletedIssue(t *testing.T) {
 	assertRowCount(ctx, t, d, 0, "issue row removed even though it was soft-deleted first",
 		`SELECT count(*) FROM issues WHERE id = ?`, target.ID)
 }
+
+func TestPurgeIssue_SnapshotsShortIDIntoPurgeLog(t *testing.T) {
+	d, ctx, _, target := setupTestIssue(t)
+	require.NotEmpty(t, target.ShortID, "issue under test must have a short_id")
+
+	pl, err := d.PurgeIssue(ctx, target.ID, "agent", nil)
+	require.NoError(t, err)
+	require.NotNil(t, pl.ShortID, "purge_log must record the issue's short_id")
+	assert.Equal(t, target.ShortID, *pl.ShortID)
+}
+
+// TestPurgeTombstone_BlocksReuseOfShortIDAtSameLength is the central
+// purge-tombstone regression. Without the tombstone, purging the first
+// issue would free its short_id and a later create whose ULID happens
+// to suffix-match would silently inherit the slot — re-targeting any
+// external "kata#abc4" ref that had been written against the purged
+// issue. With the tombstone, assignShortIDIn auto-extends past L=4
+// just as it would against a live sibling.
+func TestPurgeTombstone_BlocksReuseOfShortIDAtSameLength(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	a, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", a.ShortID)
+
+	_, err = d.PurgeIssue(ctx, a.ID, "agent", nil)
+	require.NoError(t, err)
+
+	// Different ULID with the same last 4 chars. Without the tombstone, this
+	// new issue would take "d4ex" (the slot is "free" since A is gone). With
+	// the tombstone, assignShortIDIn auto-extends to L=5.
+	b, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "second",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "xd4ex", b.ShortID,
+		"purge_log tombstone must block reuse of A's short_id at L=4")
+}
+
+func TestPurgeTombstone_DifferentProjectsDoNotInterfere(t *testing.T) {
+	// Tombstones are scoped to (project_id, short_id). A purge in project P1
+	// must not gate a create in project P2 with the same ULID suffix.
+	d, ctx, p1 := setupTestProject(t)
+	p2 := createProject(ctx, t, d, "demo2")
+
+	a, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p1.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.PurgeIssue(ctx, a.ID, "agent", nil)
+	require.NoError(t, err)
+
+	// Same ULID suffix, different project — should land at L=4.
+	b, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p2.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "second",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "d4ex", b.ShortID,
+		"P1's purge_log tombstone must not gate P2's short_id pool")
+}

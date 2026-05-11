@@ -154,6 +154,7 @@ type PurgeLog struct {
 	IssueUID               *string   `json:"issue_uid,omitempty"`
 	ProjectUID             *string   `json:"project_uid,omitempty"`
 	ProjectName            string    `json:"project_name"`
+	ShortID                *string   `json:"short_id,omitempty"`
 	IssueTitle             string    `json:"issue_title"`
 	IssueAuthor            string    `json:"issue_author"`
 	CommentCount           int64     `json:"comment_count"`

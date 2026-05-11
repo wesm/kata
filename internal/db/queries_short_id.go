@@ -10,9 +10,11 @@ import (
 
 // assignShortID returns the smallest-length short_id (>= shortid.MinLength)
 // derived from ulid that does not collide with any existing issue in the
-// project, including soft-deleted rows. Soft-deleted issues retain their
-// short_ids so `kata restore` is stable; purged rows are gone from the table
-// and free their suffixes for reuse.
+// project, including soft-deleted rows or purge_log tombstones. Soft-deleted
+// issues retain their short_ids so `kata restore` is stable; purged issues
+// leave a purge_log tombstone so external refs (`kata#abc4` in a commit
+// message) can't be silently re-targeted at a later-created issue whose ULID
+// happens to suffix-match.
 func assignShortID(ctx context.Context, tx *sql.Tx, projectID int64, ulid string) (string, error) {
 	return assignShortIDIn(ctx, tx, []int64{projectID}, ulid, shortid.MinLength)
 }
@@ -63,18 +65,30 @@ func assignShortIDIn(ctx context.Context, tx *sql.Tx, projectIDs []int64, ulid s
 			minLength, shortid.MinLength, shortid.MaxLength)
 	}
 	placeholders, args := projectIDPlaceholders(projectIDs)
+	// The collision check runs across both live issues and purge_log
+	// tombstones. v7→v8 cutover entries have short_id IS NULL and so cannot
+	// match candidate (which is non-NULL); no special-case needed.
+	query := `SELECT (
+		(SELECT COUNT(*) FROM issues
+		   WHERE project_id IN (` + placeholders + `)
+		     AND short_id = ?
+		     AND uid <> ?)
+		+
+		(SELECT COUNT(*) FROM purge_log
+		   WHERE project_id IN (` + placeholders + `)
+		     AND short_id = ?)
+	)`
 	for length := minLength; length <= shortid.MaxLength; length++ {
 		candidate, err := shortid.Derive(ulid, length)
 		if err != nil {
 			return "", fmt.Errorf("derive short_id at length %d: %w", length, err)
 		}
-		var n int
-		queryArgs := append([]any{}, args...)
+		queryArgs := make([]any, 0, 2*len(args)+3)
+		queryArgs = append(queryArgs, args...)
 		queryArgs = append(queryArgs, candidate, ulid)
-		query := `SELECT COUNT(*) FROM issues
-			WHERE project_id IN (` + placeholders + `)
-			  AND short_id = ?
-			  AND uid <> ?`
+		queryArgs = append(queryArgs, args...)
+		queryArgs = append(queryArgs, candidate)
+		var n int
 		if err := tx.QueryRowContext(ctx, query, queryArgs...).Scan(&n); err != nil {
 			return "", fmt.Errorf("collision check at length %d: %w", length, err)
 		}

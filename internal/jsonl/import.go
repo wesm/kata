@@ -294,7 +294,7 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO purge_log(id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid, project_name, issue_title,
+			`INSERT INTO purge_log(id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid, project_name, short_id, issue_title,
 			                       issue_author, comment_count, link_count, label_count, event_count,
 			                       events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 			                       actor, reason, purged_at)
@@ -302,13 +302,13 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			   ?, ?, ?, ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   COALESCE(?, (SELECT uid FROM projects WHERE id = ?)),
-			   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 			 )`,
 			rec.ID, rec.UID, rec.OriginInstanceUID,
 			rec.ProjectID, rec.PurgedIssueID,
 			stringPtrValue(rec.IssueUID), rec.PurgedIssueID,
 			stringPtrValue(rec.ProjectUID), rec.ProjectID,
-			projectName,
+			projectName, stringPtrValue(rec.ShortID),
 			rec.IssueTitle, rec.IssueAuthor, rec.CommentCount, rec.LinkCount, rec.LabelCount,
 			rec.EventCount, rec.EventsDeletedMinID, rec.EventsDeletedMaxID, rec.PurgeResetAfterEventID,
 			rec.Actor, rec.Reason, rec.PurgedAt)
@@ -619,7 +619,11 @@ type purgeLogRecord struct {
 	// IssueNumber is the legacy per-project counter snapshot; carried for
 	// v7-and-below envelopes so the decoder can read them. Dropped from
 	// the current version's exports (v8+) — see export.go.
-	IssueNumber            int64   `json:"issue_number,omitempty"`
+	IssueNumber int64 `json:"issue_number,omitempty"`
+	// ShortID is the purged issue's short_id snapshot; populated for v8+
+	// envelopes, NULL/absent for v7-and-below entries that pre-date
+	// short_ids. NULL tombstones don't gate anything in assignShortIDIn.
+	ShortID                *string `json:"short_id,omitempty"`
 	IssueTitle             string  `json:"issue_title"`
 	IssueAuthor            string  `json:"issue_author"`
 	CommentCount           int64   `json:"comment_count"`

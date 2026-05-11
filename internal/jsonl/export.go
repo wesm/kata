@@ -879,6 +879,7 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		IssueUID               *string `json:"issue_uid"`
 		ProjectUID             *string `json:"project_uid"`
 		ProjectName            string  `json:"project_name"`
+		ShortID                *string `json:"short_id,omitempty"`
 		IssueTitle             string  `json:"issue_title"`
 		IssueAuthor            string  `json:"issue_author"`
 		CommentCount           int64   `json:"comment_count"`
@@ -893,7 +894,7 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		PurgedAt               string  `json:"purged_at"`
 	}
 	query := fmt.Sprintf(`SELECT purge_log.id, purge_log.uid, purge_log.origin_instance_uid, purge_log.project_id, purged_issue_id, issue_uid, project_uid,
-	                 %s, issue_title,
+	                 %s, short_id, issue_title,
 	                 issue_author, comment_count, link_count, label_count, event_count,
 	                 events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
 	                 actor, reason, CAST(purged_at AS TEXT)
@@ -911,7 +912,7 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	return scanRecords(rows, KindPurgeLog, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.PurgedIssueID, &rec.IssueUID,
-			&rec.ProjectUID, &rec.ProjectName, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
+			&rec.ProjectUID, &rec.ProjectName, &rec.ShortID, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
 			&rec.LinkCount, &rec.LabelCount, &rec.EventCount, &rec.EventsDeletedMinID,
 			&rec.EventsDeletedMaxID, &rec.PurgeResetAfterEventID, &rec.Actor, &rec.Reason,
 			&rec.PurgedAt)
