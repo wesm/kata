@@ -1,9 +1,9 @@
  Project: kata                                                                                                                                  kata カタ · dev 
 ┌──────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│    #     prio status    title                   kids    updated  ││  #42  fix login bug on Safari                                                      [open]│
-│    #1    P1   open      fix login bug on Safari         3h ago   ││  authored by wesm                                                                        │
-│▶   #2    —    closed    rebuild search index            1h ago   ││  owner: none   parent: none                                                              │
-│    #3    —    [deleted] purge stale tokens              2h ago   ││  priority: none                                                                          │
+│    #     prio status    title                   kids    updated  ││  #42aa  fix login bug on Safari                                                    [open]│
+│    #aaa1 P1   open      fix login bug on Safari         3h ago   ││  authored by wesm                                                                        │
+│▶   #bbb2 —    closed    rebuild search index            1h ago   ││  owner: none   parent: none                                                              │
+│    #ccc3 —    [deleted] purge stale tokens              2h ago   ││  priority: none                                                                          │
 │                                                                  ││                                                                                          │
 │                                                                  ││  Body                                                                                    │
 │                                                                  ││  Reproduces in Safari 17 only.                                                           │

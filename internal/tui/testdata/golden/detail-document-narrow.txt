@@ -1,8 +1,8 @@
  Project: —                                                   kata カタ 
 
-  #42  fix login bug on Safari                                    [open]
+  #42aa  fix login bug on Safari                                  [open]
   authored by wesm                                                      
-  owner: alice   parent: #12 workspace polish                           
+  owner: alice   parent: #c012 workspace polish                         
   priority: none                                                        
   labels: [bug] [prio-1]                                                
                                                                         

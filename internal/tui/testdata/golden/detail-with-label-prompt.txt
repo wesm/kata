@@ -1,6 +1,6 @@
  Project: —                                                                                                   kata カタ 
 
-  #42  fix login bug on Safari                                                              [open]                      
+  #42aa  fix login bug on Safari                                                            [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: none                                                                                            
   priority: none                                                                                                        
@@ -26,5 +26,5 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
- add label to #42:                                                                                                      
+ add label to #42aa:                                                                                                    
  enter commit▕ esc cancel                                                                                               
