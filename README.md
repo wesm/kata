@@ -151,7 +151,7 @@ kata list
 # Each issue prints its short_id (e.g. abc4); use it for follow-up commands.
 kata show abc4
 kata comment abc4 --body "Reproduced on macOS."
-kata close abc4 --reason done
+kata close abc4 --done --message "Fixed; verified tests pass." --commit <sha>
 ```
 
 Open the TUI for human triage:
@@ -195,7 +195,8 @@ kata edit <issue-ref> [--title TEXT] [--body TEXT] [--owner NAME]
                   [--remove-parent <ref>] [--remove-blocks <ref>]
                   [--remove-blocked-by <ref>] [--remove-related <ref>]
 kata comment <ref> [--body TEXT | --body-file PATH | --body-stdin]
-kata close <ref> [--reason done|wontfix|duplicate]
+kata close <ref> --done --message <text> [--commit|--pr|--test|--reviewed|--evidence]
+kata close <ref> [--wontfix|--duplicate-of <ref>|--superseded-by <ref>|--audit-no-change]
 kata reopen <ref>
 ```
 
@@ -207,15 +208,15 @@ below.
 Closing issues:
 
 ```sh
-kata close 12 --done --message "<what changed and how it was verified>" \
-              --commit <sha>
-kata close 12 --duplicate-of 7  --message "<short pointer>"
-kata close 12 --superseded-by 18 --message "<short pointer>"
-kata close 12 --wontfix --message "<>=60 chars of rationale>"
-kata close 12 --audit-no-change \
-              --message "<scope + verification of no-change conclusion>" \
-              --evidence "no-change-audit:<short rationale>" \
-              --reviewed <path/to/file>
+kata close abc4 --done --message "<what changed and how it was verified>" \
+                --commit <sha>
+kata close abc4 --duplicate-of d4ex  --message "<short pointer>"
+kata close abc4 --superseded-by d4ex --message "<short pointer>"
+kata close abc4 --wontfix --message "<>=60 chars of rationale>"
+kata close abc4 --audit-no-change \
+                --message "<scope + verification of no-change conclusion>" \
+                --evidence "no-change-audit:<short rationale>" \
+                --reviewed <path/to/file>
 ```
 
 Closing an issue asserts that the work is complete. Close each issue
@@ -381,7 +382,7 @@ kata label add abc4 safari --json
 kata edit abc4 --blocks d4ex --json
 
 # Close when done
-kata close abc4 --reason done --json
+kata close abc4 --done --message "Fixed; verified tests pass." --commit <sha> --json
 ```
 
 For long-running agents, poll events and remember the returned cursor; resume

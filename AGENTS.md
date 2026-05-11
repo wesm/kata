@@ -21,19 +21,19 @@ can disable the throttle via `[close.throttle] enabled = false` in
 When the work IS done, close with substantive prose and typed
 `--evidence` so a reviewer can verify the claim later:
 
-    kata close 12 --done \
+    kata close abc4 --done \
       --message "Fixed Safari callback double-submit; verified tests pass." \
       --commit <sha>
 
 Other close forms:
 
-    kata close 12 --duplicate-of 7  --message "Same Safari race condition."
-    kata close 12 --superseded-by 18 --message "Replaced by broader scope."
-    kata close 12 --wontfix --message "<>=60 chars of rationale>"
-    kata close 12 --audit-no-change \
-                  --message "Reviewed schema and queries; no change needed." \
-                  --evidence "no-change-audit:schema unchanged after review" \
-                  --reviewed internal/db/schema.sql
+    kata close abc4 --duplicate-of d4ex  --message "Same Safari race condition."
+    kata close abc4 --superseded-by d4ex --message "Replaced by broader scope."
+    kata close abc4 --wontfix --message "<>=60 chars of rationale>"
+    kata close abc4 --audit-no-change \
+                    --message "Reviewed schema and queries; no change needed." \
+                    --evidence "no-change-audit:schema unchanged after review" \
+                    --reviewed internal/db/schema.sql
 
 The daemon refuses parent-close while open children remain. Reviewers
 can replay activity with `kata audit closes` and undo specific lazy
