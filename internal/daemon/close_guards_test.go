@@ -373,6 +373,88 @@ func TestRepeatedMessageGuard_SkipsForUnparentedIssues(t *testing.T) {
 		"second close: %s", string(secondBody))
 }
 
+// TestRepeatedMessageGuard_SkipsSelfAfterReopen pins the
+// reopen-then-reclose path: when an issue is closed with message M,
+// reopened, and then re-closed with the same message M, the guard
+// must NOT match against the issue's OWN prior close. The repeated-
+// message rule is intended to catch identical prose across SIBLING
+// issues, not to block a legitimate re-close of one issue.
+func TestRepeatedMessageGuard_SkipsSelfAfterReopen(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	parent := createIssueViaHTTP(t, env, pid, "parent issue")
+	a := createIssueViaHTTP(t, env, pid, "child a")
+	postLink(t, env, pid, a, "parent", parent)
+
+	msg := "Schema review complete; table remains metadata-only and unchanged."
+	first, firstBody := closeIssueWithEvidence(t, env, pid, a, "agent-a",
+		"audit-no-change", msg,
+		[]map[string]any{{"type": "no-change-audit", "rationale": "metadata"}})
+	require.Equalf(t, http.StatusOK, first.StatusCode,
+		"first close: %s", string(firstBody))
+
+	reopen, reopenBody := envDoRaw(t, env, http.MethodPost,
+		issuePath(pid, a, "actions/reopen"),
+		map[string]any{"actor": "agent-a"}, nil)
+	require.Equalf(t, http.StatusOK, reopen.StatusCode,
+		"reopen: %s", string(reopenBody))
+
+	// Re-closing with the same message under the same actor must
+	// succeed — the prior close is on THIS issue, not a sibling.
+	second, secondBody := closeIssueWithEvidence(t, env, pid, a, "agent-a",
+		"audit-no-change", msg,
+		[]map[string]any{{"type": "no-change-audit", "rationale": "metadata"}})
+	require.Equalf(t, http.StatusOK, second.StatusCode,
+		"re-close after reopen must not match against the issue's own prior close: %s",
+		string(secondBody))
+}
+
+// TestSiblingThrottle_SkipsSelfAfterReopen pins that an issue's own
+// prior close does not count toward the burst-throttle quota after
+// reopen. Otherwise an actor could exhaust the limit by repeatedly
+// reopening one issue.
+func TestSiblingThrottle_SkipsSelfAfterReopen(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	parent := createIssueViaHTTP(t, env, pid, "parent issue")
+	children := make([]int64, 0, 4)
+	for i := 0; i < 4; i++ {
+		c := createIssueViaHTTP(t, env, pid, fmt.Sprintf("child %d", i+1))
+		postLink(t, env, pid, c, "parent", parent)
+		children = append(children, c)
+	}
+
+	// Close all four children — the fourth would trip the throttle.
+	// Close only the first three for now to stay under the limit.
+	for i, c := range children[:3] {
+		resp, bs := closeIssueWithEvidence(t, env, pid, c, "agent-a",
+			"done",
+			fmt.Sprintf("Implementation of child %d complete and verified.", i+1),
+			[]map[string]any{{"type": "commit", "sha": "abc1234"}})
+		require.Equalf(t, http.StatusOK, resp.StatusCode,
+			"close child %d: %s", i+1, string(bs))
+	}
+
+	// Reopen + re-close children[0] with a distinct message. Without
+	// the self-exclude filter, children[0]'s prior close would still
+	// count, putting recent siblings at 3 and the re-close at #4 →
+	// 429. With the filter it counts at 2 prior siblings (children[1],
+	// [2]) and succeeds.
+	reopen, reopenBody := envDoRaw(t, env, http.MethodPost,
+		issuePath(pid, children[0], "actions/reopen"),
+		map[string]any{"actor": "agent-a"}, nil)
+	require.Equalf(t, http.StatusOK, reopen.StatusCode,
+		"reopen: %s", string(reopenBody))
+
+	resp, bs := closeIssueWithEvidence(t, env, pid, children[0], "agent-a",
+		"done",
+		"Re-closing after reopen with new prose verifying the fix sticks.",
+		[]map[string]any{{"type": "commit", "sha": "def5678"}})
+	require.Equalf(t, http.StatusOK, resp.StatusCode,
+		"re-close after reopen must not count own prior close: %s",
+		string(bs))
+}
+
 // TestRepeatedMessageGuard_SkipsTUIBypassEmptyMessage pins the
 // TUI-consecutive-close path: two TUI closes of sibling issues under
 // the same parent within the 30-min window each carry an empty

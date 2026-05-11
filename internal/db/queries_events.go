@@ -149,19 +149,21 @@ func (d *DB) EventsInWindow(ctx context.Context, p EventsInWindowParams) ([]Even
 }
 
 // RecentSiblingCloses returns issue.closed events emitted by actor on direct
-// children of parentIssueID in projectID since the given timestamp. Ordered by
-// created_at DESC so callers can render the most recent closures first.
+// children of parentIssueID in projectID since the given timestamp, EXCLUDING
+// any prior close of excludeIssueID itself. Ordered by created_at DESC so
+// callers can render the most recent closures first.
 //
-// Used by the sibling-close throttle (spec §3.9): the daemon counts how many
-// rows come back to decide whether the next close is part of a burst by the
-// same actor under the same parent.
+// Used by the sibling-close throttle (spec §3.9) and the repeated-message
+// guard (§3.10). The exclude filter keeps a reopen→re-close cycle on the
+// same issue from matching its own prior close: the guards are intended to
+// compare against SIBLING issues, not the issue currently being closed.
 //
 // The same scoped projection used by EventsInWindow is sufficient here — the
-// throttle only needs id, issue_number, actor, and created_at; the wider
-// uid/related columns stay zero-valued.
+// guards only need id, issue_short_id, actor, payload, and created_at; the
+// wider uid/related columns stay zero-valued.
 func (d *DB) RecentSiblingCloses(
 	ctx context.Context,
-	projectID, parentIssueID int64,
+	projectID, parentIssueID, excludeIssueID int64,
 	actor string,
 	since time.Time,
 ) ([]Event, error) {
@@ -178,10 +180,11 @@ func (d *DB) RecentSiblingCloses(
 	             AND l.type = 'parent'
 	             AND l.to_issue_id = ?
 	             AND l.project_id = ?
+	             AND e.issue_id <> ?
 	           ORDER BY e.created_at DESC`
 	rows, err := d.QueryContext(ctx, q,
 		projectID, actor, since.UTC().Format(sqliteTimeFormat),
-		parentIssueID, projectID)
+		parentIssueID, projectID, excludeIssueID)
 	if err != nil {
 		return nil, fmt.Errorf("recent sibling closes: %w", err)
 	}
@@ -216,11 +219,11 @@ func (d *DB) RecentSiblingCloses(
 // matches even when the surrounding whitespace differs.
 func (d *DB) RecentSameMessageClose(
 	ctx context.Context,
-	projectID, parentIssueID int64,
+	projectID, parentIssueID, excludeIssueID int64,
 	actor, normalizedMessage string,
 	since time.Time,
 ) (*Event, error) {
-	siblings, err := d.RecentSiblingCloses(ctx, projectID, parentIssueID, actor, since)
+	siblings, err := d.RecentSiblingCloses(ctx, projectID, parentIssueID, excludeIssueID, actor, since)
 	if err != nil {
 		return nil, err
 	}

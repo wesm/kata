@@ -98,7 +98,7 @@ func CheckSiblingCloseThrottle(
 		return "", nil, nil
 	}
 	since := now.Add(-siblingThrottleWindow)
-	siblings, err := d.RecentSiblingCloses(ctx, projectID, parentLink.ToIssueID, actor, since)
+	siblings, err := d.RecentSiblingCloses(ctx, projectID, parentLink.ToIssueID, issueID, actor, since)
 	if err != nil {
 		return "", nil, nil
 	}
@@ -176,7 +176,7 @@ func CheckRepeatedMessageGuard(
 		return "", "", nil
 	}
 	since := now.Add(-repeatedMessageWindow)
-	prior, err := d.RecentSameMessageClose(ctx, projectID, parentLink.ToIssueID, actor, norm, since)
+	prior, err := d.RecentSameMessageClose(ctx, projectID, parentLink.ToIssueID, issueID, actor, norm, since)
 	if err != nil || prior == nil {
 		return "", "", nil
 	}
