@@ -279,6 +279,95 @@ func TestAuditCloses_FilterByParentUID(t *testing.T) {
 		"--parent should accept the parent's UID and surface the close")
 }
 
+// TestAuditCloses_FilterByParent_SoftDeletedParent pins that the
+// --parent filter still works when the parent has been soft-deleted
+// after the child was closed. Audit is a historical view; using
+// IncludeDeletedNo on the parent resolver silently dropped these
+// rows from the response.
+func TestAuditCloses_FilterByParent_SoftDeletedParent(t *testing.T) {
+	env, dir, pid, parent := setupWorkspaceWithIssue(t, "parent issue")
+	child := createIssue(t, env, pid, "child of parent")
+	runCLI(t, env, dir, "edit", child, "--parent", parent)
+	runCLI(t, env, dir, "close", child, "--done",
+		"--message", "Fixed the child of the parent issue and ran the unit tests.",
+		"--commit", "abc1234")
+	// Soft-delete the parent. The historical close of the child must
+	// still surface under --parent <parent_ref> because the close
+	// event was recorded when the parent was alive.
+	runCLI(t, env, dir, "delete", parent, "--force", "--confirm", "DELETE kata#"+parent)
+
+	out := runCLI(t, env, dir, "audit", "closes", "--parent", parent, "--json")
+	assert.Contains(t, out, `"issue":"`+child+`"`,
+		"audit --parent must still match after the parent is soft-deleted")
+}
+
+// TestAuditCloses_ThrottledFlag_DifferentActorEndsCycle pins the
+// per-actor marker rule: any close of the issue ends the throttle
+// cycle, but only the throttled actor's close gets the flag. An
+// intervening close by a different actor must NOT inherit the flag,
+// and a later close by the originally-throttled actor (after a
+// reopen) must NOT inherit a stale flag from before the intervening
+// close.
+func TestAuditCloses_ThrottledFlag_DifferentActorEndsCycle(t *testing.T) {
+	env, dir, pid, parent := setupWorkspaceWithIssue(t, "parent issue")
+	childA := createIssue(t, env, pid, "child a")
+	childB := createIssue(t, env, pid, "child b")
+	runCLI(t, env, dir, "edit", childA, "--parent", parent)
+	runCLI(t, env, dir, "edit", childB, "--parent", parent)
+	msg := "Verified end-to-end and confirmed no regressions in tests."
+	// Throttle agent-a on childB by reusing childA's close message.
+	runCLIAs(t, env, dir, "agent-a", "close", childA, "--done",
+		"--message", msg, "--commit", "abc1234")
+	_, _, _ = runCLIWithErr(t, env, dir, "close", childB, "--as", "agent-a",
+		"--done", "--message", msg, "--commit", "abc1234")
+	// agent-b (a different actor) closes childB. The pending throttle
+	// for (childB, agent-a) ends, but agent-b's close must NOT be
+	// flagged throttled.
+	runCLIAs(t, env, dir, "agent-b", "close", childB, "--done",
+		"--message", "Different actor closing child B with fresh prose.",
+		"--commit", "def5678")
+	// Reopen and let agent-a close it later. agent-a's later close
+	// must NOT inherit the stale throttle marker (agent-b already
+	// ended that cycle).
+	runCLIAs(t, env, dir, "agent-b", "reopen", childB)
+	runCLIAs(t, env, dir, "agent-a", "close", childB, "--done",
+		"--message", "Second cycle on child B; agent-a closing after reopen.",
+		"--commit", "ff00aa1")
+
+	out := runCLI(t, env, dir, "audit", "closes", "--json")
+	type row struct {
+		Issue   string   `json:"issue"`
+		Actor   string   `json:"actor"`
+		Message string   `json:"message"`
+		Flags   []string `json:"flags"`
+	}
+	var got struct {
+		Rows []row `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	hasThrottled := func(flags []string) bool {
+		for _, f := range flags {
+			if f == "throttled" {
+				return true
+			}
+		}
+		return false
+	}
+	for _, r := range got.Rows {
+		if r.Issue != childB {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(r.Message, "Different actor"):
+			assert.False(t, hasThrottled(r.Flags),
+				"agent-b's intervening close must not inherit agent-a's throttle marker")
+		case strings.HasPrefix(r.Message, "Second cycle"):
+			assert.False(t, hasThrottled(r.Flags),
+				"agent-a's later close after the intervening close must start a fresh cycle")
+		}
+	}
+}
+
 // TestAuditCloses_ThrottledFlagIgnoresLaterThrottle pins the temporal
 // rule: a close.throttled event whose id is GREATER than the successful
 // close it could naively be matched against must not flag that close.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -126,23 +125,23 @@ type closeEventPayload struct {
 // back to a live links lookup — the best we can do for that subset.
 //
 // The throttled flag is decorated via a single chronological pass: a
-// close.throttled event marks the (issue, actor) pair pending, and
-// the next matching issue.closed consumes the marker and is flagged.
-// Subsequent reopen → close cycles start fresh, so the flag never
-// bleeds into closes that happened later in unrelated history.
+// close.throttled event arms a pending marker for that (issue, actor)
+// pair. Any subsequent close of the issue — by any actor — ENDS the
+// pending cycle for that issue, but the flag is applied only when the
+// closing actor was the one whose retry tripped the guard. Subsequent
+// reopen → close cycles start fresh.
 func buildAuditRows(
 	ctx context.Context, cfg ServerConfig,
 	in *api.AuditClosesRequest, events []db.Event,
 ) ([]api.AuditCloseRow, error) {
-	parentFilterShortID, ok, err := resolveAuditParentFilter(ctx, cfg, in.ProjectID, in.Parent)
+	parentFilterShortID, parentFilterRaw, hasParentFilter, err :=
+		resolveAuditParentFilter(ctx, cfg, in.ProjectID, in.Parent)
 	if err != nil {
 		return nil, err
 	}
-	if in.Parent != "" && !ok {
-		// Filter ref didn't resolve to any issue in this project. The
-		// pre-fix code returned empty rows for a literal string miss; we
-		// preserve that observable behavior rather than surface a 404
-		// from a read endpoint.
+	if in.Parent != "" && !hasParentFilter {
+		// Filter ref didn't resolve and we also have no raw fallback
+		// (caller passed an empty string). Empty rows.
 		return nil, nil
 	}
 	parsed := make([]closeEventPayload, len(events))
@@ -161,32 +160,40 @@ func buildAuditRows(
 		return nil, err
 	}
 	rows := make([]api.AuditCloseRow, 0, len(events))
-	pendingThrottle := map[string]struct{}{}
+	// pendingThrottle maps issue short_id -> set of actors with a
+	// pending throttle marker. Any close of the issue clears the set;
+	// the closing actor is flagged only if it was in the set.
+	pendingThrottle := map[string]map[string]struct{}{}
 	for i, ev := range events {
 		// close.throttled markers arm a pending flag for the next
 		// matching issue.closed; consume happens below. Skip the rest
 		// of the loop body for non-close events so the throttle path
 		// doesn't accidentally produce a row.
 		if ev.Type == "close.throttled" && ev.IssueShortID != nil {
-			pendingThrottle[throttleKey(*ev.IssueShortID, ev.Actor)] = struct{}{}
+			actors := pendingThrottle[*ev.IssueShortID]
+			if actors == nil {
+				actors = map[string]struct{}{}
+				pendingThrottle[*ev.IssueShortID] = actors
+			}
+			actors[ev.Actor] = struct{}{}
 			continue
 		}
 		if ev.Type != "issue.closed" {
 			continue
 		}
-		// Consume any pending throttle for this (issue, actor) BEFORE
-		// applying output filters (--reason, --parent). The marker
-		// belongs to whichever close came next chronologically, even
-		// if that close is filtered out of the response — otherwise a
-		// reason-filtered query could leave a stale marker that
-		// wrongly decorates a later close in a separate cycle.
+		// End the throttle cycle for this issue BEFORE applying output
+		// filters (--reason, --parent). Any close, by any actor, ends
+		// the cycle — an intervening close means the pending throttle
+		// is no longer the "next" close in the same cycle. The flag is
+		// applied only when the closing actor was the throttled one.
 		p := parsed[i]
 		var throttledNow bool
 		if ev.IssueShortID != nil {
-			k := throttleKey(*ev.IssueShortID, ev.Actor)
-			if _, ok := pendingThrottle[k]; ok {
-				throttledNow = true
-				delete(pendingThrottle, k)
+			if actors, ok := pendingThrottle[*ev.IssueShortID]; ok {
+				if _, has := actors[ev.Actor]; has {
+					throttledNow = true
+				}
+				delete(pendingThrottle, *ev.IssueShortID)
 			}
 		}
 		if in.Reason != "" && p.Reason != in.Reason {
@@ -224,7 +231,7 @@ func buildAuditRows(
 				row.Parent = pn
 			}
 		}
-		if in.Parent != "" && row.Parent != parentFilterShortID {
+		if in.Parent != "" && !auditParentMatches(row.Parent, parentFilterShortID, parentFilterRaw) {
 			continue
 		}
 		for _, e := range p.Evidence {
@@ -247,37 +254,48 @@ func buildAuditRows(
 	return rows, nil
 }
 
-func throttleKey(issue, actor string) string {
-	return fmt.Sprintf("%s|%s", issue, actor)
-}
-
 // resolveAuditParentFilter turns the --parent query value into the
 // current short_id of the referenced parent, accepting any ref form
 // the issue resolver accepts (bare short_id, full UID, qualified
-// `project#short_id`). Comparing row.Parent (also a current short_id)
-// against a normalized filter value makes the audit projection
-// stable across project-merge collision rewrites: both sides reflect
-// the same post-merge short_id. ok=false signals "the filter ref did
-// not resolve to any issue in this project" and the caller short-
-// circuits to an empty response.
+// `project#short_id`). Soft-deleted parents resolve through
+// IncludeDeletedYes — audit is a historical view and a close of a
+// child whose parent was later soft-deleted is still a real audit
+// row. The raw value is returned alongside as a last-resort fallback
+// so a fully purged parent (no row remains) still matches stored
+// parent_short_id values from legacy or modern payloads via raw
+// string compare. has=false signals the caller passed no filter.
 func resolveAuditParentFilter(
 	ctx context.Context, cfg ServerConfig, projectID int64, parentRef string,
-) (shortID string, ok bool, err error) {
+) (shortID, raw string, has bool, err error) {
 	if parentRef == "" {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	issue, rerr := activeIssueByRef(ctx, cfg.DB, projectID, parentRef, db.IncludeDeletedNo)
+	issue, rerr := activeIssueByRef(ctx, cfg.DB, projectID, parentRef, db.IncludeDeletedYes)
 	if rerr != nil {
-		// Treat a not-found ref as an empty filter match rather than
-		// surface a 404 from a read endpoint. Resolver internal errors
-		// (500-class) bubble up unchanged.
 		var apiErr *api.APIError
 		if errors.As(rerr, &apiErr) && apiErr.Status == http.StatusNotFound {
-			return "", false, nil
+			// Purged parents have no live row to resolve. Fall through
+			// with empty shortID and the raw value so the matcher can
+			// still hit stored parent_short_id snapshots in payloads.
+			return "", parentRef, true, nil
 		}
-		return "", false, rerr
+		return "", "", false, rerr
 	}
-	return issue.ShortID, true, nil
+	return issue.ShortID, parentRef, true, nil
+}
+
+// auditParentMatches accepts a row.Parent if it equals the resolved
+// current short_id OR the raw filter value. The raw fallback keeps
+// the prior literal-string behavior alive for purged parents where
+// the only handle is the close-time short_id snapshot.
+func auditParentMatches(rowParent, resolvedShortID, raw string) bool {
+	if resolvedShortID != "" && rowParent == resolvedShortID {
+		return true
+	}
+	if raw != "" && rowParent == raw {
+		return true
+	}
+	return false
 }
 
 // loadLegacyParentsForCloseEvents gathers the issue ids of close events
