@@ -1,6 +1,6 @@
 module github.com/wesm/kata
 
-go 1.26.1
+go 1.26.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
