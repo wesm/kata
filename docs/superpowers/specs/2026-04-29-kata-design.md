@@ -4,9 +4,7 @@
 **Date:** 2026-04-29 (revised: project model, .kata.toml binding, KATA_HOME, DATETIME columns)
 **Topic:** kata — a local SQLite + daemon + TUI issue tracker, agent-first, modeled on the roborev modality.
 
-> **Superseded sections:** the relationship-editing CLI (§3.4 row for `link`/`unlink`/`parent`/`block`/`relate` and the §6 "Relationships" command-table block) and the per-link `issue.linked` / `issue.unlinked` event model for PATCH-driven mutations have been replaced by the design in
-> [`docs/superpowers/specs/2026-05-07-kata-relationship-flags.md`](2026-05-07-kata-relationship-flags.md).
-> The shipped surface is `kata create` / `kata edit` with `--parent` / `--blocks` / `--blocked-by` / `--related` (and matched `--remove-*` flags), atomic PATCH semantics, and a single aggregated `issue.links_changed` event per mutation. The two `kata edit` line and the entire `Relationships` block below are retained for historical context only — read the 2026-05-07 spec for current behavior.
+> **Superseded sections:** the relationship-editing CLI (§3.4 row for `link`/`unlink`/`parent`/`block`/`relate` and the §6 "Relationships" command-table block) and the per-link `issue.linked` / `issue.unlinked` event model for PATCH-driven mutations have been replaced. The shipped surface is `kata create` / `kata edit` with `--parent` / `--blocks` / `--blocked-by` / `--related` (and matched `--remove-*` flags), atomic PATCH semantics, and a single aggregated `issue.links_changed` event per mutation. The two `kata edit` line and the entire `Relationships` block below are retained for historical context only — read the current help text (`kata edit --help`) for shipped behavior.
 
 ## 1. Overview
 
@@ -433,7 +431,7 @@ The `issue.created` event payload includes initial `labels`, `links`, `owner`, `
 - `kata create` → row in `issues`, event `issue.created`. `projects.next_issue_number` bumped in same TX (`BEGIN IMMEDIATE`).
 - `kata close [--reason …]` → `status='closed'`, `closed_at` set, default `closed_reason='done'`. Event `issue.closed`.
 - `kata reopen` → `status='open'`, `closed_at` and `closed_reason` cleared. Event `issue.reopened`.
-- `kata edit` → mutates `title`/`body`/`owner`/`priority` and link relationships in one atomic PATCH. Field changes emit `issue.updated`; priority emits `issue.priority_set` / `issue.priority_cleared`; link mutations emit a single aggregated `issue.links_changed` event per PATCH. _(Superseded §3.4 row, see 2026-05-07-kata-relationship-flags.md.)_
+- `kata edit` → mutates `title`/`body`/`owner`/`priority` and link relationships in one atomic PATCH. Field changes emit `issue.updated`; priority emits `issue.priority_set` / `issue.priority_cleared`; link mutations emit a single aggregated `issue.links_changed` event per PATCH. _(Superseded §3.4 row; see `kata edit --help` for the shipped flag surface.)_
 - `kata comment` → row in `comments`, event `issue.commented` with `{ "comment_id": N }`.
 - ~~`kata link` / `unlink` (plus sugar verbs) → row in `links` or removal, event `issue.linked`/`issue.unlinked` with `related_issue_id` set on the event row.~~ _Removed in kata#1: link mutations live on `kata create` and `kata edit` as flag pairs (`--blocks` / `--remove-blocks`, `--parent` / `--remove-parent`, `--blocked-by` / `--remove-blocked-by`, `--related` / `--remove-related`). PATCH-driven changes emit one `issue.links_changed` event aggregating every edge; `issue.linked` / `issue.unlinked` are still emitted by the create-time initial link path._
 - `kata label add/rm` → row in `issue_labels`, event `issue.labeled`/`issue.unlabeled`.
@@ -825,7 +823,7 @@ Note: there is no public `--project-id <N>` flag for agent-facing commands. Agen
 | | `kata delete <number> --force [--confirm "DELETE #N"]` | Soft delete; reversible. |
 | | `kata restore <number>` | |
 | | `kata purge <number> --force [--confirm "PURGE #N"]` | Irreversible. |
-| Relationships | _Removed in kata#1._ The dedicated `parent` / `unparent` / `block` / `unblock` / `relate` / `unrelate` / `link` / `unlink` commands have all been retired in favor of relationship flags on `kata create` and `kata edit` — see the rows for those commands above and `docs/superpowers/specs/2026-05-07-kata-relationship-flags.md` for the current design. |
+| Relationships | _Removed in kata#1._ The dedicated `parent` / `unparent` / `block` / `unblock` / `relate` / `unrelate` / `link` / `unlink` commands have all been retired in favor of relationship flags on `kata create` and `kata edit` — see the rows for those commands above; `kata edit --help` documents the current flag surface. |
 | Labels | `kata label add <number> <label>` / `kata label rm <number> <label>` | Charset `[a-z0-9._:-]{1,64}`. |
 | | `kata labels [--workspace / --all-projects]` | Counts. |
 | Ownership | `kata assign <number> <owner>` / `kata unassign <number>` | |
