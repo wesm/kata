@@ -21,7 +21,7 @@ func labelPromptFixture() Model {
 	}
 	m.detail.scopePID = pid
 	m.detail.gen = 1
-	m.detail.issue = &Issue{ProjectID: pid, Number: 42, Status: "open"}
+	m.detail.issue = &Issue{ProjectID: pid, UID: "01TEST-42aa", ShortID: "42aa", Status: "open"}
 	m.projectLabels.byProject[pid] = labelCacheEntry{
 		pid: pid, gen: 1,
 		labels: []LabelCount{
@@ -31,7 +31,7 @@ func labelPromptFixture() Model {
 		},
 	}
 	m.input = newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: pid, issueNumber: 42, detailGen: 1,
+		projectID: pid, issueShortID: "42aa", detailGen: 1,
 	})
 	return m
 }
@@ -112,7 +112,7 @@ func TestRemoveLabelPrompt_SourceIsAttachedLabelsNotProjectCache(t *testing.T) {
 	m := labelPromptFixture()
 	m.detail.issue.Labels = []string{"attached1", "attached2"}
 	m.input = newPanelPrompt(inputRemoveLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 42,
+		projectID: 7, issueShortID: "42aa",
 	})
 	got := m.suggestionsForPrompt(m.input)
 	if len(got) != 2 {

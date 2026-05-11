@@ -126,7 +126,7 @@ func renderDocumentTitleStatus(width int, iss Issue) string {
 	status := renderStatusPill(iss)
 	statusPlain := stripANSI(status)
 	statusW := runewidth.StringWidth(statusPlain)
-	prefix := subtleStyle.Render(fmt.Sprintf("#%d", iss.Number))
+	prefix := subtleStyle.Render(fmt.Sprintf("#%s", iss.ShortID))
 	prefixW := runewidth.StringWidth(stripANSI(prefix)) + 2
 	titleBudget := width - prefixW - statusW - 2
 	if titleBudget < 1 {
@@ -292,7 +292,7 @@ func parentDocumentText(parent *IssueRef) string {
 	if parent == nil {
 		return "none"
 	}
-	return fmt.Sprintf("#%d %s", parent.Number, sanitizeForDisplay(parent.Title))
+	return fmt.Sprintf("#%s %s", parent.ShortID, sanitizeForDisplay(parent.Title))
 }
 
 // priorityDocumentText renders the priority value for the detail
@@ -569,7 +569,7 @@ func scrollToReveal(scroll, row, visible, total int) int {
 func renderHierarchySummary(width int, parent *IssueRef, children []Issue) string {
 	left := "Parent: -"
 	if parent != nil {
-		left = fmt.Sprintf("Parent: #%d %s", parent.Number, sanitizeForDisplay(parent.Title))
+		left = fmt.Sprintf("Parent: #%s %s", parent.ShortID, sanitizeForDisplay(parent.Title))
 	}
 	right := "Children: " + childrenCountSummary(children)
 	rightW := runewidth.StringWidth(right)
@@ -650,7 +650,7 @@ func renderChildIssueRow(child Issue, selected bool, width int) string {
 	}
 	parts := []string{
 		padToWidth(marker, markerW),
-		padToWidth(fmt.Sprintf("#%d", child.Number), numW),
+		padToWidth(fmt.Sprintf("#%s", child.ShortID), numW),
 		padToWidth(statusChip(child), statusW),
 		padToWidth(truncate(sanitizeForDisplay(child.Title), titleW), titleW),
 		padToWidth(truncate(sanitizeForDisplay(ownerText(child.Owner)), ownerW-1), ownerW),

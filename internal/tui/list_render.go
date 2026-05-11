@@ -828,7 +828,7 @@ func buildRows(queueRows []queueRow, cursor, titleW int, narrow bool, chrome vie
 		title := titleForRow(iss, chrome, titleW)
 		row := []string{
 			navCell(qr, i == cursor),
-			fmt.Sprintf("#%d", iss.Number),
+			fmt.Sprintf("#%s", iss.ShortID),
 			priorityCell(iss.Priority),
 			statusChip(iss),
 			title,

@@ -12,7 +12,7 @@ import (
 // a single issue and a known scope/actor so the asserts are direct.
 // No comments/events/links; the mutation paths don't touch those.
 func dmFixture() detailModel {
-	iss := Issue{ProjectID: 7, Number: 42, Title: "fix bug", Status: "open"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa", Title: "fix bug", Status: "open"}
 	return detailModel{issue: &iss, scopePID: 7, actor: "tester"}
 }
 
@@ -22,7 +22,7 @@ func dmFixture() detailModel {
 func setupMutationTest(t *testing.T) (*fakeDetailAPI, detailModel, keymap) {
 	t.Helper()
 	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 42}},
+		mutationResult: &MutationResp{Issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa"}},
 	}
 	return api, dmFixture(), newKeymap()
 }
@@ -106,9 +106,9 @@ func TestDetail_Close_DispatchesAPI(t *testing.T) {
 	if api.closeCalls != 1 {
 		t.Fatalf("closeCalls = %d, want 1", api.closeCalls)
 	}
-	if api.lastProjectID != 7 || api.lastNumber != 42 || api.lastActor != "tester" {
-		t.Fatalf("close args wrong: pid=%d num=%d actor=%q",
-			api.lastProjectID, api.lastNumber, api.lastActor)
+	if api.lastProjectID != 7 || api.lastRef != "42aa" || api.lastActor != "tester" {
+		t.Fatalf("close args wrong: pid=%d ref=%q actor=%q",
+			api.lastProjectID, api.lastRef, api.lastActor)
 	}
 }
 
@@ -124,9 +124,9 @@ func TestDetail_Reopen_DispatchesAPI(t *testing.T) {
 	if api.reopenCalls != 1 {
 		t.Fatalf("reopenCalls = %d, want 1", api.reopenCalls)
 	}
-	if api.lastProjectID != 7 || api.lastNumber != 42 || api.lastActor != "tester" {
-		t.Fatalf("reopen args wrong: pid=%d num=%d actor=%q",
-			api.lastProjectID, api.lastNumber, api.lastActor)
+	if api.lastProjectID != 7 || api.lastRef != "42aa" || api.lastActor != "tester" {
+		t.Fatalf("reopen args wrong: pid=%d ref=%q actor=%q",
+			api.lastProjectID, api.lastRef, api.lastActor)
 	}
 }
 
@@ -215,54 +215,53 @@ func TestDetail_ClearOwner_DispatchesAPI(t *testing.T) {
 }
 
 // TestDetail_AddLink_Parent: 'p' opens an inputParentPrompt; commit
-// of "42" calls api.AddLink({Type:parent, ToNumber:42}).
+// of "abc4" calls api.AddLink({Type:parent, ToRef:"abc4"}).
 func TestDetail_AddLink_Parent(t *testing.T) {
 	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('p'), km, api)
 	requireInputPrompt(t, cmd, inputParentPrompt)
-	_ = executePromptCommit(t, dm, api, km, inputParentPrompt, "42")
+	_ = executePromptCommit(t, dm, api, km, inputParentPrompt, "abc4")
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
-	if api.lastLinkBody.Type != "parent" || api.lastLinkBody.ToNumber != 42 {
-		t.Fatalf("lastLinkBody = %+v, want {parent 42}", api.lastLinkBody)
+	if api.lastLinkBody.Type != "parent" || api.lastLinkBody.ToRef != "abc4" {
+		t.Fatalf("lastLinkBody = %+v, want {parent abc4}", api.lastLinkBody)
 	}
 }
 
 // TestDetail_AddLink_Blocks: 'b' opens an inputBlockerPrompt;
-// commit of "5" calls api.AddLink({Type:blocks, ToNumber:5}).
+// commit of "xyz4" calls api.AddLink({Type:blocks, ToRef:"xyz4"}).
 func TestDetail_AddLink_Blocks(t *testing.T) {
 	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('b'), km, api)
 	requireInputPrompt(t, cmd, inputBlockerPrompt)
-	_ = executePromptCommit(t, dm, api, km, inputBlockerPrompt, "5")
+	_ = executePromptCommit(t, dm, api, km, inputBlockerPrompt, "xyz4")
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
-	if api.lastLinkBody.Type != "blocks" || api.lastLinkBody.ToNumber != 5 {
-		t.Fatalf("lastLinkBody = %+v, want {blocks 5}", api.lastLinkBody)
+	if api.lastLinkBody.Type != "blocks" || api.lastLinkBody.ToRef != "xyz4" {
+		t.Fatalf("lastLinkBody = %+v, want {blocks xyz4}", api.lastLinkBody)
 	}
 }
 
 // TestDetail_AddLink_Other: 'l' opens an inputLinkPrompt; committing a
-// number creates a "related" link. p covers parent, b covers blocks, so
-// l is dedicated to the third kind and just takes a number — no
-// "<kind> <number>" syntax. (Capital L was rebound to ToggleLayout when
-// the layout-toggle hotkey was added — AddLink moved to lowercase l
-// for ergonomics.)
+// ref creates a "related" link. p covers parent, b covers blocks, so
+// l is dedicated to the third kind. (Capital L was rebound to
+// ToggleLayout when the layout-toggle hotkey was added — AddLink moved
+// to lowercase l for ergonomics.)
 func TestDetail_AddLink_Other(t *testing.T) {
 	api, dm, km := setupMutationTest(t)
 
 	_, cmd := dm.Update(runeKey('l'), km, api)
 	requireInputPrompt(t, cmd, inputLinkPrompt)
-	_ = executePromptCommit(t, dm, api, km, inputLinkPrompt, "7")
+	_ = executePromptCommit(t, dm, api, km, inputLinkPrompt, "qqq7")
 	if api.addLinkCalls != 1 {
 		t.Fatalf("addLinkCalls = %d, want 1", api.addLinkCalls)
 	}
-	if api.lastLinkBody.Type != "related" || api.lastLinkBody.ToNumber != 7 {
-		t.Fatalf("lastLinkBody = %+v, want {related 7}", api.lastLinkBody)
+	if api.lastLinkBody.Type != "related" || api.lastLinkBody.ToRef != "qqq7" {
+		t.Fatalf("lastLinkBody = %+v, want {related qqq7}", api.lastLinkBody)
 	}
 }
 
@@ -319,17 +318,18 @@ func TestDetail_SetPriority_ParseFailure(t *testing.T) {
 	}
 }
 
-// TestDetail_AddLink_OtherParseFailure: a non-numeric buffer "noop"
-// should not call api.AddLink — dispatchLink surfaces a parse-failed
-// status via the synthetic mutationDoneMsg path.
-func TestDetail_AddLink_OtherParseFailure(t *testing.T) {
+// TestDetail_AddLink_EmptyTrimmedFails: a buffer that's just whitespace
+// or "#" alone trims to empty and must not call api.AddLink —
+// dispatchLink surfaces a parse-failed status via the synthetic
+// mutationDoneMsg path.
+func TestDetail_AddLink_EmptyTrimmedFails(t *testing.T) {
 	api := &fakeDetailAPI{}
 	km := newKeymap()
 	dm := dmFixture()
 
-	out := executePromptCommit(t, dm, api, km, inputLinkPrompt, "noop")
+	out := executePromptCommit(t, dm, api, km, inputLinkPrompt, "  #  ")
 	if api.addLinkCalls != 0 {
-		t.Fatalf("addLinkCalls = %d, want 0 (parse failure path)", api.addLinkCalls)
+		t.Fatalf("addLinkCalls = %d, want 0 (empty after strip)", api.addLinkCalls)
 	}
 	if !strings.Contains(out.status, "failed") {
 		t.Fatalf("status = %q, expected failure hint", out.status)
@@ -380,7 +380,7 @@ func TestDetail_MutationError_PlainError(t *testing.T) {
 // call landed by inspecting api.lastGetIssue after running the batch.
 func TestDetail_MutationSuccess_DispatchesRefetch(t *testing.T) {
 	api, dm, km := setupMutationTest(t)
-	api.getIssueResult = &Issue{Number: 42, Status: "closed"}
+	api.getIssueResult = &Issue{UID: "01TEST-42aa", ShortID: "42aa", Status: "closed"}
 
 	out, cmd := dm.Update(runeKey('x'), km, api)
 	if cmd == nil {
@@ -391,12 +391,12 @@ func TestDetail_MutationSuccess_DispatchesRefetch(t *testing.T) {
 	if refetch == nil {
 		t.Fatal("expected refetch cmd after success")
 	}
-	if !strings.Contains(out.status, "closed #42") {
-		t.Fatalf("status = %q, expected 'closed #42'", out.status)
+	if !strings.Contains(out.status, "closed #42aa") {
+		t.Fatalf("status = %q, expected 'closed #42aa'", out.status)
 	}
 	runBatch(refetch)
-	if api.lastGetIssue != 42 {
-		t.Fatalf("api.lastGetIssue = %d, want 42 (refetch should have run)",
+	if api.lastGetIssue != "42aa" {
+		t.Fatalf("api.lastGetIssue = %q, want 42aa (refetch should have run)",
 			api.lastGetIssue)
 	}
 }
@@ -409,7 +409,7 @@ func TestDetail_QuitGate_RoutesToBuffer(t *testing.T) {
 	m := initialModel(Options{})
 	m.scope = scope{projectID: 7}
 	m.list.loading = false
-	iss := Issue{ProjectID: 7, Number: 42, Title: "fix bug", Status: "open"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa", Title: "fix bug", Status: "open"}
 	m.detail.issue = &iss
 	m.detail.scopePID = 7
 	m.detail.actor = "tester"

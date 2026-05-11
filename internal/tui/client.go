@@ -49,9 +49,11 @@ func (c *Client) listIssuesAt(ctx context.Context, path string, f ListFilter) ([
 	return resp.Issues, nil
 }
 
-// GetIssueDetail fetches a single issue plus hierarchy metadata by number.
-func (c *Client) GetIssueDetail(ctx context.Context, projectID, number int64) (*IssueDetail, error) {
-	body, err := c.showIssue(ctx, projectID, number)
+// GetIssueDetail fetches a single issue plus hierarchy metadata by ref.
+// ref is a short_id, qualified short_id, or UID — the daemon's path
+// resolver picks the matching column.
+func (c *Client) GetIssueDetail(ctx context.Context, projectID int64, ref string) (*IssueDetail, error) {
+	body, err := c.showIssue(ctx, projectID, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -81,43 +83,43 @@ func (c *Client) CreateIssue(
 
 // Close transitions the issue to status=closed.
 func (c *Client) Close(
-	ctx context.Context, projectID, number int64, actor string,
+	ctx context.Context, projectID int64, ref, actor string,
 ) (*MutationResp, error) {
 	return c.mutate(ctx, http.MethodPost,
-		issuePath(projectID, number)+"/actions/close", actorBody(actor))
+		issuePath(projectID, ref)+"/actions/close", actorBody(actor))
 }
 
 // Reopen transitions the issue back to status=open.
 func (c *Client) Reopen(
-	ctx context.Context, projectID, number int64, actor string,
+	ctx context.Context, projectID int64, ref, actor string,
 ) (*MutationResp, error) {
 	return c.mutate(ctx, http.MethodPost,
-		issuePath(projectID, number)+"/actions/reopen", actorBody(actor))
+		issuePath(projectID, ref)+"/actions/reopen", actorBody(actor))
 }
 
 // AddComment appends a new comment to the issue.
 func (c *Client) AddComment(
-	ctx context.Context, projectID, number int64, body, actor string,
+	ctx context.Context, projectID int64, ref, body, actor string,
 ) (*MutationResp, error) {
-	return c.mutate(ctx, http.MethodPost, issuePath(projectID, number)+"/comments",
+	return c.mutate(ctx, http.MethodPost, issuePath(projectID, ref)+"/comments",
 		map[string]string{"body": body, "actor": actor})
 }
 
 // AddLabel attaches a label to the issue.
 func (c *Client) AddLabel(
-	ctx context.Context, projectID, number int64, label, actor string,
+	ctx context.Context, projectID int64, ref, label, actor string,
 ) (*MutationResp, error) {
-	return c.mutate(ctx, http.MethodPost, issuePath(projectID, number)+"/labels",
+	return c.mutate(ctx, http.MethodPost, issuePath(projectID, ref)+"/labels",
 		map[string]string{"label": label, "actor": actor})
 }
 
 // RemoveLabel sends actor in the query string because DELETE bodies are
 // non-portable; the label is path-escaped to survive '/' and similar.
 func (c *Client) RemoveLabel(
-	ctx context.Context, projectID, number int64, label, actor string,
+	ctx context.Context, projectID int64, ref, label, actor string,
 ) (*MutationResp, error) {
 	path := fmt.Sprintf("%s/labels/%s?actor=%s",
-		issuePath(projectID, number), url.PathEscape(label), url.QueryEscape(actor))
+		issuePath(projectID, ref), url.PathEscape(label), url.QueryEscape(actor))
 	return c.mutate(ctx, http.MethodDelete, path, nil)
 }
 
@@ -125,14 +127,14 @@ func (c *Client) RemoveLabel(
 // because the daemon's PATCH endpoint cannot represent the clear case
 // (string vs null) and /actions/assign rejects empty owners with 400.
 func (c *Client) Assign(
-	ctx context.Context, projectID, number int64, owner, actor string,
+	ctx context.Context, projectID int64, ref, owner, actor string,
 ) (*MutationResp, error) {
 	if owner == "" {
 		return c.mutate(ctx, http.MethodPost,
-			issuePath(projectID, number)+"/actions/unassign", actorBody(actor))
+			issuePath(projectID, ref)+"/actions/unassign", actorBody(actor))
 	}
 	return c.mutate(ctx, http.MethodPost,
-		issuePath(projectID, number)+"/actions/assign",
+		issuePath(projectID, ref)+"/actions/assign",
 		map[string]string{"owner": owner, "actor": actor})
 }
 
@@ -141,40 +143,43 @@ func (c *Client) Assign(
 // the optional/clear case through the same endpoint with a nil body
 // field; the daemon distinguishes set-vs-clear from the JSON shape.
 func (c *Client) SetPriority(
-	ctx context.Context, projectID, number int64, priority *int64, actor string,
+	ctx context.Context, projectID int64, ref string, priority *int64, actor string,
 ) (*MutationResp, error) {
 	body := map[string]any{"actor": actor}
 	if priority != nil {
 		body["priority"] = *priority
 	}
 	return c.mutate(ctx, http.MethodPost,
-		issuePath(projectID, number)+"/actions/priority", body)
+		issuePath(projectID, ref)+"/actions/priority", body)
 }
 
-// AddLink creates a typed link from this issue to body.ToNumber.
+// AddLink creates a typed link from this issue to body.ToRef. The
+// daemon's CreateLinkRequest.Body is {actor, type, to_ref}; ToRef
+// accepts a short_id, qualified short_id ("kata#abc4"), or a 26-char
+// ULID.
 func (c *Client) AddLink(
-	ctx context.Context, projectID, number int64, body LinkBody, actor string,
+	ctx context.Context, projectID int64, ref string, body LinkBody, actor string,
 ) (*MutationResp, error) {
-	return c.mutate(ctx, http.MethodPost, issuePath(projectID, number)+"/links",
-		map[string]any{"type": body.Type, "to_number": body.ToNumber, "actor": actor})
+	return c.mutate(ctx, http.MethodPost, issuePath(projectID, ref)+"/links",
+		map[string]any{"type": body.Type, "to_ref": body.ToRef, "actor": actor})
 }
 
 // RemoveLink deletes a link by id. actor rides the query string per the
 // DELETE-body portability convention.
 func (c *Client) RemoveLink(
-	ctx context.Context, projectID, number, linkID int64, actor string,
+	ctx context.Context, projectID int64, ref string, linkID int64, actor string,
 ) (*MutationResp, error) {
 	path := fmt.Sprintf("%s/links/%d?actor=%s",
-		issuePath(projectID, number), linkID, url.QueryEscape(actor))
+		issuePath(projectID, ref), linkID, url.QueryEscape(actor))
 	return c.mutate(ctx, http.MethodDelete, path, nil)
 }
 
 // EditBody replaces issue.body via PATCH. v1 only supports body edits
 // from the TUI; title edits would reuse the same endpoint.
 func (c *Client) EditBody(
-	ctx context.Context, projectID, number int64, body, actor string,
+	ctx context.Context, projectID int64, ref, body, actor string,
 ) (*MutationResp, error) {
-	return c.mutate(ctx, http.MethodPatch, issuePath(projectID, number),
+	return c.mutate(ctx, http.MethodPatch, issuePath(projectID, ref),
 		map[string]any{"body": body, "actor": actor})
 }
 
@@ -243,13 +248,13 @@ func (c *Client) ListProjectsWithStats(ctx context.Context) ([]ProjectSummaryWit
 	return resp.Projects, nil
 }
 
-// ListComments and ListLinks route through GET /issues/{number} because
+// ListComments and ListLinks route through GET /issues/{ref} because
 // the daemon embeds both slices there. ListEvents filters client-side
-// because the poll endpoint accepts no issue_number filter.
+// because the poll endpoint accepts no issue-targeted query filter.
 func (c *Client) ListComments(
-	ctx context.Context, projectID, number int64,
+	ctx context.Context, projectID int64, ref string,
 ) ([]CommentEntry, error) {
-	body, err := c.showIssue(ctx, projectID, number)
+	body, err := c.showIssue(ctx, projectID, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -257,14 +262,16 @@ func (c *Client) ListComments(
 }
 
 // ListEvents returns the events tab data for one issue. See above note
-// on the client-side filter.
+// on the client-side filter. ref is the issue's short_id; the daemon's
+// event stream embeds issue_short_id on every issue-scoped event, so
+// the filter is project-local and stable for the life of the daemon.
 //
-// TODO(plan-6/task-8): the 200-event window is a one-shot snapshot; full
-// pagination via next_after_id is deferred. The poll envelope's
-// reset_required is decoded but ignored here because Task 8 fetches once
-// per detail-view open; the SSE consumer (Task 11) handles reset_required
-// for the long-lived stream.
-func (c *Client) ListEvents(ctx context.Context, projectID, number int64) ([]EventLogEntry, error) {
+// TODO(plan-6/task-8): the 200-event window is a one-shot snapshot;
+// full pagination via next_after_id is deferred. The poll envelope's
+// reset_required is decoded but ignored here because Task 8 fetches
+// once per detail-view open; the SSE consumer (Task 11) handles
+// reset_required for the long-lived stream.
+func (c *Client) ListEvents(ctx context.Context, projectID int64, ref string) ([]EventLogEntry, error) {
 	var out []EventLogEntry
 	afterID := int64(0)
 	for {
@@ -273,7 +280,7 @@ func (c *Client) ListEvents(ctx context.Context, projectID, number int64) ([]Eve
 			return nil, err
 		}
 		for _, e := range resp.Events {
-			if e.IssueNumber != nil && *e.IssueNumber == number {
+			if ref != "" && e.IssueShortID != nil && *e.IssueShortID == ref {
 				out = append(out, e)
 			}
 		}
@@ -302,17 +309,17 @@ func (c *Client) listEventsPage(ctx context.Context, projectID, afterID int64) (
 }
 
 // ListLinks returns the links tab data for one issue.
-func (c *Client) ListLinks(ctx context.Context, projectID, number int64) ([]LinkEntry, error) {
-	body, err := c.showIssue(ctx, projectID, number)
+func (c *Client) ListLinks(ctx context.Context, projectID int64, ref string) ([]LinkEntry, error) {
+	body, err := c.showIssue(ctx, projectID, ref)
 	if err != nil {
 		return nil, err
 	}
 	return body.Links, nil
 }
 
-func (c *Client) showIssue(ctx context.Context, projectID, number int64) (*showIssueBody, error) {
+func (c *Client) showIssue(ctx context.Context, projectID int64, ref string) (*showIssueBody, error) {
 	var resp showIssueBody
-	if err := c.do(ctx, http.MethodGet, issuePath(projectID, number), nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, issuePath(projectID, ref), nil, &resp); err != nil {
 		return nil, err
 	}
 	// Lift the sibling labels slice onto resp.Issue.Labels so detail
@@ -334,8 +341,8 @@ func (c *Client) showIssue(ctx context.Context, projectID, number int64) (*showI
 	return &resp, nil
 }
 
-func issuePath(projectID, number int64) string {
-	return fmt.Sprintf("/api/v1/projects/%d/issues/%d", projectID, number)
+func issuePath(projectID int64, ref string) string {
+	return fmt.Sprintf("/api/v1/projects/%d/issues/%s", projectID, url.PathEscape(ref))
 }
 
 func actorBody(actor string) map[string]string { return map[string]string{"actor": actor} }

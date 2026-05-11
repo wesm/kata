@@ -39,13 +39,19 @@ func sseUpdateFixtureAt(t time.Time) Model {
 // open issue, with a stub *Client wired so refetch helpers can capture
 // it without hitting the network. detail.gen is seeded non-zero so
 // generation-tagged fetches don't look like the zero-valued initial
-// state.
-func sseDetailFixture(projectID, issueNumber int64) Model {
+// state. issueShortID and issueUID identify the open issue — both are
+// load-bearing for the UID-keyed peer-match path.
+func sseDetailFixture(projectID int64, issueShortID, issueUID string) Model {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: projectID}
 	m.api = NewClient("http://kata.invalid", nil)
 	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: projectID, Number: issueNumber, Status: "open"}
+	m.detail.issue = &Issue{
+		ProjectID: projectID,
+		ShortID:   issueShortID,
+		UID:       issueUID,
+		Status:    "open",
+	}
 	m.detail.scopePID = projectID
 	m.detail.gen = 5
 	return m
@@ -118,7 +124,7 @@ func TestEventAffectsView_ZeroProjectID_SingleScope(t *testing.T) {
 func TestHandleEventReceived_DispatchesDebouncedRefetch(t *testing.T) {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: 7}
-	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{ShortID: "aaa1"}})
 	out, cmd := m.handleEventReceived(eventReceivedMsg{projectID: 7})
 	mm := out.(Model)
 	if !mm.pendingRefetch {
@@ -178,20 +184,24 @@ func TestHandleEventReceived_NoEffect_NoStale(t *testing.T) {
 }
 
 // TestHandleEventReceived_DetailViewSingleIssueRefetch: when the user
-// is in detail-view and the event names dm.issue.Number,
+// is in detail-view and the event names dm.issue (matched by UID),
 // maybeRefetchOpenDetail returns a non-nil cmd (the batch of four
 // fetches: issue + comments + events + links). We test the helper
 // directly so we don't have to invoke a 150ms tick to assert on cmd
 // shape.
 func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
-	m := sseDetailFixture(7, 42)
-	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		projectID: 7, issueShortID: "abc4", issueUID: "01UID-OPEN",
+	})
 	if cmd == nil {
-		t.Fatal("maybeRefetchOpenDetail must return a fetch cmd for matching issueNumber")
+		t.Fatal("maybeRefetchOpenDetail must return a fetch cmd for matching issue")
 	}
 	// And the parent handler still reports pendingRefetch=true and a
 	// non-nil cmd (the tick + the four-tab fetch batch, batched).
-	out, parentCmd := m.handleEventReceived(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	out, parentCmd := m.handleEventReceived(eventReceivedMsg{
+		projectID: 7, issueShortID: "abc4", issueUID: "01UID-OPEN",
+	})
 	mm := out.(Model)
 	if !mm.pendingRefetch {
 		t.Fatal("pendingRefetch must be set after detail-match event")
@@ -204,11 +214,14 @@ func TestHandleEventReceived_DetailViewSingleIssueRefetch(t *testing.T) {
 func TestHandleEventReceived_ParentLinkInvalidatesQueue(t *testing.T) {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: 7}
-	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 42}})
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{ShortID: "abc4"}})
 	out, cmd := m.handleEventReceived(eventReceivedMsg{
 		eventType: "issue.linked",
 		projectID: 7,
-		link:      &linkPayload{Type: "parent", FromNumber: 43, ToNumber: 42},
+		link: &linkPayload{
+			Type: "parent", FromShortID: "ch43", ToShortID: "abc4",
+			FromIssueUID: "01UID-CHILD", ToIssueUID: "01UID-PARENT",
+		},
 	})
 	nm := out.(Model)
 	if !nm.cache.isStale() {
@@ -220,13 +233,17 @@ func TestHandleEventReceived_ParentLinkInvalidatesQueue(t *testing.T) {
 }
 
 func TestHandleEventReceived_ParentLinkRefetchesOpenParentDetail(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-PARENT")
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
-		eventType:   "issue.linked",
-		projectID:   7,
-		issueNumber: 43,
-		link:        &linkPayload{Type: "parent", FromNumber: 43, ToNumber: 42},
+		eventType:    "issue.linked",
+		projectID:    7,
+		issueShortID: "ch43",
+		issueUID:     "01UID-CHILD",
+		link: &linkPayload{
+			Type: "parent", FromShortID: "ch43", ToShortID: "abc4",
+			FromIssueUID: "01UID-CHILD", ToIssueUID: "01UID-PARENT",
+		},
 	})
 	if cmd == nil {
 		t.Fatal("parent detail must refetch when a child is linked to it")
@@ -234,13 +251,17 @@ func TestHandleEventReceived_ParentLinkRefetchesOpenParentDetail(t *testing.T) {
 }
 
 func TestHandleEventReceived_ParentLinkRefetchesOpenChildDetail(t *testing.T) {
-	m := sseDetailFixture(7, 43)
+	m := sseDetailFixture(7, "ch43", "01UID-CHILD")
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
-		eventType:   "issue.linked",
-		projectID:   7,
-		issueNumber: 42,
-		link:        &linkPayload{Type: "parent", FromNumber: 43, ToNumber: 42},
+		eventType:    "issue.linked",
+		projectID:    7,
+		issueShortID: "abc4",
+		issueUID:     "01UID-PARENT",
+		link: &linkPayload{
+			Type: "parent", FromShortID: "ch43", ToShortID: "abc4",
+			FromIssueUID: "01UID-CHILD", ToIssueUID: "01UID-PARENT",
+		},
 	})
 	if cmd == nil {
 		t.Fatal("child detail must refetch when its parent link changes")
@@ -248,15 +269,16 @@ func TestHandleEventReceived_ParentLinkRefetchesOpenChildDetail(t *testing.T) {
 }
 
 // TestHandleEventReceived_LinksChangedRefetchesNewParent covers the
-// `kata edit --parent N` path: an issue.links_changed event with
+// `kata edit --parent X` path: an issue.links_changed event with
 // parent_set must refresh the new parent's detail pane when it's open.
 func TestHandleEventReceived_LinksChangedRefetchesNewParent(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-PARENT")
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:    "issue.links_changed",
 		projectID:    7,
-		issueNumber:  43,
-		linksChanged: &linksChangedParents{Set: 42},
+		issueShortID: "ch43",
+		issueUID:     "01UID-CHILD",
+		linksChanged: &linksChangedParents{Set: "abc4", SetUID: "01UID-PARENT"},
 	})
 	if cmd == nil {
 		t.Fatal("new-parent detail must refetch when a child sets parent via links_changed")
@@ -267,98 +289,123 @@ func TestHandleEventReceived_LinksChangedRefetchesNewParent(t *testing.T) {
 // the parent-replace case: issue.links_changed carries both parent_set
 // and parent_removed, and either's pane (when open) should refresh.
 func TestHandleEventReceived_LinksChangedRefetchesOldAndNewParents(t *testing.T) {
-	for _, openOn := range []int64{42, 99} {
-		t.Run(fmt.Sprintf("open=%d", openOn), func(t *testing.T) {
-			m := sseDetailFixture(7, openOn)
+	cases := []struct {
+		openShortID string
+		openUID     string
+	}{
+		{"abc4", "01UID-NEW-PARENT"},
+		{"prev9", "01UID-OLD-PARENT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.openShortID, func(t *testing.T) {
+			m := sseDetailFixture(7, tc.openShortID, tc.openUID)
 			cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 				eventType:    "issue.links_changed",
 				projectID:    7,
-				issueNumber:  43,
-				linksChanged: &linksChangedParents{Set: 42, Removed: 99},
+				issueShortID: "ch43",
+				issueUID:     "01UID-CHILD",
+				linksChanged: &linksChangedParents{
+					Set: "abc4", SetUID: "01UID-NEW-PARENT",
+					Removed: "prev9", RemovedUID: "01UID-OLD-PARENT",
+				},
 			})
 			if cmd == nil {
-				t.Fatalf("detail #%d must refetch when its end of a parent transition is touched", openOn)
+				t.Fatalf("detail #%s must refetch when its end of a parent transition is touched", tc.openShortID)
 			}
 		})
 	}
 }
 
-// TestHandleEventReceived_LinksChangedRefetchesBlocksTarget covers
-// the iteration-11 fix: non-parent link mutations (blocks, blocked_by,
-// related) must also drive an other-endpoint refetch. Without scanning
-// the full Refs slice, a `kata edit X --blocks Y` would refresh X's
-// pane only — Y's pane would stay stale until a manual refresh.
+// TestHandleEventReceived_LinksChangedRefetchesBlocksTarget covers the
+// iteration-11 fix carried over: non-parent link mutations (blocks,
+// blocked_by, related) must also drive an other-endpoint refetch.
+// Without scanning the full Refs slice, a `kata edit X --blocks Y`
+// would refresh X's pane only — Y's pane would stay stale until a
+// manual refresh.
 func TestHandleEventReceived_LinksChangedRefetchesBlocksTarget(t *testing.T) {
-	for _, openOn := range []int64{50, 51} {
-		t.Run(fmt.Sprintf("open=%d", openOn), func(t *testing.T) {
-			m := sseDetailFixture(7, openOn)
+	cases := []struct {
+		openShortID string
+		openUID     string
+	}{
+		{"f005", "01UID-FIRST"},
+		{"f006", "01UID-SECOND"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.openShortID, func(t *testing.T) {
+			m := sseDetailFixture(7, tc.openShortID, tc.openUID)
 			cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 				eventType:    "issue.links_changed",
 				projectID:    7,
-				issueNumber:  43,
-				linksChanged: &linksChangedParents{Refs: []int64{50, 51}},
+				issueShortID: "ch43",
+				issueUID:     "01UID-OTHER",
+				linksChanged: &linksChangedParents{
+					Refs:    []string{"f005", "f006"},
+					RefUIDs: []string{"01UID-FIRST", "01UID-SECOND"},
+				},
 			})
 			if cmd == nil {
-				t.Fatalf("blocks target #%d must refetch on links_changed", openOn)
+				t.Fatalf("blocks target #%s must refetch on links_changed", tc.openShortID)
 			}
 		})
 	}
 }
 
 // TestHandleEventReceived_IssueCreatedRefreshesNonParentPeer covers
-// an iteration-14 finding: a `kata create` with --blocked-by or
-// --related folds those links into the issue.created payload, but
-// the SSE decoder only synthesized a parent-link refresh. Now every
-// peer in the payload's links array goes into linksChanged.Refs so
-// any open pane on the other end refreshes.
+// an iteration-14 finding (now baked in): a `kata create` with
+// --blocked-by or --related folds those links into the issue.created
+// payload; the SSE decoder surfaces every peer in the payload's links
+// array so any open pane on the other end refreshes.
 func TestHandleEventReceived_IssueCreatedRefreshesNonParentPeer(t *testing.T) {
-	// Detail pane is on issue #5 — the peer of a `--related 5` create.
-	m := sseDetailFixture(7, 5)
+	// Detail pane is on `peer5` — the peer of a `--related peer5` create.
+	m := sseDetailFixture(7, "peer5", "01UID-PEER")
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:    "issue.created",
 		projectID:    7,
-		issueNumber:  43,
-		linksChanged: &linksChangedParents{Refs: []int64{5}},
+		issueShortID: "new9",
+		issueUID:     "01UID-NEW",
+		linksChanged: &linksChangedParents{
+			Refs:    []string{"peer5"},
+			RefUIDs: []string{"01UID-PEER"},
+		},
 	})
 	if cmd == nil {
 		t.Fatal("peer detail must refetch when another issue creates a link to it")
 	}
 }
 
-// TestHandleEventReceived_LinksChangedUIDMismatchSameNumber pins
-// UID-aware peer matching: after `kata reset-counter`, project-scoped
-// numbers can be reused across issue UIDs. An event that references
-// peer UID-B at number 5 must NOT refresh an open detail pane on
-// UID-A at number 5 even though the numbers collide. Without UID
-// awareness, Refs={5} would falsely match the watched UID-A pane.
-func TestHandleEventReceived_LinksChangedUIDMismatchSameNumber(t *testing.T) {
-	m := sseDetailFixture(7, 5)
-	m.detail.issue.UID = "01UID-A"
+// TestHandleEventReceived_LinksChangedUIDMismatchSameShortID pins
+// UID-aware peer matching: short_ids can collide across federation
+// merge, so a UID mismatch beats a short_id match. An event that
+// references peer UID-B at short_id "peer5" must NOT refresh an open
+// detail pane on UID-A also at "peer5".
+func TestHandleEventReceived_LinksChangedUIDMismatchSameShortID(t *testing.T) {
+	m := sseDetailFixture(7, "peer5", "01UID-A")
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
-		eventType:   "issue.links_changed",
-		projectID:   7,
-		issueNumber: 43,
+		eventType:    "issue.links_changed",
+		projectID:    7,
+		issueShortID: "ch43",
+		issueUID:     "01UID-CHILD",
 		linksChanged: &linksChangedParents{
-			Refs:    []int64{5},
+			Refs:    []string{"peer5"},
 			RefUIDs: []string{"01UID-B"},
 		},
 	})
 	if cmd != nil {
-		t.Fatal("must not refetch when peer UID mismatches even on number collision")
+		t.Fatal("must not refetch when peer UID mismatches even on short_id collision")
 	}
 }
 
 // TestHandleEventReceived_LinksChangedUIDMatchesAuthoritatively pairs
 // with the mismatch test above: when the event carries the watched
 // detail's UID, the pane refreshes regardless of whether the
-// number-keyed Refs slice contains the detail's number.
+// short_id-keyed Refs slice matches.
 func TestHandleEventReceived_LinksChangedUIDMatchesAuthoritatively(t *testing.T) {
-	m := sseDetailFixture(7, 5)
-	m.detail.issue.UID = "01UID-B"
+	m := sseDetailFixture(7, "peer5", "01UID-B")
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:    "issue.links_changed",
 		projectID:    7,
-		issueNumber:  43,
+		issueShortID: "ch43",
+		issueUID:     "01UID-CHILD",
 		linksChanged: &linksChangedParents{RefUIDs: []string{"01UID-B"}},
 	})
 	if cmd == nil {
@@ -366,35 +413,38 @@ func TestHandleEventReceived_LinksChangedUIDMatchesAuthoritatively(t *testing.T)
 	}
 }
 
-// TestHandleEventReceived_LinksChangedFallsBackToNumberWhenNoUIDs
-// covers the legacy-event path: an issue.links_changed payload
-// without the *_uids fields (e.g. an event written before kata#1)
-// still drives a refetch via the number-only Refs slice.
-func TestHandleEventReceived_LinksChangedFallsBackToNumberWhenNoUIDs(t *testing.T) {
-	m := sseDetailFixture(7, 50)
-	m.detail.issue.UID = "01UID-DETAIL"
+// TestHandleEventReceived_LinksChangedFallsBackToShortIDWhenNoUIDs
+// covers the legacy / synthetic-event path: a linksChangedParents
+// constructed without RefUIDs still drives a refetch via the
+// short_id-only Refs slice. The daemon's post-kata#1 events always
+// carry UIDs, so this is mainly belt-and-suspenders for hand-built
+// fixtures.
+func TestHandleEventReceived_LinksChangedFallsBackToShortIDWhenNoUIDs(t *testing.T) {
+	m := sseDetailFixture(7, "peer5", "01UID-DETAIL")
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:    "issue.links_changed",
 		projectID:    7,
-		issueNumber:  43,
-		linksChanged: &linksChangedParents{Refs: []int64{50}},
+		issueShortID: "ch43",
+		issueUID:     "01UID-CHILD",
+		linksChanged: &linksChangedParents{Refs: []string{"peer5"}},
 	})
 	if cmd == nil {
-		t.Fatal("must refetch by number when event carries no peer UIDs")
+		t.Fatal("must refetch by short_id when event carries no peer UIDs")
 	}
 }
 
 // TestHandleEventReceived_LinksChangedChildSelfRefetches covers
-// `kata edit --remove-parent N`: the child issue's own detail must
-// refresh because issueNumber == openNumber (the parent_removed payload
-// is informational; the URL issue match drives the refetch).
+// `kata edit --remove-parent X`: the child issue's own detail must
+// refresh because issueUID == openUID (the parent_removed payload is
+// informational; the URL-issue match drives the refetch).
 func TestHandleEventReceived_LinksChangedChildSelfRefetches(t *testing.T) {
-	m := sseDetailFixture(7, 43)
+	m := sseDetailFixture(7, "ch43", "01UID-CHILD")
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
 		eventType:    "issue.links_changed",
 		projectID:    7,
-		issueNumber:  43,
-		linksChanged: &linksChangedParents{Removed: 99},
+		issueShortID: "ch43",
+		issueUID:     "01UID-CHILD",
+		linksChanged: &linksChangedParents{Removed: "prev9", RemovedUID: "01UID-OLD-PARENT"},
 	})
 	if cmd == nil {
 		t.Fatal("child detail must refetch on parent removal via links_changed")
@@ -409,16 +459,47 @@ func TestHandleEventReceived_LinksChangedChildSelfRefetches(t *testing.T) {
 // payload carries a parent link and refetch the open parent's detail
 // — otherwise the parent's children section stays stale until reload.
 func TestHandleEventReceived_IssueCreatedWithParentRefetchesOpenParent(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-PARENT")
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
-		eventType:   "issue.created",
-		projectID:   7,
-		issueNumber: 99, // the new child
-		link:        &linkPayload{Type: "parent", FromNumber: 99, ToNumber: 42},
+		eventType:    "issue.created",
+		projectID:    7,
+		issueShortID: "new9",
+		issueUID:     "01UID-NEW",
+		link: &linkPayload{
+			Type:         "parent",
+			FromShortID:  "new9",
+			FromIssueUID: "01UID-NEW",
+			ToShortID:    "abc4",
+			ToIssueUID:   "01UID-PARENT",
+		},
 	})
 	if cmd == nil {
 		t.Fatal("parent detail must refetch when a child is created with a parent link")
+	}
+}
+
+// TestSSEUpdate_ReadsIssueShortID pins that the SSE decoder reads the
+// `issue_short_id` field of an event envelope and exposes it as
+// issueShortID on the resulting eventReceivedMsg. UID rides alongside
+// for canonical matching.
+func TestSSEUpdate_ReadsIssueShortID(t *testing.T) {
+	body := []byte(`{
+		"type":"issue.created",
+		"project_id":7,
+		"project_uid":"01JZ0000000000000000000002",
+		"issue_short_id":"d4ex",
+		"issue_uid":"01HZNQ7VFPK1XGD8R5MABCD4EX"
+	}`)
+	got := decodeEventReceived(frame{kind: frameEvent, eventType: "issue.created", data: body})
+	if got.eventType != "issue.created" {
+		t.Fatalf("eventType = %q, want issue.created", got.eventType)
+	}
+	if got.issueShortID != "d4ex" {
+		t.Fatalf("issueShortID = %q, want d4ex", got.issueShortID)
+	}
+	if got.issueUID != "01HZNQ7VFPK1XGD8R5MABCD4EX" {
+		t.Fatalf("issueUID = %q, want the full ULID", got.issueUID)
 	}
 }
 
@@ -431,8 +512,9 @@ func TestDecodeEventReceived_IssueCreatedExtractsParentLink(t *testing.T) {
 	body := []byte(`{
 		"type":"issue.created",
 		"project_id":7,
-		"issue_number":99,
-		"payload":{"links":[{"type":"parent","to_number":42}]}
+		"issue_short_id":"new9",
+		"issue_uid":"01UID-NEW",
+		"payload":{"links":[{"type":"parent","to_short_id":"abc4","to_issue_uid":"01UID-PARENT"}]}
 	}`)
 	got := decodeEventReceived(frame{eventType: "issue.created", data: body})
 	if got.eventType != "issue.created" {
@@ -444,23 +526,36 @@ func TestDecodeEventReceived_IssueCreatedExtractsParentLink(t *testing.T) {
 	if got.link.Type != "parent" {
 		t.Errorf("link.Type = %q, want parent", got.link.Type)
 	}
-	if got.link.ToNumber != 42 {
-		t.Errorf("link.ToNumber = %d, want 42", got.link.ToNumber)
+	if got.link.ToShortID != "abc4" {
+		t.Errorf("link.ToShortID = %q, want abc4", got.link.ToShortID)
 	}
-	// from_number is implicit (the new issue) — fall back to issueNumber.
-	if got.link.FromNumber != 99 {
-		t.Errorf("link.FromNumber = %d, want 99 (the new issue)", got.link.FromNumber)
+	if got.link.ToIssueUID != "01UID-PARENT" {
+		t.Errorf("link.ToIssueUID = %q, want the parent's UID", got.link.ToIssueUID)
+	}
+	// from_* is implicit (the new issue) — fall back to the issue's own ref.
+	if got.link.FromShortID != "new9" {
+		t.Errorf("link.FromShortID = %q, want new9", got.link.FromShortID)
+	}
+	if got.link.FromIssueUID != "01UID-NEW" {
+		t.Errorf("link.FromIssueUID = %q, want 01UID-NEW", got.link.FromIssueUID)
 	}
 }
 
 func TestHandleEventReceived_NonParentLinkDoesNotRefetchForHierarchy(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
 
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
-		eventType:   "issue.linked",
-		projectID:   7,
-		issueNumber: 99,
-		link:        &linkPayload{Type: "blocks", FromNumber: 43, ToNumber: 42},
+		eventType:    "issue.linked",
+		projectID:    7,
+		issueShortID: "new9",
+		issueUID:     "01UID-NEW",
+		link: &linkPayload{
+			Type:         "blocks",
+			FromShortID:  "ch43",
+			ToShortID:    "abc4",
+			FromIssueUID: "01UID-CHILD",
+			ToIssueUID:   "01UID-OPEN",
+		},
 	})
 	if cmd != nil {
 		t.Fatalf("non-parent link should not refetch for hierarchy, got %T", cmd)
@@ -477,48 +572,52 @@ func TestHandleEventReceived_NonParentLinkDoesNotRefetchForHierarchy(t *testing.
 // children: maybeRefetchOpenDetail uses m.api (a real *Client), so
 // driving the children would actually hit the network.
 func TestHandleEventReceived_DetailViewRefetchesAllTabs(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
 
-	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		projectID: 7, issueShortID: "abc4", issueUID: "01UID-OPEN",
+	})
 	assertDetailRefetchBatch(t, cmd)
 }
 
 // TestHandleEventReceived_DetailViewMismatch_NoRefetch: an event with a
-// different issueNumber than the open detail issue must not trigger a
+// different issue ref than the open detail issue must not trigger a
 // detail refetch — maybeRefetchOpenDetail returns nil. Tested directly
 // to avoid invoking the 150ms debounce tick.
 func TestHandleEventReceived_DetailViewMismatch_NoRefetch(t *testing.T) {
-	m := sseDetailFixture(7, 42)
-	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 99})
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		projectID: 7, issueShortID: "xy99", issueUID: "01UID-OTHER",
+	})
 	if cmd != nil {
-		t.Fatalf("maybeRefetchOpenDetail must return nil for non-matching issueNumber, got %T",
-			cmd)
+		t.Fatalf("maybeRefetchOpenDetail must return nil for non-matching ref, got %T", cmd)
 	}
 }
 
 // TestHandleEventReceived_CrossProjectMismatch_NoRefetch: in all-
-// projects scope, issue numbers are project-scoped — project A #42 is
-// not project B #42. An event for project B #42 must NOT trigger a
-// refetch of the open project A #42 detail. Earlier the helper
-// matched on issueNumber only, so a sibling project's event with the
-// same number would churn the wrong detail.
+// projects scope, short_ids are project-scoped — project A's abc4 is
+// not project B's abc4. An event for project B abc4 must NOT trigger a
+// refetch of the open project A abc4 detail.
 func TestHandleEventReceived_CrossProjectMismatch_NoRefetch(t *testing.T) {
-	// Open detail is project A (#42); event is project B (#42).
-	m := sseDetailFixture(7, 42)
+	// Open detail is project A (abc4); event is project B (abc4).
+	m := sseDetailFixture(7, "abc4", "01UID-A")
 	m.scope = scope{allProjects: true}
-	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 8, issueNumber: 42})
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		projectID: 8, issueShortID: "abc4", issueUID: "01UID-B",
+	})
 	if cmd != nil {
-		t.Fatalf("cross-project event with same issueNumber must not refetch, got %T",
-			cmd)
+		t.Fatalf("cross-project event with same short_id must not refetch, got %T", cmd)
 	}
 }
 
 // TestMaybeRefetchOpenDetail_ListView_NoRefetch: even with a matching
-// issueNumber, list-view (not detail) must not dispatch a refetch.
+// short_id, list-view (not detail) must not dispatch a refetch.
 func TestMaybeRefetchOpenDetail_ListView_NoRefetch(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
 	m.view = viewList
-	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{projectID: 7, issueNumber: 42})
+	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
+		projectID: 7, issueShortID: "abc4", issueUID: "01UID-OPEN",
+	})
 	if cmd != nil {
 		t.Fatalf("list-view must not refetch detail, got %T", cmd)
 	}
@@ -530,7 +629,7 @@ func TestMaybeRefetchOpenDetail_ListView_NoRefetch(t *testing.T) {
 // (each calls into m.api with the real *Client and would hit the
 // network).
 func TestRefetchOpenDetail_BatchShape(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
 
 	assertDetailRefetchBatch(t, m.refetchOpenDetail())
 }
@@ -540,7 +639,7 @@ func TestRefetchOpenDetail_BatchShape(t *testing.T) {
 // stale detail fetches over the wire. A leftover m.detail.issue from
 // a prior open must NOT trigger a refetch.
 func TestRefetchOpenDetail_NoOpInList(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
 	m.view = viewList
 
 	if cmd := m.refetchOpenDetail(); cmd != nil {
@@ -550,9 +649,9 @@ func TestRefetchOpenDetail_NoOpInList(t *testing.T) {
 
 // TestRefetchOpenDetail_NoOpWithoutIssue: a fresh detailModel (no
 // issue seeded) returns nil so the gen-tagged fetches don't fire
-// against a zero-valued projectID/number.
+// against a zero-valued projectID/ref.
 func TestRefetchOpenDetail_NoOpWithoutIssue(t *testing.T) {
-	m := sseDetailFixture(7, 42)
+	m := sseDetailFixture(7, "abc4", "01UID-OPEN")
 	// view is viewDetail but pre-fetch — clear the seeded issue.
 	m.detail.issue = nil
 	if cmd := m.refetchOpenDetail(); cmd != nil {
@@ -566,7 +665,7 @@ func TestRefetchOpenDetail_NoOpWithoutIssue(t *testing.T) {
 func TestHandleResetRequired_DropsCacheAndShowsToast(t *testing.T) {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: 7}
-	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{ShortID: "aaa1"}})
 	m.cache.markStale()
 	m.pendingRefetch = true
 	out, _ := m.handleResetRequired(resetRequiredMsg{})
@@ -600,7 +699,7 @@ func TestHandleRefetchTick_ClearsPendingAndDispatchesIfStale(t *testing.T) {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: 7}
 	m.api = NewClient("http://kata.invalid", nil)
-	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{ShortID: "aaa1"}})
 	m.cache.markStale()
 	m.pendingRefetch = true
 	out, cmd := m.handleRefetchTick()
@@ -620,7 +719,7 @@ func TestHandleRefetchTick_ClearsPendingAndDispatchesIfStale(t *testing.T) {
 func TestHandleRefetchTick_NoOpIfNotStale(t *testing.T) {
 	m := sseUpdateFixture()
 	m.scope = scope{projectID: 7}
-	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 1}})
+	m.cache.put(cacheKey{projectID: 7}, []Issue{{ShortID: "aaa1"}})
 	m.pendingRefetch = true
 	out, cmd := m.handleRefetchTick()
 	mm := out.(Model)
@@ -874,7 +973,7 @@ func TestProjectsLoadedMsg_PreservesStaleOnFailure(t *testing.T) {
 // failure response is dropped without surfacing a toast. If a newer
 // fetch has already landed successfully and the user is looking at
 // fresh data, an older fetch's error must NOT pop a "failed to load"
-// toast over the (current) UI. Regression for roborev job 17576.
+// toast over the (current) UI.
 func TestProjectsLoadedMsg_DropsOlderErrorResponse(t *testing.T) {
 	m := initialModel(Options{})
 	m.view = viewProjects
@@ -943,3 +1042,8 @@ func TestHandleResetRequired_ClearsProjectsState(t *testing.T) {
 	// distinguish refetch types). The flag-clearing + non-nil cmd is
 	// the load-bearing assertion.
 }
+
+// keepImport keeps "fmt" referenced even when no test uses it. Removed
+// when the next round of tests inevitably reintroduces a Sprintf call;
+// the linter complains otherwise.
+var _ = fmt.Sprintf

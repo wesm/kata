@@ -161,25 +161,25 @@ func TestHelp_GatedByInputting(t *testing.T) {
 func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
 	m := initialModel(Options{})
 	m.scope = scope{projectID: 1}
-	m.list.issues = []Issue{{Number: 1, Title: "old"}}
+	m.list.issues = []Issue{{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "old"}}
 	m.prevView = viewList
 	m.view = viewHelp
 	nm, _ := updateModel(m, refetchedMsg{
 		dispatchKey: cacheKey{projectID: 1, limit: queueFetchLimit},
-		issues:      []Issue{{Number: 2, Title: "new"}},
+		issues:      []Issue{{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "new"}},
 	})
 	if got := len(nm.list.issues); got != 1 {
 		t.Fatalf("list.issues len = %d, want 1", got)
 	}
-	if nm.list.issues[0].Number != 2 || nm.list.issues[0].Title != "new" {
-		t.Fatalf("list.issues = %+v, want [{Number:2 Title:new}]", nm.list.issues)
+	if nm.list.issues[0].ShortID != "bbb2" || nm.list.issues[0].Title != "new" {
+		t.Fatalf("list.issues = %+v, want [{ShortID:bbb2 Title:new}]", nm.list.issues)
 	}
 	// Toggling back to the list must surface the refreshed rows.
 	back := sendRune(nm, '?')
 	if back.view != viewList {
 		t.Fatalf("after ? from help, view = %v, want viewList", back.view)
 	}
-	if back.list.issues[0].Number != 2 {
+	if back.list.issues[0].ShortID != "bbb2" {
 		t.Fatal("returning to list must show refetched issues, not stale snapshot")
 	}
 }
@@ -193,23 +193,23 @@ func TestHelp_RefetchWhileOpen_KeepsListInSync(t *testing.T) {
 func TestHelp_InitialFetchAfterScopeToggle_KeepsListInSync(t *testing.T) {
 	m := initialModel(Options{})
 	m.scope = scope{projectID: 1, homeProjectID: 1, homeProjectName: "home"}
-	m.list.issues = []Issue{{Number: 1, Title: "single-project"}}
+	m.list.issues = []Issue{{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "single-project"}}
 	m.prevView = viewList
 	m.view = viewHelp
 	// Simulate an initialFetchMsg from a scope-toggle's fetchInitial.
 	nm, _ := updateModel(m, initialFetchMsg{
 		dispatchKey: cacheKey{projectID: 1, limit: queueFetchLimit},
-		issues:      []Issue{{Number: 99, Title: "all-projects row"}},
+		issues:      []Issue{{UID: "01TEST-99zz", ShortID: "99zz", Title: "all-projects row"}},
 	})
-	if got := len(nm.list.issues); got != 1 || nm.list.issues[0].Number != 99 {
-		t.Fatalf("list.issues = %+v, want [{Number:99 ...}]", nm.list.issues)
+	if got := len(nm.list.issues); got != 1 || nm.list.issues[0].ShortID != "99zz" {
+		t.Fatalf("list.issues = %+v, want [{ShortID:99zz ...}]", nm.list.issues)
 	}
 	// Closing the overlay must surface the refreshed rows.
 	back := sendRune(nm, '?')
 	if back.view != viewList {
 		t.Fatalf("after ? from help, view = %v, want viewList", back.view)
 	}
-	if back.list.issues[0].Number != 99 {
+	if back.list.issues[0].ShortID != "99zz" {
 		t.Fatal("returning to list must show post-toggle rows, not stale snapshot")
 	}
 }

@@ -66,10 +66,13 @@ func eventChunks(es []EventLogEntry, width, cursor int, ts tabState) []entryChun
 }
 
 // linkChunks builds one single-line chunk per link:
-// "[type] → #ToN ← #FromN  by author @ timestamp". The "(open|closed)"
-// status isn't on the LinkEntry projection; pressing Enter jumps to the
-// target. Type is daemon-defined; Author is agent-supplied and is
+// "[type] → #to ← #from  by author @ timestamp". The "(open|closed)"
+// status isn't on the LinkEntry projection; pressing Enter jumps to
+// the target. Type is daemon-defined; Author is agent-supplied and is
 // sanitized so a malicious link author can't push the terminal around.
+// Task 18 owns the final visual shape (kata#abc4 qualified rendering);
+// this commit only swaps the wire field names so the package compiles
+// against the new LinkEntry shape.
 func linkChunks(ls []LinkEntry, width, cursor int, ts tabState) []entryChunk {
 	_ = width
 	if placeholder := tabPlaceholder(ts, "links", "(no links)", len(ls)); placeholder != nil {
@@ -77,8 +80,8 @@ func linkChunks(ls []LinkEntry, width, cursor int, ts tabState) []entryChunk {
 	}
 	chunks := make([]entryChunk, 0, len(ls))
 	for i, l := range ls {
-		line := fmt.Sprintf("[%s] → #%d ← #%d  by %s @ %s",
-			l.Type, l.ToNumber, l.FromNumber,
+		line := fmt.Sprintf("[%s] → #%s ← #%s  by %s @ %s",
+			l.Type, l.To.ShortID, l.From.ShortID,
 			sanitizeForDisplay(l.Author), fmtTime(l.CreatedAt))
 		chunks = append(chunks, entryChunk{lines: []string{
 			applyActivityCursor(line, i == cursor),

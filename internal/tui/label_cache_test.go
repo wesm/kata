@@ -157,7 +157,7 @@ func TestBatchLabelRefresh_GatesOnCacheExistence(t *testing.T) {
 	// No cache entry for pid=7 — the user never opened the menu.
 	mut := mutationDoneMsg{
 		kind: "label.add",
-		resp: &MutationResp{Issue: &Issue{ProjectID: 7, Number: 42}},
+		resp: &MutationResp{Issue: &Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa"}},
 	}
 	out, cmd := batchLabelRefresh(m, nil, mut)
 	nm := out.(Model)
@@ -184,7 +184,7 @@ func TestBatchLabelRefresh_DispatchesWhenEntryExists(t *testing.T) {
 	}
 	mut := mutationDoneMsg{
 		kind: "label.add",
-		resp: &MutationResp{Issue: &Issue{ProjectID: 7, Number: 42}},
+		resp: &MutationResp{Issue: &Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa"}},
 	}
 	out, cmd := batchLabelRefresh(m, nil, mut)
 	nm := out.(Model)
@@ -237,7 +237,7 @@ func TestLabelCache_SSEEventInvalidatesSuggestionCacheOnly(t *testing.T) {
 		gen:    5, pid: pid,
 	}
 	nm, _ := updateModel(m, eventReceivedMsg{
-		eventType: "issue.labeled", projectID: pid, issueNumber: 42,
+		eventType: "issue.labeled", projectID: pid, issueShortID: "42aa",
 	})
 	entry := nm.projectLabels.byProject[pid]
 	if !entry.fetching {

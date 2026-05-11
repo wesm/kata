@@ -13,27 +13,42 @@ import (
 // copy from showIssue's body.labels for detail open; the omitempty tag
 // keeps absence on a show response from blanking a previously-populated
 // slice. The deleted bool is derived from DeletedAt being non-nil.
+//
+// UID is the canonical reference; ShortID is the per-project display
+// snapshot (4+ chars of the ULID suffix, per spec §4); QualifiedID is
+// the human-facing "<project>#<short_id>" form populated on list rows
+// (api.IssueOut.QualifiedID).
 type Issue struct {
-	ID           int64        `json:"id"`
-	UID          string       `json:"uid,omitempty"`
-	ProjectID    int64        `json:"project_id"`
-	ProjectUID   string       `json:"project_uid,omitempty"`
-	Number       int64        `json:"number"`
-	Title        string       `json:"title"`
-	Body         string       `json:"body"`
-	Status       string       `json:"status"`
-	ClosedReason *string      `json:"closed_reason,omitempty"`
-	Owner        *string      `json:"owner,omitempty"`
-	Author       string       `json:"author"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
-	ClosedAt     *time.Time   `json:"closed_at,omitempty"`
-	DeletedAt    *time.Time   `json:"deleted_at,omitempty"`
-	Labels       []string     `json:"labels,omitempty"`
-	ParentNumber *int64       `json:"parent_number,omitempty"`
-	ChildCounts  *ChildCounts `json:"child_counts,omitempty"`
-	Blocks       []int64      `json:"blocks,omitempty"`
-	Priority     *int64       `json:"priority,omitempty"`
+	ID            int64        `json:"id"`
+	UID           string       `json:"uid,omitempty"`
+	ProjectID     int64        `json:"project_id"`
+	ProjectUID    string       `json:"project_uid,omitempty"`
+	ShortID       string       `json:"short_id"`
+	QualifiedID   string       `json:"qualified_id,omitempty"`
+	Title         string       `json:"title"`
+	Body          string       `json:"body"`
+	Status        string       `json:"status"`
+	ClosedReason  *string      `json:"closed_reason,omitempty"`
+	Owner         *string      `json:"owner,omitempty"`
+	Author        string       `json:"author"`
+	CreatedAt     time.Time    `json:"created_at"`
+	UpdatedAt     time.Time    `json:"updated_at"`
+	ClosedAt      *time.Time   `json:"closed_at,omitempty"`
+	DeletedAt     *time.Time   `json:"deleted_at,omitempty"`
+	Labels        []string     `json:"labels,omitempty"`
+	ParentShortID *string      `json:"parent_short_id,omitempty"`
+	ChildCounts   *ChildCounts `json:"child_counts,omitempty"`
+	Blocks        []LinkPeer   `json:"blocks,omitempty"`
+	BlockedBy     []LinkPeer   `json:"blocked_by,omitempty"`
+	Related       []LinkPeer   `json:"related,omitempty"`
+	Priority      *int64       `json:"priority,omitempty"`
+}
+
+// LinkPeer mirrors api.LinkPeer: the canonical UID plus the rendered
+// short_id snapshot for one end of a link.
+type LinkPeer struct {
+	UID     string `json:"uid"`
+	ShortID string `json:"short_id"`
 }
 
 // ChildCounts is the direct-child aggregate attached to queue/detail rows.
@@ -43,10 +58,14 @@ type ChildCounts struct {
 }
 
 // IssueRef is the compact parent issue projection on detail responses.
+// Mirrors api.IssueRef: UID is canonical, ShortID and QualifiedID are
+// display projections rendered at the API boundary.
 type IssueRef struct {
-	Number int64  `json:"number"`
-	Title  string `json:"title"`
-	Status string `json:"status"`
+	UID         string `json:"uid"`
+	ShortID     string `json:"short_id"`
+	QualifiedID string `json:"qualified_id"`
+	Title       string `json:"title"`
+	Status      string `json:"status"`
 }
 
 // ListFilter is the union of filters used by list views. Limit is sent
@@ -77,17 +96,20 @@ func (f ListFilter) values() url.Values {
 	return v
 }
 
-// CreateInitialLinkBody requests a link created atomically with a new issue.
+// CreateInitialLinkBody requests a link created atomically with a new
+// issue. ToRef is a short_id, qualified short_id ("kata#abc4"), or a
+// 26-char ULID; the daemon resolves it to the target issue at request
+// time.
 //
-// Incoming reverses direction for type=blocks: when true, the new issue is
-// the link's "to" side (i.e. the new issue is BLOCKED BY the named target
-// — the `kata create --blocked-by N` shape). Default (false) leaves the
-// new issue as the link's "from" side (`--blocks N`). Rejected by the
-// daemon for type=parent (no inverse parent direction is exposed) and
-// meaningless for type=related (which is symmetric).
+// Incoming reverses direction for type=blocks: when true, the new issue
+// is the link's "to" side (i.e. the new issue is BLOCKED BY the named
+// target — the `kata create --blocked-by N` shape). Default (false)
+// leaves the new issue as the link's "from" side (`--blocks N`).
+// Rejected by the daemon for type=parent (no inverse parent direction
+// is exposed) and meaningless for type=related (which is symmetric).
 type CreateInitialLinkBody struct {
 	Type     string `json:"type"`
-	ToNumber int64  `json:"to_number"`
+	ToRef    string `json:"to_ref"`
 	Incoming bool   `json:"incoming,omitempty"`
 }
 
@@ -109,10 +131,12 @@ type CreateIssueBody struct {
 	IdempotencyKey string                  `json:"-"`
 }
 
-// LinkBody is the request projection for POST /links.
+// LinkBody is the request projection for POST /links. ToRef accepts any
+// shape the daemon's resolver understands (short_id, qualified, or
+// 26-char ULID).
 type LinkBody struct {
-	Type     string `json:"type"`
-	ToNumber int64  `json:"to_number"`
+	Type  string `json:"type"`
+	ToRef string `json:"to_ref"`
 }
 
 // MutationResp mirrors the §4.5 mutation envelope.
@@ -130,6 +154,7 @@ type EventEnvelope struct {
 	Type            string    `json:"type"`
 	ProjectUID      string    `json:"project_uid,omitempty"`
 	IssueUID        string    `json:"issue_uid,omitempty"`
+	IssueShortID    *string   `json:"issue_short_id,omitempty"`
 	RelatedIssueUID string    `json:"related_issue_uid,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 }
@@ -137,9 +162,8 @@ type EventEnvelope struct {
 // ResolveResp is the body of POST /projects/resolve.
 type ResolveResp struct {
 	Project struct {
-		ID              int64  `json:"id"`
-		Name            string `json:"name"`
-		NextIssueNumber int64  `json:"next_issue_number"`
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
 	} `json:"project"`
 	WorkspaceRoot string `json:"workspace_root"`
 }
@@ -176,28 +200,31 @@ type CommentEntry struct {
 }
 
 // EventLogEntry is the per-event projection used by the events tab.
+// IssueShortID is the project-scoped display ref for the subject issue;
+// IssueUID is the canonical reference and survives short_id cutovers.
 type EventLogEntry struct {
-	ID              int64          `json:"event_id"`
-	Type            string         `json:"type"`
-	Actor           string         `json:"actor"`
-	ProjectUID      string         `json:"project_uid,omitempty"`
-	IssueUID        string         `json:"issue_uid,omitempty"`
-	RelatedIssueUID string         `json:"related_issue_uid,omitempty"`
-	IssueNumber     *int64         `json:"issue_number,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	Payload         map[string]any `json:"payload,omitempty"`
+	ID                  int64          `json:"event_id"`
+	Type                string         `json:"type"`
+	Actor               string         `json:"actor"`
+	ProjectUID          string         `json:"project_uid,omitempty"`
+	IssueUID            string         `json:"issue_uid,omitempty"`
+	IssueShortID        *string        `json:"issue_short_id,omitempty"`
+	RelatedIssueUID     string         `json:"related_issue_uid,omitempty"`
+	RelatedIssueShortID *string        `json:"related_issue_short_id,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+	Payload             map[string]any `json:"payload,omitempty"`
 }
 
-// LinkEntry mirrors the daemon's LinkOut wire shape.
+// LinkEntry mirrors api.LinkOut: each endpoint is a LinkPeer (UID +
+// short_id) so the TUI can correlate either by canonical ID or by
+// display snapshot.
 type LinkEntry struct {
-	ID           int64     `json:"id"`
-	Type         string    `json:"type"`
-	FromNumber   int64     `json:"from_number"`
-	ToNumber     int64     `json:"to_number"`
-	FromIssueUID string    `json:"from_issue_uid,omitempty"`
-	ToIssueUID   string    `json:"to_issue_uid,omitempty"`
-	Author       string    `json:"author"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
+	Type      string    `json:"type"`
+	From      LinkPeer  `json:"from"`
+	To        LinkPeer  `json:"to"`
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // APIError is the structured form of the §4.6 error envelope.
@@ -224,7 +251,7 @@ func (e *APIError) Error() string {
 	return strings.Join(parts, ": ")
 }
 
-// showIssueBody mirrors the daemon's GET /issues/{number} envelope.
+// showIssueBody mirrors the daemon's GET /issues/{ref} envelope.
 // The daemon ships labels as a sibling slice (one IssueLabel per row);
 // showIssueLabel keeps decode tight to the fields the TUI needs.
 type showIssueBody struct {

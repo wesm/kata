@@ -39,34 +39,38 @@ const (
 )
 
 // detailAPI is the subset of *Client the detail view needs. Mirrors
-// listAPI so detail_test.go can drive Update with a fake.
+// listAPI so detail_test.go can drive Update with a fake. ref is a
+// short_id, qualified short_id, or 26-char ULID — the daemon's path
+// resolver accepts all three; ListEvents reads the issue_short_id
+// embedded in each event row to filter the project-wide poll
+// response.
 type detailAPI interface {
-	GetIssueDetail(ctx context.Context, projectID, number int64) (*IssueDetail, error)
-	ListComments(ctx context.Context, projectID, number int64) ([]CommentEntry, error)
-	ListEvents(ctx context.Context, projectID, number int64) ([]EventLogEntry, error)
-	ListLinks(ctx context.Context, projectID, number int64) ([]LinkEntry, error)
-	Close(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
-	Reopen(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
+	GetIssueDetail(ctx context.Context, projectID int64, ref string) (*IssueDetail, error)
+	ListComments(ctx context.Context, projectID int64, ref string) ([]CommentEntry, error)
+	ListEvents(ctx context.Context, projectID int64, ref string) ([]EventLogEntry, error)
+	ListLinks(ctx context.Context, projectID int64, ref string) ([]LinkEntry, error)
+	Close(ctx context.Context, projectID int64, ref, actor string) (*MutationResp, error)
+	Reopen(ctx context.Context, projectID int64, ref, actor string) (*MutationResp, error)
 	AddLabel(
-		ctx context.Context, projectID, number int64, label, actor string,
+		ctx context.Context, projectID int64, ref, label, actor string,
 	) (*MutationResp, error)
 	RemoveLabel(
-		ctx context.Context, projectID, number int64, label, actor string,
+		ctx context.Context, projectID int64, ref, label, actor string,
 	) (*MutationResp, error)
 	Assign(
-		ctx context.Context, projectID, number int64, owner, actor string,
+		ctx context.Context, projectID int64, ref, owner, actor string,
 	) (*MutationResp, error)
 	SetPriority(
-		ctx context.Context, projectID, number int64, priority *int64, actor string,
+		ctx context.Context, projectID int64, ref string, priority *int64, actor string,
 	) (*MutationResp, error)
 	AddLink(
-		ctx context.Context, projectID, number int64, body LinkBody, actor string,
+		ctx context.Context, projectID int64, ref string, body LinkBody, actor string,
 	) (*MutationResp, error)
 	EditBody(
-		ctx context.Context, projectID, number int64, body, actor string,
+		ctx context.Context, projectID int64, ref, body, actor string,
 	) (*MutationResp, error)
 	AddComment(
-		ctx context.Context, projectID, number int64, body, actor string,
+		ctx context.Context, projectID int64, ref, body, actor string,
 	) (*MutationResp, error)
 }
 
@@ -502,7 +506,7 @@ func (dm detailModel) handleEnter(api detailAPI) (detailModel, tea.Cmd) {
 		if dm.childCursor < 0 || dm.childCursor >= len(dm.children) {
 			return dm, nil
 		}
-		return dm, jumpDetailCmd(dm.children[dm.childCursor].Number)
+		return dm, jumpDetailCmd(dm.children[dm.childCursor].ShortID)
 	}
 	target, ok := dm.jumpTarget()
 	if !ok {
@@ -596,23 +600,24 @@ func clampInt(v, lo, hi int) int {
 // jumpDetailCmd emits a jumpDetailMsg so Model.handleJumpDetail can
 // perform the actual jump (with a fresh monotonic gen). Splitting the
 // emit off handleEnter keeps the cmd shape obvious in tests.
-func jumpDetailCmd(number int64) tea.Cmd {
-	return func() tea.Msg { return jumpDetailMsg{number: number} }
+func jumpDetailCmd(ref string) tea.Cmd {
+	return func() tea.Msg { return jumpDetailMsg{ref: ref} }
 }
 
-// jumpTarget returns the issue number to jump to from the active tab+
-// cursor. Comments tab never jumps. Events tab reads payload.to_number
-// or payload.issue_number; links tab reads the link's ToNumber, or
-// FromNumber when the link is incoming (ToNumber matches the current
-// issue) so Enter takes the user to the other end of the relation.
-func (dm detailModel) jumpTarget() (int64, bool) {
-	current := int64(0)
+// jumpTarget returns the short_id to jump to from the active tab +
+// cursor. Comments tab never jumps. Events tab reads the payload's
+// peer short_id (to_short_id / issue_short_id); links tab reads the
+// link's To.ShortID, or From.ShortID when the link is incoming (the
+// link's To side matches the current issue) so Enter takes the user
+// to the other end of the relation.
+func (dm detailModel) jumpTarget() (string, bool) {
+	current := ""
 	if dm.issue != nil {
-		current = dm.issue.Number
+		current = dm.issue.ShortID
 	}
-	rejectCurrent := func(target int64, ok bool) (int64, bool) {
-		if !ok || (current != 0 && target == current) {
-			return 0, false
+	rejectCurrent := func(target string, ok bool) (string, bool) {
+		if !ok || target == "" || (current != "" && target == current) {
+			return "", false
 		}
 		return target, true
 	}
@@ -622,7 +627,7 @@ func (dm detailModel) jumpTarget() (int64, bool) {
 	case tabLinks:
 		return rejectCurrent(linkJumpTarget(dm.links, dm.tabCursor, current))
 	}
-	return 0, false
+	return "", false
 }
 
 // activeRowCount is the row count for the active tab.

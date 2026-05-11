@@ -16,9 +16,13 @@ func (m childSortMode) label() string {
 	return "topological"
 }
 
+// issueKey is the (project_id, short_id) tuple used as a map key for
+// queue rendering and expansion state. short_id is the project-scoped
+// display ref; the daemon guarantees uniqueness within a project so
+// the tuple is collision-free.
 type issueKey struct {
 	projectID int64
-	number    int64
+	shortID   string
 }
 
 type queueRow struct {
@@ -43,7 +47,7 @@ func buildQueueRowsWithSort(
 	state := newQueueBuildState(issues, filter, expanded, childSort)
 	for _, key := range state.order {
 		iss := state.byKey[key]
-		if iss.ParentNumber != nil && state.hasIssue(issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}) {
+		if iss.ParentShortID != nil && state.hasIssue(issueKey{projectID: iss.ProjectID, shortID: *iss.ParentShortID}) {
 			continue
 		}
 		state.appendNode(key, 0, false, nil)
@@ -92,16 +96,16 @@ func newQueueBuildState(
 		emitted:          make(map[issueKey]bool, len(issues)),
 	}
 	for _, iss := range issues {
-		key := issueKey{projectID: iss.ProjectID, number: iss.Number}
+		key := issueKey{projectID: iss.ProjectID, shortID: iss.ShortID}
 		state.byKey[key] = iss
 		state.order = append(state.order, key)
 	}
 	for _, key := range state.order {
 		iss := state.byKey[key]
-		if iss.ParentNumber == nil {
+		if iss.ParentShortID == nil {
 			continue
 		}
-		parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+		parentKey := issueKey{projectID: iss.ProjectID, shortID: *iss.ParentShortID}
 		if state.hasIssue(parentKey) {
 			state.childrenByParent[parentKey] = append(state.childrenByParent[parentKey], key)
 		}
@@ -138,10 +142,10 @@ func (s *queueBuildState) includeAncestors(key issueKey) {
 	seen := map[issueKey]bool{key: true}
 	for {
 		iss := s.byKey[key]
-		if iss.ParentNumber == nil {
+		if iss.ParentShortID == nil {
 			return
 		}
-		parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+		parentKey := issueKey{projectID: iss.ProjectID, shortID: *iss.ParentShortID}
 		if seen[parentKey] || !s.hasIssue(parentKey) {
 			return
 		}
@@ -156,10 +160,10 @@ func (s *queueBuildState) includeAncestorsWhenTheyConnectToMatchedAncestor(key i
 	seen := map[issueKey]bool{key: true}
 	for {
 		iss := s.byKey[key]
-		if iss.ParentNumber == nil {
+		if iss.ParentShortID == nil {
 			return
 		}
-		parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+		parentKey := issueKey{projectID: iss.ProjectID, shortID: *iss.ParentShortID}
 		if seen[parentKey] || !s.hasIssue(parentKey) {
 			return
 		}
@@ -264,16 +268,16 @@ func (s *queueBuildState) topologicalChildKeys(children []issueKey) []issueKey {
 		return children
 	}
 	index := make(map[issueKey]int, len(children))
-	byNumber := make(map[int64]issueKey, len(children))
+	byShortID := make(map[string]issueKey, len(children))
 	for i, key := range children {
 		index[key] = i
-		byNumber[key.number] = key
+		byShortID[key.shortID] = key
 	}
 	outgoing := make(map[issueKey][]issueKey, len(children))
 	indegree := make(map[issueKey]int, len(children))
 	for _, key := range children {
-		for _, blockedNumber := range s.byKey[key].Blocks {
-			blockedKey, ok := byNumber[blockedNumber]
+		for _, blocked := range s.byKey[key].Blocks {
+			blockedKey, ok := byShortID[blocked.ShortID]
 			if !ok || blockedKey == key {
 				continue
 			}
@@ -339,10 +343,10 @@ func (s *queueBuildState) hasIssue(key issueKey) bool {
 
 func (s *queueBuildState) hasIncludedParent(key issueKey) bool {
 	iss := s.byKey[key]
-	if iss.ParentNumber == nil {
+	if iss.ParentShortID == nil {
 		return false
 	}
-	parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+	parentKey := issueKey{projectID: iss.ProjectID, shortID: *iss.ParentShortID}
 	return s.included[parentKey]
 }
 

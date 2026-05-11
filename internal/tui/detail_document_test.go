@@ -25,7 +25,7 @@ func TestDetailDocumentPage80x50LayoutSignals(t *testing.T) {
 	assertLineCount(t, got, 50)
 	assertLinesFitWidth(t, got, 80)
 	for _, want := range []string{
-		"#42",
+		"#42aa",
 		"fix login bug on Safari",
 		"[open]",
 		"authored by wesm",
@@ -33,7 +33,7 @@ func TestDetailDocumentPage80x50LayoutSignals(t *testing.T) {
 		"updated 3h ago",
 		"owner: alice",
 		"labels: [bug] [needs-design] [prio-1]",
-		"parent: #12 workspace polish parent",
+		"parent: #c012 workspace polish parent",
 		"priority: none",
 		"children: 1 open / 2 total",
 		"Body",
@@ -164,13 +164,13 @@ func TestDetailDocument_NarrowStacksMetadata(t *testing.T) {
 	dm := snapDetailFixture()
 	dm.issue.Owner = ptrString("alice")
 	dm.issue.Labels = []string{"bug", "prio-1"}
-	dm.parent = &IssueRef{Number: 12, Title: "workspace polish", Status: "open"}
+	dm.parent = &IssueRef{ShortID: "12pp", Title: "workspace polish", Status: "open"}
 
 	got := stripANSI(dm.View(72, 40, viewChrome{}))
 	assertLinesFitWidth(t, got, 72)
 	assertStringContains(t, got, "owner: alice")
 	assertStringContains(t, got, "labels: [bug] [prio-1]")
-	assertStringContains(t, got, "parent: #12 workspace polish")
+	assertStringContains(t, got, "parent: #12pp workspace polish")
 	if strings.Contains(got, "children: none") {
 		t.Fatalf("empty children should be omitted, not labeled `children: none`:\n%s", got)
 	}
@@ -178,7 +178,7 @@ func TestDetailDocument_NarrowStacksMetadata(t *testing.T) {
 
 func TestDetailDocument_EmptyBodyAndActivityOmitted(t *testing.T) {
 	defer snapshotInit(t)()
-	iss := Issue{ProjectID: 7, Number: 99, Title: "empty issue", Status: "open"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-99", ShortID: "99zz", Title: "empty issue", Status: "open"}
 	dm := detailModel{issue: &iss}
 
 	got := stripANSI(dm.View(80, 32, viewChrome{}))
@@ -191,7 +191,7 @@ func TestDetailDocument_EmptyBodyAndActivityOmitted(t *testing.T) {
 func TestDetailDocument_LongTitleKeepsStatusVisible(t *testing.T) {
 	defer snapshotInit(t)()
 	title := "this is a very long issue title that should truncate before it can collide with the status pill"
-	iss := Issue{ProjectID: 7, Number: 77, Title: title, Status: "closed"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-77", ShortID: "77yy", Title: title, Status: "closed"}
 	dm := detailModel{issue: &iss}
 
 	got := stripANSI(dm.View(80, 32, viewChrome{}))
@@ -206,7 +206,8 @@ func TestDetailDocument_MarkdownRenderingDropsSourceFences(t *testing.T) {
 	defer snapshotInit(t)()
 	iss := Issue{
 		ProjectID: 7,
-		Number:    55,
+		UID:       "01TEST-55",
+		ShortID:   "55ww",
 		Title:     "markdown body",
 		Status:    "open",
 		Body: strings.Join([]string{

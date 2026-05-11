@@ -24,7 +24,7 @@ func newDetailHostModel(opts Options, projectID int64) Model {
 
 // assertJumpDetailCmd evaluates cmd, asserts it returns a jumpDetailMsg
 // targeting want, and fails otherwise.
-func assertJumpDetailCmd(t *testing.T, cmd tea.Cmd, want int64) {
+func assertJumpDetailCmd(t *testing.T, cmd tea.Cmd, want string) {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("expected jump cmd, got nil")
@@ -34,8 +34,8 @@ func assertJumpDetailCmd(t *testing.T, cmd tea.Cmd, want int64) {
 	if !ok {
 		t.Fatalf("expected jumpDetailMsg, got %T", msg)
 	}
-	if jm.number != want {
-		t.Fatalf("jumpDetailMsg.number = %d, want %d", jm.number, want)
+	if jm.ref != want {
+		t.Fatalf("jumpDetailMsg.ref = %q, want %q", jm.ref, want)
 	}
 }
 
@@ -44,8 +44,8 @@ func assertJumpDetailCmd(t *testing.T, cmd tea.Cmd, want int64) {
 // The body has many lines so j scrolling has somewhere to go.
 func detailFixture() detailModel {
 	iss := Issue{
-		ProjectID: 7, Number: 42, Title: "fix login bug on Safari",
-		Status: "open", Author: "wesm",
+		ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa",
+		Title: "fix login bug on Safari", Status: "open", Author: "wesm",
 	}
 	body := strings.Repeat("line\n", 20) + "tail"
 	iss.Body = body
@@ -61,7 +61,12 @@ func detailFixture() detailModel {
 			{ID: 10, Type: "issue.commented", Actor: "bob"},
 		},
 		links: []LinkEntry{
-			{ID: 100, Type: "blocks", FromNumber: 42, ToNumber: 7, Author: "wesm"},
+			{
+				ID: 100, Type: "blocks",
+				From:   LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+				To:     LinkPeer{UID: "01TEST-7bb", ShortID: "7bb"},
+				Author: "wesm",
+			},
 		},
 	}
 }
@@ -73,8 +78,8 @@ func TestDetail_Render_Header_Title(t *testing.T) {
 	if !strings.Contains(out, "fix login bug on Safari") {
 		t.Fatalf("title missing from view:\n%s", out)
 	}
-	if !strings.Contains(out, "#42") {
-		t.Fatalf("issue number missing:\n%s", out)
+	if !strings.Contains(out, "#42aa") {
+		t.Fatalf("issue short_id missing:\n%s", out)
 	}
 }
 
@@ -115,10 +120,10 @@ func TestDetail_OpenCopiesConfiguredUIDFormat(t *testing.T) {
 	m := initialModel(Options{DisplayUIDFormat: "short"})
 	out, _ := m.handleOpenDetail(openDetailMsg{issue: Issue{
 		ProjectID: 7,
-		Number:    42,
+		UID:       "01JZ0000000000000000000001",
+		ShortID:   "42aa",
 		Title:     "configured",
 		Status:    "open",
-		UID:       "01JZ0000000000000000000001",
 	}})
 	next := out.(Model)
 	if next.detail.uidFormat != uidDisplayShort {
@@ -132,10 +137,10 @@ func TestDetail_OpenCopiesConfiguredUIDFormat(t *testing.T) {
 
 func TestDetail_CompactSheetDoesNotRenderUID(t *testing.T) {
 	iss := Issue{
-		Number: 42,
-		Title:  "compact",
-		Status: "open",
-		UID:    "01JZ0000000000000000000001",
+		UID:     "01JZ0000000000000000000001",
+		ShortID: "42aa",
+		Title:   "compact",
+		Status:  "open",
 	}
 	dm := detailModel{issue: &iss, uidFormat: uidDisplayFull}
 	out := stripANSI(dm.renderTinyFallback(32))
@@ -146,20 +151,20 @@ func TestDetail_CompactSheetDoesNotRenderUID(t *testing.T) {
 }
 
 func TestRenderHierarchySummary_FormatsParentAndChildren(t *testing.T) {
-	parent := &IssueRef{Number: 12, Title: "workspace polish parent", Status: "open"}
+	parent := &IssueRef{ShortID: "12pp", Title: "workspace polish parent", Status: "open"}
 	children := []Issue{
-		{Number: 43, Status: "open"},
-		{Number: 44, Status: "closed"},
+		{UID: "01TEST-43cc", ShortID: "43cc", Status: "open"},
+		{UID: "01TEST-44dd", ShortID: "44dd", Status: "closed"},
 	}
 	got := renderHierarchySummary(80, parent, children)
-	if !strings.Contains(got, "Parent: #12 workspace polish parent") {
+	if !strings.Contains(got, "Parent: #12pp workspace polish parent") {
 		t.Fatalf("parent summary missing:\n%s", got)
 	}
 	if !strings.Contains(got, "Children: 1 open / 2 total") {
 		t.Fatalf("children summary missing:\n%s", got)
 	}
 
-	longParent := &IssueRef{Number: 99, Title: strings.Repeat("very long ", 20), Status: "open"}
+	longParent := &IssueRef{ShortID: "99zz", Title: strings.Repeat("very long ", 20), Status: "open"}
 	got = renderHierarchySummary(50, longParent, children)
 	if runewidth.StringWidth(stripANSI(got)) > 50 {
 		t.Fatalf("summary width overflowed: width=%d text=%q",
@@ -169,10 +174,10 @@ func TestRenderHierarchySummary_FormatsParentAndChildren(t *testing.T) {
 
 func TestDetail_RenderHierarchySections(t *testing.T) {
 	dm := detailFixture()
-	dm.parent = &IssueRef{Number: 12, Title: "workspace polish parent", Status: "open"}
+	dm.parent = &IssueRef{ShortID: "12pp", Title: "workspace polish parent", Status: "open"}
 	dm.children = []Issue{
-		{Number: 43, Title: "detail hint bars incomplete", Status: "open", Owner: ptrString("alice")},
-		{Number: 44, Title: "new issue form parent field", Status: "closed"},
+		{UID: "01TEST-43cc", ShortID: "43cc", Title: "detail hint bars incomplete", Status: "open", Owner: ptrString("alice")},
+		{UID: "01TEST-44dd", ShortID: "44dd", Title: "new issue form parent field", Status: "closed"},
 	}
 	// In the unified-viewport layout the children section sits below the
 	// body in document order. Assert against the assembled document
@@ -181,12 +186,12 @@ func TestDetail_RenderHierarchySections(t *testing.T) {
 	docLines, _ := dm.detailDocumentLines(100, viewChrome{})
 	out := stripANSI(strings.Join(docLines, "\n"))
 	assertContainsAll(t, out,
-		"parent: #12 workspace polish parent",
+		"parent: #12pp workspace polish parent",
 		"children: 1 open / 2 total",
 		"Children",
-		"#43",
+		"#43cc",
 		"detail hint bars incomplete",
-		"#44",
+		"#44dd",
 	)
 }
 
@@ -244,7 +249,7 @@ func TestDetail_TabRender_ActiveContent(t *testing.T) {
 // TestDetail_Scroll_BoundsAtTop: with no comments, k at scroll==0 must
 // clamp at zero. The fixture HAS comments so we use a body-only model.
 func TestDetail_Scroll_BoundsAtTop(t *testing.T) {
-	dm := detailModel{issue: &Issue{Number: 1, Body: "x\ny"}}
+	dm := detailModel{issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Body: "x\ny"}}
 	km := newKeymap()
 	dm, _ = dm.Update(runeKey('k'), km, nil)
 	if dm.scroll != 0 {
@@ -256,7 +261,7 @@ func TestDetail_Scroll_BoundsAtTop(t *testing.T) {
 // active tab has no rows. The fixture comments would steal j, so
 // build a tab-empty model for the body-scroll path.
 func TestDetail_Scroll_DownIncreases(t *testing.T) {
-	dm := detailModel{issue: &Issue{Number: 1, Body: "x\ny"}}
+	dm := detailModel{issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Body: "x\ny"}}
 	km := newKeymap()
 	dm, _ = dm.Update(runeKey('j'), km, nil)
 	dm, _ = dm.Update(runeKey('j'), km, nil)
@@ -306,7 +311,7 @@ func TestDetail_Scroll_PageUpClampsAtTop(t *testing.T) {
 // children list.
 func TestDetail_Scroll_PageDownWorksOnChildrenFocus(t *testing.T) {
 	dm := detailFixture()
-	dm.children = []Issue{{Number: 99, Title: "child", Status: "open"}}
+	dm.children = []Issue{{UID: "01TEST-99zz", ShortID: "99zz", Title: "child", Status: "open"}}
 	dm.detailFocus = focusChildren
 	km := newKeymap()
 	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyPgDown}, km, nil)
@@ -522,8 +527,8 @@ func TestDetail_OpenFromList_DispatchesBatch(t *testing.T) {
 	m := newDetailHostModel(Options{}, 7)
 	m.list.loading = false
 	m.list.issues = []Issue{
-		{ProjectID: 7, Number: 1, Title: "first"},
-		{ProjectID: 7, Number: 2, Title: "second"},
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "first"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "second"},
 	}
 	out, _ := m.Update(runeKey('j'))
 	m = out.(Model)
@@ -537,15 +542,15 @@ func TestDetail_OpenFromList_DispatchesBatch(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected openDetailMsg, got %T", msg)
 	}
-	if open.issue.Number != 2 {
-		t.Fatalf("issue.Number = %d, want 2", open.issue.Number)
+	if open.issue.ShortID != "bbb2" {
+		t.Fatalf("issue.ShortID = %q, want bbb2", open.issue.ShortID)
 	}
 	out, _ = m.Update(open)
 	m = out.(Model)
 	if m.view != viewDetail {
 		t.Fatalf("view = %v, want viewDetail", m.view)
 	}
-	if m.detail.issue == nil || m.detail.issue.Number != 2 {
+	if m.detail.issue == nil || m.detail.issue.ShortID != "bbb2" {
 		t.Fatalf("detail.issue not seeded correctly: %+v", m.detail.issue)
 	}
 	if m.detail.scopePID != 7 {
@@ -562,8 +567,8 @@ func TestDetail_PopReturnsToListPreservingState(t *testing.T) {
 	m.list.cursor = 1
 	m.list.filter = ListFilter{Status: "open", Search: "bug"}
 	m.list.issues = []Issue{
-		{ProjectID: 7, Number: 1, Title: "first bug"},
-		{ProjectID: 7, Number: 2, Title: "second bug"},
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "first bug"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "second bug"},
 	}
 	m.view = viewDetail
 	m.detail.issue = &m.list.issues[1]
@@ -592,7 +597,7 @@ func TestDetail_Loading_Renders(t *testing.T) {
 // TestDetail_FetchedMsgs_Populate: the three tab fetch messages seed
 // the corresponding slices on dm.
 func TestDetail_FetchedMsgs_Populate(t *testing.T) {
-	dm := detailModel{issue: &Issue{Number: 1}}
+	dm := detailModel{issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1"}}
 	km := newKeymap()
 	dm, _ = dm.Update(commentsFetchedMsg{
 		comments: []CommentEntry{{ID: 1, Author: "a", Body: "x"}},
@@ -619,7 +624,7 @@ func TestDetail_FetchedMsgs_Populate(t *testing.T) {
 // The detail-issue dm.err remains a separate signal because it gates
 // the entire view rather than one tab.
 func TestDetail_FetchedMsgs_ErrorRecorded(t *testing.T) {
-	dm := detailModel{issue: &Issue{Number: 1}}
+	dm := detailModel{issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1"}}
 	km := newKeymap()
 	dm, _ = dm.Update(commentsFetchedMsg{err: errors.New("boom")}, km, nil)
 	if dm.commentsErr == nil || dm.commentsErr.Error() != "boom" {
@@ -664,7 +669,7 @@ func TestHandleOpenDetail_DispatchesFetchIssue(t *testing.T) {
 	m := initialModel(Options{})
 	m.api = NewClient("http://kata.invalid", nil)
 	m.scope = scope{projectID: 7}
-	iss := Issue{ProjectID: 7, Number: 42, Title: "x"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa", Title: "x"}
 	_, cmd := m.Update(openDetailMsg{issue: iss})
 	if cmd == nil {
 		t.Fatal("expected batch cmd from openDetailMsg")
@@ -687,14 +692,15 @@ func TestHandleOpenDetail_DispatchesFetchIssue(t *testing.T) {
 func TestDetailFetch_PopulatesIssueLabelsOnOpen(t *testing.T) {
 	dm := detailModel{
 		gen:   1,
-		issue: &Issue{Number: 42, Title: "seed (no labels)"},
+		issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa", Title: "seed (no labels)"},
 	}
 	msg := detailFetchedMsg{
 		gen: 1,
 		issue: &Issue{
-			Number: 42,
-			Title:  "fetched",
-			Labels: []string{"bug"},
+			UID:     "01TEST-42aa",
+			ShortID: "42aa",
+			Title:   "fetched",
+			Labels:  []string{"bug"},
 		},
 	}
 	out := dm.applyFetched(msg)
@@ -710,17 +716,17 @@ func TestDetailApplyFetched_PopulatesParentAndChildren(t *testing.T) {
 	dm := detailModel{gen: 1}
 	msg := detailFetchedMsg{
 		gen:      1,
-		issue:    &Issue{Number: 42, Title: "parented"},
-		parent:   &IssueRef{Number: 7, Title: "workspace", Status: "open"},
-		children: []Issue{{Number: 43, Title: "child"}},
+		issue:    &Issue{UID: "01TEST-42aa", ShortID: "42aa", Title: "parented"},
+		parent:   &IssueRef{UID: "01TEST-7bb", ShortID: "7bb", Title: "workspace", Status: "open"},
+		children: []Issue{{UID: "01TEST-43cc", ShortID: "43cc", Title: "child"}},
 	}
 
 	out := dm.applyFetched(msg)
-	if out.parent == nil || out.parent.Number != 7 {
-		t.Fatalf("parent = %+v, want #7", out.parent)
+	if out.parent == nil || out.parent.ShortID != "7bb" {
+		t.Fatalf("parent = %+v, want #7bb", out.parent)
 	}
-	if len(out.children) != 1 || out.children[0].Number != 43 {
-		t.Fatalf("children = %+v, want #43", out.children)
+	if len(out.children) != 1 || out.children[0].ShortID != "43cc" {
+		t.Fatalf("children = %+v, want #43cc", out.children)
 	}
 }
 
@@ -729,7 +735,7 @@ func TestDetailApplyFetched_PopulatesParentAndChildren(t *testing.T) {
 // initial render shows "(loading…)" until the tab fetches return.
 func TestDetail_OpenDetail_SeedsLoadingFlags(t *testing.T) {
 	m := newDetailHostModel(Options{}, 7)
-	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "x"}
 	out, _ := m.Update(openDetailMsg{issue: iss})
 	m = out.(Model)
 	if !m.detail.commentsLoading {
@@ -747,7 +753,7 @@ func TestDetail_OpenDetail_SeedsLoadingFlags(t *testing.T) {
 // scope, detailProjectID prefers the issue's ProjectID field over the
 // (zero) sc.projectID so the URL is correct.
 func TestDetail_ProjectID_AllProjectsUsesIssueProjectID(t *testing.T) {
-	iss := Issue{ProjectID: 42, Number: 1}
+	iss := Issue{ProjectID: 42, UID: "01TEST-aaa1", ShortID: "aaa1"}
 	got := detailProjectID(iss, scope{allProjects: true})
 	if got != 42 {
 		t.Fatalf("detailProjectID = %d, want 42", got)
@@ -758,7 +764,7 @@ func TestDetail_ProjectID_AllProjectsUsesIssueProjectID(t *testing.T) {
 // detailProjectID always uses sc.projectID even when the issue carries
 // its own (they should match anyway).
 func TestDetail_ProjectID_SingleProjectUsesScope(t *testing.T) {
-	iss := Issue{ProjectID: 99, Number: 1}
+	iss := Issue{ProjectID: 99, UID: "01TEST-aaa1", ShortID: "aaa1"}
 	got := detailProjectID(iss, scope{projectID: 7})
 	if got != 7 {
 		t.Fatalf("detailProjectID = %d, want 7", got)
@@ -803,7 +809,7 @@ type fakeDetailAPI struct {
 
 	getIssueResult *Issue
 	getIssueErr    error
-	lastGetIssue   int64
+	lastGetIssue   string
 
 	closeCalls       int
 	reopenCalls      int
@@ -816,7 +822,7 @@ type fakeDetailAPI struct {
 	setPriorityCalls int
 
 	lastProjectID int64
-	lastNumber    int64
+	lastRef       string
 	lastActor     string
 	lastLabel     string
 	lastOwner     string
@@ -829,9 +835,9 @@ type fakeDetailAPI struct {
 }
 
 func (f *fakeDetailAPI) GetIssueDetail(
-	_ context.Context, _, number int64,
+	_ context.Context, _ int64, ref string,
 ) (*IssueDetail, error) {
-	f.lastGetIssue = number
+	f.lastGetIssue = ref
 	if f.getIssueResult == nil {
 		return nil, f.getIssueErr
 	}
@@ -839,115 +845,115 @@ func (f *fakeDetailAPI) GetIssueDetail(
 }
 
 func (f *fakeDetailAPI) ListComments(
-	_ context.Context, _, _ int64,
+	_ context.Context, _ int64, _ string,
 ) ([]CommentEntry, error) {
 	return f.commentsResult, f.commentsErr
 }
 
 func (f *fakeDetailAPI) ListEvents(
-	_ context.Context, _, _ int64,
+	_ context.Context, _ int64, _ string,
 ) ([]EventLogEntry, error) {
 	return f.eventsResult, f.eventsErr
 }
 
 func (f *fakeDetailAPI) ListLinks(
-	_ context.Context, _, _ int64,
+	_ context.Context, _ int64, _ string,
 ) ([]LinkEntry, error) {
 	return f.linksResult, f.linksErr
 }
 
 func (f *fakeDetailAPI) Close(
-	_ context.Context, projectID, number int64, actor string,
+	_ context.Context, projectID int64, ref, actor string,
 ) (*MutationResp, error) {
 	f.closeCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) Reopen(
-	_ context.Context, projectID, number int64, actor string,
+	_ context.Context, projectID int64, ref, actor string,
 ) (*MutationResp, error) {
 	f.reopenCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) AddLabel(
-	_ context.Context, projectID, number int64, label, actor string,
+	_ context.Context, projectID int64, ref, label, actor string,
 ) (*MutationResp, error) {
 	f.addLabelCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastLabel = label
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) RemoveLabel(
-	_ context.Context, projectID, number int64, label, actor string,
+	_ context.Context, projectID int64, ref, label, actor string,
 ) (*MutationResp, error) {
 	f.removeLabelCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastLabel = label
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) Assign(
-	_ context.Context, projectID, number int64, owner, actor string,
+	_ context.Context, projectID int64, ref, owner, actor string,
 ) (*MutationResp, error) {
 	f.assignCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastOwner = owner
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) SetPriority(
-	_ context.Context, projectID, number int64, priority *int64, actor string,
+	_ context.Context, projectID int64, ref string, priority *int64, actor string,
 ) (*MutationResp, error) {
 	f.setPriorityCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastPriority = priority
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) AddLink(
-	_ context.Context, projectID, number int64, body LinkBody, actor string,
+	_ context.Context, projectID int64, ref string, body LinkBody, actor string,
 ) (*MutationResp, error) {
 	f.addLinkCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastLinkBody = body
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) EditBody(
-	_ context.Context, projectID, number int64, body, actor string,
+	_ context.Context, projectID int64, ref, body, actor string,
 ) (*MutationResp, error) {
 	f.editBodyCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastBody = body
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
 }
 
 func (f *fakeDetailAPI) AddComment(
-	_ context.Context, projectID, number int64, body, actor string,
+	_ context.Context, projectID int64, ref, body, actor string,
 ) (*MutationResp, error) {
 	f.addCommentCalls++
 	f.lastProjectID = projectID
-	f.lastNumber = number
+	f.lastRef = ref
 	f.lastBody = body
 	f.lastActor = actor
 	return f.mutationResult, f.mutationErr
@@ -961,7 +967,7 @@ func TestDetail_FetchCommands_RoundTrip(t *testing.T) {
 		eventsResult:   []EventLogEntry{{ID: 2, Type: "issue.created"}},
 		linksResult:    []LinkEntry{{ID: 3, Type: "blocks"}},
 	}
-	cm, ok := fetchComments(api, 7, 42, 1)().(commentsFetchedMsg)
+	cm, ok := fetchComments(api, 7, "42aa", 1)().(commentsFetchedMsg)
 	if !ok {
 		t.Fatalf("expected commentsFetchedMsg")
 	}
@@ -971,14 +977,14 @@ func TestDetail_FetchCommands_RoundTrip(t *testing.T) {
 	if cm.gen != 1 {
 		t.Fatalf("commentsFetchedMsg.gen = %d, want 1", cm.gen)
 	}
-	em, ok := fetchEvents(api, 7, 42, 1)().(eventsFetchedMsg)
+	em, ok := fetchEvents(api, 7, "42aa", 1)().(eventsFetchedMsg)
 	if !ok {
 		t.Fatalf("expected eventsFetchedMsg")
 	}
 	if len(em.events) != 1 || em.events[0].Type != "issue.created" {
 		t.Fatalf("events payload wrong: %+v", em.events)
 	}
-	lm, ok := fetchLinks(api, 7, 42, 1)().(linksFetchedMsg)
+	lm, ok := fetchLinks(api, 7, "42aa", 1)().(linksFetchedMsg)
 	if !ok {
 		t.Fatalf("expected linksFetchedMsg")
 	}
@@ -1028,7 +1034,7 @@ func TestDetail_OpenInAllProjectsScope_UsesIssueProjectID(t *testing.T) {
 	m := initialModel(Options{})
 	m.api = &Client{}
 	m.scope = scope{allProjects: true}
-	iss := Issue{ProjectID: 99, Number: 5, Title: "cross-project"}
+	iss := Issue{ProjectID: 99, UID: "01TEST-eee5", ShortID: "eee5", Title: "cross-project"}
 	out, _ := m.Update(openDetailMsg{issue: iss})
 	m = out.(Model)
 	if m.view != viewDetail {
@@ -1048,7 +1054,7 @@ func TestDetail_OpenInAllProjectsScope_UsesIssueProjectID(t *testing.T) {
 func TestDetail_OpenWithNilAPI_NoCrash(t *testing.T) {
 	m := initialModel(Options{})
 	m.api = nil
-	out, cmd := m.Update(openDetailMsg{issue: Issue{Number: 1, Title: "x"}})
+	out, cmd := m.Update(openDetailMsg{issue: Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "x"}})
 	if cmd != nil {
 		t.Fatalf("expected nil cmd when api is nil, got %T", cmd)
 	}
@@ -1110,7 +1116,7 @@ func TestDetail_RenderCommentsTab_EmptyShowsHint(t *testing.T) {
 // over the type vocabulary so the description column is in lockstep.
 func TestDetail_RenderEventsTab_FormatsCommonEventTypes(t *testing.T) {
 	when := time.Date(2025, 1, 2, 15, 4, 0, 0, time.UTC)
-	to := int64(11)
+	toShort := "k1l1"
 	es := []EventLogEntry{
 		{Type: "issue.created", Actor: "a", CreatedAt: when},
 		{Type: "issue.closed", Actor: "a", CreatedAt: when,
@@ -1118,9 +1124,9 @@ func TestDetail_RenderEventsTab_FormatsCommonEventTypes(t *testing.T) {
 		{Type: "issue.labeled", Actor: "b", CreatedAt: when,
 			Payload: map[string]any{"label": "bug"}},
 		{Type: "issue.linked", Actor: "c", CreatedAt: when,
-			IssueNumber: &to,
+			IssueShortID: &toShort,
 			Payload: map[string]any{
-				"type": "blocks", "to_number": float64(11),
+				"type": "blocks", "to_short_id": "k1l1",
 			}},
 		{Type: "issue.assigned", Actor: "d", CreatedAt: when,
 			Payload: map[string]any{"owner": "wesm"}},
@@ -1130,7 +1136,7 @@ func TestDetail_RenderEventsTab_FormatsCommonEventTypes(t *testing.T) {
 		"[issue.created] 2025-01-02 15:04 a — created",
 		"[issue.closed] 2025-01-02 15:04 a — closed (wontfix)",
 		"[issue.labeled] 2025-01-02 15:04 b — labeled bug",
-		"[issue.linked] 2025-01-02 15:04 c — linked blocks #11",
+		"[issue.linked] 2025-01-02 15:04 c — linked blocks #k1l1",
 		"[issue.assigned] 2025-01-02 15:04 d — assigned wesm",
 	)
 }
@@ -1150,11 +1156,15 @@ func TestDetail_RenderEventsTab_UnknownTypeFallback(t *testing.T) {
 func TestDetail_RenderLinksTab_FormatsLinkLine(t *testing.T) {
 	when := time.Date(2025, 1, 2, 15, 4, 0, 0, time.UTC)
 	ls := []LinkEntry{
-		{ID: 1, Type: "blocks", FromNumber: 42, ToNumber: 7,
-			Author: "wesm", CreatedAt: when},
+		{
+			ID: 1, Type: "blocks",
+			From:   LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+			To:     LinkPeer{UID: "01TEST-7bb", ShortID: "7bb"},
+			Author: "wesm", CreatedAt: when,
+		},
 	}
 	out := renderLinksTab(ls, 200, 5, -1, tabState{})
-	want := "[blocks] → #7 ← #42  by wesm @ 2025-01-02 15:04"
+	want := "[blocks] → #7bb ← #42aa  by wesm @ 2025-01-02 15:04"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing link line %q in:\n%s", want, out)
 	}
@@ -1208,7 +1218,7 @@ func TestDetail_TabSwitch_ResetsCursor(t *testing.T) {
 
 func TestDetailFocus_TabCyclesChildrenCommentsEventsLinks(t *testing.T) {
 	dm := detailFixture()
-	dm.children = []Issue{{Number: 43}}
+	dm.children = []Issue{{UID: "01TEST-43cc", ShortID: "43cc"}}
 	km := newKeymap()
 
 	dm, _ = dm.Update(tea.KeyMsg{Type: tea.KeyShiftTab}, km, nil)
@@ -1249,7 +1259,7 @@ func TestDetailFocus_SkipsChildrenWhenEmpty(t *testing.T) {
 
 func TestDetailChildren_JKMovesChildCursor(t *testing.T) {
 	dm := detailFixture()
-	dm.children = []Issue{{Number: 43}, {Number: 44}}
+	dm.children = []Issue{{UID: "01TEST-43cc", ShortID: "43cc"}, {UID: "01TEST-44dd", ShortID: "44dd"}}
 	dm.detailFocus = focusChildren
 	km := newKeymap()
 
@@ -1269,13 +1279,13 @@ func TestDetailChildren_JKMovesChildCursor(t *testing.T) {
 
 func TestDetailChildren_EnterJumpsToChild(t *testing.T) {
 	dm := detailFixture()
-	dm.children = []Issue{{Number: 43}, {Number: 44}}
+	dm.children = []Issue{{UID: "01TEST-43cc", ShortID: "43cc"}, {UID: "01TEST-44dd", ShortID: "44dd"}}
 	dm.detailFocus = focusChildren
 	dm.childCursor = 1
 	km := newKeymap()
 
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, &fakeDetailAPI{})
-	assertJumpDetailCmd(t, cmd, 44)
+	assertJumpDetailCmd(t, cmd, "44dd")
 }
 
 // runBatch unwraps a tea.Batch wrapper and runs every nested cmd in
@@ -1305,20 +1315,20 @@ func runBatch(cmd tea.Cmd) {
 // from the monotonic m.nextGen counter.
 func TestDetail_EnterOnEventWithIssueRef_JumpsAndStacks(t *testing.T) {
 	api := &fakeDetailAPI{
-		getIssueResult: &Issue{Number: 11, Title: "linked target"},
+		getIssueResult: &Issue{UID: "01TEST-l1l1", ShortID: "l1l1", Title: "linked target"},
 	}
 	dm := detailFixture()
 	dm.activeTab = tabEvents
 	dm.events = []EventLogEntry{
 		{Type: "issue.linked", Actor: "wesm",
 			Payload: map[string]any{
-				"type": "blocks", "to_number": float64(11),
+				"type": "blocks", "to_short_id": "l1l1",
 			}},
 	}
 	dm.tabCursor = 0
 	km := newKeymap()
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
-	assertJumpDetailCmd(t, cmd, 11)
+	assertJumpDetailCmd(t, cmd, "l1l1")
 }
 
 func TestDetail_EnterOnCurrentIssueEventDoesNotSelfJump(t *testing.T) {
@@ -1328,7 +1338,7 @@ func TestDetail_EnterOnCurrentIssueEventDoesNotSelfJump(t *testing.T) {
 	dm.tabCursor = 0
 	dm.events = []EventLogEntry{
 		{Type: "issue.created", Actor: "wesm",
-			Payload: map[string]any{"issue_number": float64(dm.issue.Number)}},
+			Payload: map[string]any{"issue_short_id": dm.issue.ShortID}},
 	}
 
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, newKeymap(), api)
@@ -1338,60 +1348,72 @@ func TestDetail_EnterOnCurrentIssueEventDoesNotSelfJump(t *testing.T) {
 }
 
 // TestDetail_EnterOnLinkEntry_JumpsToTarget: pressing Enter on a link
-// row emits a jumpDetailMsg targeting the link's ToNumber.
+// row emits a jumpDetailMsg targeting the link's To.ShortID.
 func TestDetail_EnterOnLinkEntry_JumpsToTarget(t *testing.T) {
 	api := &fakeDetailAPI{
-		getIssueResult: &Issue{Number: 7, Title: "target"},
+		getIssueResult: &Issue{UID: "01TEST-7bb", ShortID: "7bb", Title: "target"},
 	}
 	dm := detailFixture()
 	dm.activeTab = tabLinks
 	dm.tabCursor = 0
 	km := newKeymap()
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
-	assertJumpDetailCmd(t, cmd, 7)
+	assertJumpDetailCmd(t, cmd, "7bb")
 }
 
-// TestDetail_EnterOnIncomingLink_JumpsToFromNumber: when the cursor is
-// on a link whose ToNumber matches the current issue (i.e. an incoming
+// TestDetail_EnterOnIncomingLink_JumpsToFromShortID: when the cursor is
+// on a link whose To matches the current issue (i.e. an incoming
 // "X blocks me" entry), Enter must emit a jumpDetailMsg targeting
-// FromNumber rather than re-opening the current issue.
-func TestDetail_EnterOnIncomingLink_JumpsToFromNumber(t *testing.T) {
+// From.ShortID rather than re-opening the current issue.
+func TestDetail_EnterOnIncomingLink_JumpsToFromShortID(t *testing.T) {
 	api := &fakeDetailAPI{
-		getIssueResult: &Issue{Number: 99, Title: "from"},
+		getIssueResult: &Issue{UID: "01TEST-99zz", ShortID: "99zz", Title: "from"},
 	}
 	dm := detailModel{
-		issue:     &Issue{Number: 42, Title: "current"},
+		issue:     &Issue{UID: "01TEST-42aa", ShortID: "42aa", Title: "current"},
 		scopePID:  7,
 		activeTab: tabLinks,
 		tabCursor: 0,
 		links: []LinkEntry{
-			// Incoming: someone else (#99) blocks the current issue (#42).
-			{ID: 1, Type: "blocks", FromNumber: 99, ToNumber: 42},
+			// Incoming: someone else (#99zz) blocks the current issue (#42aa).
+			{
+				ID: 1, Type: "blocks",
+				From: LinkPeer{UID: "01TEST-99zz", ShortID: "99zz"},
+				To:   LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+			},
 		},
 	}
 	km := newKeymap()
 	_, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
-	assertJumpDetailCmd(t, cmd, 99)
+	assertJumpDetailCmd(t, cmd, "99zz")
 }
 
-// TestLinkJumpTarget_OutgoingPicksToNumber: when ToNumber differs from
-// the current issue, the helper returns ToNumber unchanged. Pure unit
-// test for the scoping logic.
-func TestLinkJumpTarget_OutgoingPicksToNumber(t *testing.T) {
-	links := []LinkEntry{{ID: 1, Type: "blocks", FromNumber: 42, ToNumber: 7}}
-	got, ok := linkJumpTarget(links, 0, 42)
-	if !ok || got != 7 {
-		t.Fatalf("linkJumpTarget = (%d, %v), want (7, true)", got, ok)
+// TestLinkJumpTarget_OutgoingPicksTo: when To differs from the
+// current issue, the helper returns the To short_id. Pure unit test
+// for the scoping logic.
+func TestLinkJumpTarget_OutgoingPicksTo(t *testing.T) {
+	links := []LinkEntry{{
+		ID: 1, Type: "blocks",
+		From: LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+		To:   LinkPeer{UID: "01TEST-7bb", ShortID: "7bb"},
+	}}
+	got, ok := linkJumpTarget(links, 0, "42aa")
+	if !ok || got != "7bb" {
+		t.Fatalf("linkJumpTarget = (%q, %v), want (7bb, true)", got, ok)
 	}
 }
 
-// TestLinkJumpTarget_IncomingPicksFromNumber: when ToNumber matches
-// the current issue, the helper picks FromNumber.
-func TestLinkJumpTarget_IncomingPicksFromNumber(t *testing.T) {
-	links := []LinkEntry{{ID: 1, Type: "blocks", FromNumber: 99, ToNumber: 42}}
-	got, ok := linkJumpTarget(links, 0, 42)
-	if !ok || got != 99 {
-		t.Fatalf("linkJumpTarget = (%d, %v), want (99, true)", got, ok)
+// TestLinkJumpTarget_IncomingPicksFrom: when To matches the current
+// issue, the helper picks From.
+func TestLinkJumpTarget_IncomingPicksFrom(t *testing.T) {
+	links := []LinkEntry{{
+		ID: 1, Type: "blocks",
+		From: LinkPeer{UID: "01TEST-99zz", ShortID: "99zz"},
+		To:   LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+	}}
+	got, ok := linkJumpTarget(links, 0, "42aa")
+	if !ok || got != "99zz" {
+		t.Fatalf("linkJumpTarget = (%q, %v), want (99zz, true)", got, ok)
 	}
 }
 
@@ -1457,9 +1479,12 @@ func TestDetail_CommentsTabWindow_KeepsCursorVisible(t *testing.T) {
 func TestDetail_LinksTabWindow_KeepsCursorVisible(t *testing.T) {
 	ls := make([]LinkEntry, 10)
 	for i := range ls {
+		toSID := fmt.Sprintf("t%03d", i+1)
 		ls[i] = LinkEntry{
 			ID: int64(i + 1), Type: "blocks",
-			FromNumber: 42, ToNumber: int64(i + 1), Author: fmt.Sprintf("u%d", i),
+			From:   LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+			To:     LinkPeer{UID: "01TEST-" + toSID, ShortID: toSID},
+			Author: fmt.Sprintf("u%d", i),
 		}
 	}
 	out := renderLinksTab(ls, 200, 5, 8, tabState{})
@@ -1504,12 +1529,12 @@ func TestDetail_EnterOnComment_NoJump(t *testing.T) {
 // pops the nav stack, restoring the prior detailModel verbatim.
 func TestDetail_EscFromStackedDetail_PopsToPrior(t *testing.T) {
 	prior := detailModel{
-		issue:     &Issue{Number: 42, Title: "prior"},
+		issue:     &Issue{UID: "01TEST-42aa", ShortID: "42aa", Title: "prior"},
 		activeTab: tabEvents,
 		tabCursor: 1,
 	}
 	current := detailModel{
-		issue:    &Issue{Number: 11, Title: "stacked"},
+		issue:    &Issue{UID: "01TEST-11bb", ShortID: "11bb", Title: "stacked"},
 		navStack: []detailModel{prior},
 	}
 	km := newKeymap()
@@ -1517,8 +1542,8 @@ func TestDetail_EscFromStackedDetail_PopsToPrior(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("expected nil cmd (no popDetailMsg), got %T", cmd)
 	}
-	if got.issue == nil || got.issue.Number != 42 {
-		t.Fatalf("expected pop to issue #42, got %+v", got.issue)
+	if got.issue == nil || got.issue.ShortID != "42aa" {
+		t.Fatalf("expected pop to issue #42aa, got %+v", got.issue)
 	}
 	if got.activeTab != tabEvents {
 		t.Fatalf("activeTab not restored: got %d, want tabEvents", got.activeTab)
@@ -1548,21 +1573,25 @@ func TestDetail_EscFromTopLevelDetail_ReturnsToList(t *testing.T) {
 // TestDetail_NavStackCappedAtOne: trying to jump from a level-2 detail
 // no-ops because the stack is at cap. Esc still pops as expected.
 func TestDetail_NavStackCappedAtOne(t *testing.T) {
-	api := &fakeDetailAPI{getIssueResult: &Issue{Number: 99}}
-	prior := detailModel{issue: &Issue{Number: 42}, activeTab: tabLinks}
+	api := &fakeDetailAPI{getIssueResult: &Issue{UID: "01TEST-99zz", ShortID: "99zz"}}
+	prior := detailModel{issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa"}, activeTab: tabLinks}
 	dm := detailModel{
-		issue:     &Issue{Number: 11},
+		issue:     &Issue{UID: "01TEST-11bb", ShortID: "11bb"},
 		activeTab: tabLinks,
-		links:     []LinkEntry{{ID: 1, Type: "blocks", ToNumber: 99}},
-		navStack:  []detailModel{prior}, // already at cap
+		links: []LinkEntry{{
+			ID: 1, Type: "blocks",
+			From: LinkPeer{UID: "01TEST-11bb", ShortID: "11bb"},
+			To:   LinkPeer{UID: "01TEST-99zz", ShortID: "99zz"},
+		}},
+		navStack: []detailModel{prior}, // already at cap
 	}
 	km := newKeymap()
 	dm, cmd := dm.Update(tea.KeyMsg{Type: tea.KeyEnter}, km, api)
 	if cmd != nil {
 		t.Fatalf("expected nil cmd at nav cap, got %T", cmd)
 	}
-	if dm.issue.Number != 11 {
-		t.Fatalf("dm.issue should be unchanged, got %d", dm.issue.Number)
+	if dm.issue.ShortID != "11bb" {
+		t.Fatalf("dm.issue should be unchanged, got %q", dm.issue.ShortID)
 	}
 	if len(dm.navStack) != 1 {
 		t.Fatalf("navStack should still be at 1, got %d", len(dm.navStack))
@@ -1572,9 +1601,9 @@ func TestDetail_NavStackCappedAtOne(t *testing.T) {
 // TestDetail_EnterOnEventWithoutPayload_NoOp: an event whose payload
 // has no to_number/issue_number is not jumpable.
 func TestDetail_EnterOnEventWithoutPayload_NoOp(t *testing.T) {
-	api := &fakeDetailAPI{getIssueResult: &Issue{Number: 1}}
+	api := &fakeDetailAPI{getIssueResult: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1"}}
 	dm := detailModel{
-		issue:     &Issue{Number: 11},
+		issue:     &Issue{UID: "01TEST-11bb", ShortID: "11bb"},
 		activeTab: tabEvents,
 		events:    []EventLogEntry{{Type: "issue.created"}},
 	}
@@ -1605,8 +1634,8 @@ func TestDetail_StaleFetch_DroppedAcrossOpen(t *testing.T) {
 	m := newDetailHostModel(Options{}, 7)
 	m.list.loading = false
 	m.list.issues = []Issue{
-		{ProjectID: 7, Number: 1, Title: "A"},
-		{ProjectID: 7, Number: 2, Title: "B"},
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "A"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "B"},
 	}
 	// Open A.
 	out, _ := m.Update(openDetailMsg{issue: m.list.issues[0]})
@@ -1633,11 +1662,11 @@ func TestDetail_StaleFetch_DroppedAcrossOpen(t *testing.T) {
 	}
 	staleIssue := detailFetchedMsg{
 		gen:   genA,
-		issue: &Issue{Number: 1, Title: "A clobbered"},
+		issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "A clobbered"},
 	}
 	out, _ = m.Update(staleIssue)
 	m = out.(Model)
-	if m.detail.issue.Number != 2 {
+	if m.detail.issue.ShortID != "bbb2" {
 		t.Fatalf("B issue clobbered by stale A fetch: %+v", m.detail.issue)
 	}
 }
@@ -1659,7 +1688,7 @@ func TestDetail_StaleFetch_DroppedAcrossJump(t *testing.T) {
 
 	// jumpDetailMsg drives the jump path: m.handleJumpDetail allocates
 	// a fresh gen, pushes prior onto navStack, and dispatches fetches.
-	out, cmd := m.Update(jumpDetailMsg{number: 11})
+	out, cmd := m.Update(jumpDetailMsg{ref: "11bb"})
 	m = out.(Model)
 	if m.detail.gen == priorGen {
 		t.Fatal("gen should advance on jump")
@@ -1697,8 +1726,8 @@ func TestModel_GenMonotonicAcrossJumpBackOpen(t *testing.T) {
 	// List has issues A (#1) and C (#3); B (#2) is the jump target.
 	m.list.loading = false
 	m.list.issues = []Issue{
-		{ProjectID: 7, Number: 1, Title: "A"},
-		{ProjectID: 7, Number: 3, Title: "C"},
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "A"},
+		{ProjectID: 7, UID: "01TEST-ccc3", ShortID: "ccc3", Title: "C"},
 	}
 
 	// Open A.
@@ -1709,11 +1738,11 @@ func TestModel_GenMonotonicAcrossJumpBackOpen(t *testing.T) {
 		t.Fatal("genA should be non-zero after open")
 	}
 	// Hydrate A so the snapshot in navStack carries a non-nil issue.
-	out, _ = m.Update(detailFetchedMsg{gen: genA, issue: &Issue{Number: 1, Title: "A"}})
+	out, _ = m.Update(detailFetchedMsg{gen: genA, issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "A"}})
 	m = out.(Model)
 
-	// Jump to B (#2). genB allocated from m.nextGen.
-	out, _ = m.Update(jumpDetailMsg{number: 2})
+	// Jump to B (#bbb2). genB allocated from m.nextGen.
+	out, _ = m.Update(jumpDetailMsg{ref: "bbb2"})
 	m = out.(Model)
 	genB := m.detail.gen
 	if genB <= genA {
@@ -1760,11 +1789,11 @@ func TestModel_GenMonotonicAcrossJumpBackOpen(t *testing.T) {
 	// C's view.
 	staleB := detailFetchedMsg{
 		gen:   genB,
-		issue: &Issue{Number: 2, Title: "B clobbered"},
+		issue: &Issue{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "B clobbered"},
 	}
 	out, _ = m.Update(staleB)
 	m = out.(Model)
-	if m.detail.issue == nil || m.detail.issue.Number != 3 {
+	if m.detail.issue == nil || m.detail.issue.ShortID != "ccc3" {
 		t.Fatalf("stale B fetch leaked into C view: %+v", m.detail.issue)
 	}
 }
@@ -1780,7 +1809,7 @@ func TestDetail_MutationResp_FromListIgnored(t *testing.T) {
 	listDone := mutationDoneMsg{
 		origin: "list",
 		kind:   "close",
-		resp:   &MutationResp{Issue: &Issue{Number: 99}},
+		resp:   &MutationResp{Issue: &Issue{UID: "01TEST-99zz", ShortID: "99zz"}},
 	}
 	out, cmd := dm.Update(listDone, km, api)
 	if cmd != nil {
@@ -1803,7 +1832,7 @@ func TestDetail_StaleMutationResp_DroppedAcrossJump(t *testing.T) {
 		origin: "detail",
 		gen:    1, // older than dm.gen
 		kind:   "close",
-		resp:   &MutationResp{Issue: &Issue{Number: 1}},
+		resp:   &MutationResp{Issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1"}},
 	}
 	out, cmd := dm.Update(stale, km, api)
 	if cmd != nil {
@@ -1826,7 +1855,7 @@ func TestList_DetailMutation_Ignored(t *testing.T) {
 		origin: "detail",
 		gen:    1,
 		kind:   "close",
-		resp:   &MutationResp{Issue: &Issue{Number: 99}},
+		resp:   &MutationResp{Issue: &Issue{UID: "01TEST-99zz", ShortID: "99zz"}},
 	}
 	out, cmd := lm.Update(detailDone, km, api, sc)
 	if cmd != nil {
@@ -1844,7 +1873,7 @@ func TestList_DetailMutation_Ignored(t *testing.T) {
 func TestDetail_Open_SeedsActorFromList(t *testing.T) {
 	t.Setenv("KATA_AUTHOR", "wes")
 	m := newDetailHostModel(Options{}, 7)
-	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "x"}
 	out, _ := m.Update(openDetailMsg{issue: iss})
 	m = out.(Model)
 	if m.detail.actor != "wes" {
@@ -1861,9 +1890,9 @@ func TestDetail_Mutation_ThroughModelCarriesActor(t *testing.T) {
 	m := initialModel(Options{})
 	m.scope = scope{projectID: 7}
 	api := &fakeDetailAPI{
-		mutationResult: &MutationResp{Issue: &Issue{Number: 1, Status: "closed"}},
+		mutationResult: &MutationResp{Issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "closed"}},
 	}
-	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "x"}
 	// We can't pass api through Model.Update directly; thread it via
 	// the detail sub-model so handleOpenDetail's actor seeding lands
 	// before the close dispatch.
@@ -1894,7 +1923,7 @@ func TestDetail_Mutation_ThroughModelCarriesActor(t *testing.T) {
 // mutation in the post-jump view still carries the resolved identity.
 func TestDetail_Jump_PreservesActor(t *testing.T) {
 	api := &fakeDetailAPI{
-		getIssueResult: &Issue{Number: 11, Title: "linked"},
+		getIssueResult: &Issue{UID: "01TEST-11bb", ShortID: "11bb", Title: "linked"},
 	}
 	dm := detailFixture()
 	dm.actor = "wes"
@@ -1915,7 +1944,7 @@ func TestDetail_Jump_PreservesActor(t *testing.T) {
 // the first open is dropped on the second.
 func TestDetail_Open_AdvancesGenAcrossReopens(t *testing.T) {
 	m := newDetailHostModel(Options{}, 7)
-	iss := Issue{ProjectID: 7, Number: 1, Title: "x"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "x"}
 	out, _ := m.Update(openDetailMsg{issue: iss})
 	m = out.(Model)
 	first := m.detail.gen

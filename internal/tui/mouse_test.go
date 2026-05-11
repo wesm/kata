@@ -53,8 +53,8 @@ func TestMouseClickSelectsIssueListRow(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("single click returned cmd %T, want nil", cmd())
 	}
-	if nm.list.cursor != 2 || nm.list.selectedNumber != 3 {
-		t.Fatalf("cursor=%d selected=%d, want cursor=2 selected #3", nm.list.cursor, nm.list.selectedNumber)
+	if nm.list.cursor != 2 || nm.list.selectedUID != "01TEST-r003" {
+		t.Fatalf("cursor=%d selected=%q, want cursor=2 selected r003", nm.list.cursor, nm.list.selectedUID)
 	}
 }
 
@@ -66,8 +66,8 @@ func TestMouseSplitClickFirstIssueRowSelectsFirstVisibleRow(t *testing.T) {
 	m.list.cursor = 0
 
 	nm, _ := updateModel(m, mouseLeftClick(4, 4)) // title, pane border, table header, rule, first row
-	if nm.list.cursor != 0 || nm.list.selectedNumber != 1 {
-		t.Fatalf("cursor=%d selected=%d, want first visible issue", nm.list.cursor, nm.list.selectedNumber)
+	if nm.list.cursor != 0 || nm.list.selectedUID != "01TEST-r001" {
+		t.Fatalf("cursor=%d selected=%q, want first visible issue", nm.list.cursor, nm.list.selectedUID)
 	}
 }
 

@@ -61,7 +61,7 @@ func TestNarrowTerminal_NarrowWidthShowsHint(t *testing.T) {
 func TestNarrowTerminal_ShortHeightRendersNormally(t *testing.T) {
 	m, cleanup := narrowTestSetup(t)
 	defer cleanup()
-	m.list.issues = []Issue{{ProjectID: 7, Number: 1, Title: "short pane", Status: "open"}}
+	m.list.issues = []Issue{{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "short pane", Status: "open"}}
 	m.scope = scope{projectID: 7, projectName: "kata"}
 
 	m = resizeModel(m, 120, 12)

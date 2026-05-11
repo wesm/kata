@@ -8,9 +8,9 @@ import (
 
 // eventDescriber returns the human-readable description for an event of
 // a given type. The describer can read payload fields (label name,
-// to_number, owner). Functions instead of plain strings keep "labeled
-// %s" / "linked %s #N" / closed-with-reason all expressible without a
-// branchy switch in eventDescription.
+// to_short_id, owner). Functions instead of plain strings keep
+// "labeled %s" / "linked %s #N" / closed-with-reason all expressible
+// without a branchy switch in eventDescription.
 type eventDescriber func(e EventLogEntry) string
 
 // staticDesc returns an eventDescriber that always emits s. Used for
@@ -51,20 +51,20 @@ var eventDescribers = map[string]eventDescriber{
 
 // linksChangedDesc renders the aggregated issue.links_changed event from
 // the PATCH path (`kata edit`) into a one-line summary that surfaces every
-// add/remove direction. Each segment reads as "<verb> <type>:#<n>", so a
-// single edit that swaps a parent and adds a related might render as
-// "links: parent #5→#10, +related #7".
+// add/remove direction. Each segment reads as "<verb> <type>:#<short_id>",
+// so a single edit that swaps a parent and adds a related might render
+// as "links: parent #abc4→#def4, +related #f00d".
 func linksChangedDesc(e EventLogEntry) string {
 	if e.Payload == nil {
 		return "links changed"
 	}
 	parts := make([]string, 0, 8)
 	if from, to, ok := payloadParentReplace(e); ok {
-		parts = append(parts, fmt.Sprintf("parent #%d→#%d", from, to))
-	} else if to, ok := payloadInt(e, "parent_set"); ok {
-		parts = append(parts, fmt.Sprintf("+parent #%d", to))
-	} else if from, ok := payloadInt(e, "parent_removed"); ok {
-		parts = append(parts, fmt.Sprintf("-parent #%d", from))
+		parts = append(parts, fmt.Sprintf("parent #%s→#%s", from, to))
+	} else if to, ok := payloadStringField(e, "parent_set"); ok {
+		parts = append(parts, fmt.Sprintf("+parent #%s", to))
+	} else if from, ok := payloadStringField(e, "parent_removed"); ok {
+		parts = append(parts, fmt.Sprintf("-parent #%s", from))
 	}
 	parts = append(parts, linksChangedDirParts(e, "blocks_added", "+blocks")...)
 	parts = append(parts, linksChangedDirParts(e, "blocks_removed", "-blocks")...)
@@ -82,33 +82,34 @@ func linksChangedDesc(e EventLogEntry) string {
 // parent_set are present in one event — the parent-replace case. Returns
 // ok=false when only one (or neither) is present, so callers can render
 // the +parent / -parent variants instead.
-func payloadParentReplace(e EventLogEntry) (from, to int64, ok bool) {
-	t, hasTo := payloadInt(e, "parent_set")
-	f, hasFrom := payloadInt(e, "parent_removed")
+func payloadParentReplace(e EventLogEntry) (from, to string, ok bool) {
+	t, hasTo := payloadStringField(e, "parent_set")
+	f, hasFrom := payloadStringField(e, "parent_removed")
 	if hasTo && hasFrom {
 		return f, t, true
 	}
-	return 0, 0, false
+	return "", "", false
 }
 
-// linksChangedDirParts extracts an int slice payload field (blocks_added,
-// related_removed, etc.) and renders one segment per entry using the given
-// verb-prefixed label (e.g. "+blocks #5").
+// linksChangedDirParts extracts a string-slice payload field
+// (blocks_added, related_removed, etc.) and renders one segment per
+// entry using the given verb-prefixed label (e.g. "+blocks #abc4").
 func linksChangedDirParts(e EventLogEntry, key, label string) []string {
-	nums := payloadIntSlice(e, key)
-	if len(nums) == 0 {
+	refs := payloadStringSlice(e, key)
+	if len(refs) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(nums))
-	for _, n := range nums {
-		out = append(out, fmt.Sprintf("%s #%d", label, n))
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, fmt.Sprintf("%s #%s", label, r))
 	}
 	return out
 }
 
-// payloadIntSlice reads a numeric-array field out of the event payload.
-// Missing keys, non-array values, and a nil payload all return nil.
-func payloadIntSlice(e EventLogEntry, key string) []int64 {
+// payloadStringSlice reads a string-array field out of the event
+// payload. Missing keys, non-array values, and a nil payload all
+// return nil.
+func payloadStringSlice(e EventLogEntry, key string) []string {
 	if e.Payload == nil {
 		return nil
 	}
@@ -120,10 +121,10 @@ func payloadIntSlice(e EventLogEntry, key string) []int64 {
 	if !ok {
 		return nil
 	}
-	out := make([]int64, 0, len(arr))
+	out := make([]string, 0, len(arr))
 	for _, v := range arr {
-		if n, ok := numberFromAny(v); ok {
-			out = append(out, n)
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
 		}
 	}
 	return out
@@ -165,6 +166,26 @@ func payloadInt(e EventLogEntry, key string) (int64, bool) {
 	return numberFromAny(v)
 }
 
+// payloadStringField reads a non-empty string field out of the event
+// payload. Missing keys, non-string values, empty strings, and a nil
+// payload all return ok=false. Distinct from payloadString so the
+// links_changed describer can differentiate "absent" from
+// "present-but-empty".
+func payloadStringField(e EventLogEntry, key string) (string, bool) {
+	if e.Payload == nil {
+		return "", false
+	}
+	v, ok := e.Payload[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return "", false
+	}
+	return s, true
+}
+
 // eventDescription returns the type-specific short description used in
 // the events tab. Unknown types fall back to a stripped "issue." prefix
 // so the column always carries something readable.
@@ -183,11 +204,12 @@ func reasonSuffix(e EventLogEntry) string {
 	return ""
 }
 
-// linkPayloadDesc formats "type #to_number" from a link.added/removed
-// payload. Missing fields degrade gracefully — type alone, or just "?".
+// linkPayloadDesc formats "type #to_short_id" from a link.added /
+// link.removed payload. Missing fields degrade gracefully — type
+// alone, or just "?".
 func linkPayloadDesc(e EventLogEntry) string {
 	t := payloadString(e, "type")
-	to, ok := readEventTargetNumber(e)
+	to, ok := readEventTargetShortID(e)
 	if !ok {
 		if t == "" {
 			return "?"
@@ -195,9 +217,9 @@ func linkPayloadDesc(e EventLogEntry) string {
 		return t
 	}
 	if t == "" {
-		return fmt.Sprintf("#%d", to)
+		return "#" + to
 	}
-	return fmt.Sprintf("%s #%d", t, to)
+	return fmt.Sprintf("%s #%s", t, to)
 }
 
 // payloadString reads a string field out of the event payload. Missing
@@ -223,31 +245,31 @@ func fmtTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04")
 }
 
-// eventJumpTarget reads the issue number that a jumpable event refers
-// to. link.added/link.removed carry to_number; we also accept
-// issue_number for forward-compat.
-func eventJumpTarget(events []EventLogEntry, idx int) (int64, bool) {
+// eventJumpTarget reads the issue short_id that a jumpable event refers
+// to. link.added / link.removed carry to_short_id; we also accept
+// issue_short_id for events whose subject IS the jump target.
+func eventJumpTarget(events []EventLogEntry, idx int) (string, bool) {
 	if idx < 0 || idx >= len(events) {
-		return 0, false
+		return "", false
 	}
-	return readEventTargetNumber(events[idx])
+	return readEventTargetShortID(events[idx])
 }
 
-// readEventTargetNumber pulls an int64 issue number out of e.Payload.
-// JSON decodes numbers as float64 by default; int64/int are accepted so
-// hand-built test fixtures don't need to round-trip through json.
-func readEventTargetNumber(e EventLogEntry) (int64, bool) {
+// readEventTargetShortID pulls a short_id out of e.Payload. The keys
+// checked are "to_short_id" and "issue_short_id" in order so a link-
+// event payload's peer wins over the subject issue's own ref.
+func readEventTargetShortID(e EventLogEntry) (string, bool) {
 	if e.Payload == nil {
-		return 0, false
+		return "", false
 	}
-	for _, k := range []string{"to_number", "issue_number"} {
+	for _, k := range []string{"to_short_id", "issue_short_id"} {
 		if v, ok := e.Payload[k]; ok {
-			if n, ok := numberFromAny(v); ok {
-				return n, true
+			if s, ok := v.(string); ok && s != "" {
+				return s, true
 			}
 		}
 	}
-	return 0, false
+	return "", false
 }
 
 // numberFromAny widens a JSON-decoded number to int64.
@@ -263,20 +285,23 @@ func numberFromAny(v any) (int64, bool) {
 	return 0, false
 }
 
-// linkJumpTarget returns the issue number to navigate to from the
-// link at idx. Outgoing links jump to ToNumber; incoming links (where
-// ToNumber == current) jump to FromNumber instead so Enter on an
+// linkJumpTarget returns the short_id to navigate to from the link at
+// idx. Outgoing links jump to To.ShortID; incoming links (where
+// To.ShortID == current) jump to From.ShortID instead so Enter on an
 // "X blocks me" entry takes the user to X rather than re-opening the
-// current issue. self-loop links (rare) fall through to ToNumber and
+// current issue. self-loop links (rare) fall through to To.ShortID and
 // re-open the current issue, which is harmless.
-func linkJumpTarget(links []LinkEntry, idx int, current int64) (int64, bool) {
+func linkJumpTarget(links []LinkEntry, idx int, current string) (string, bool) {
 	if idx < 0 || idx >= len(links) {
-		return 0, false
+		return "", false
 	}
 	l := links[idx]
-	target := l.ToNumber
-	if target == current && l.FromNumber != 0 {
-		target = l.FromNumber
+	target := l.To.ShortID
+	if target == current && l.From.ShortID != "" {
+		target = l.From.ShortID
+	}
+	if target == "" {
+		return "", false
 	}
 	return target, true
 }

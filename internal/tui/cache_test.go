@@ -7,7 +7,7 @@ import "testing"
 func setupSeededCache() (*issueCache, cacheKey) {
 	c := newIssueCache()
 	k := cacheKey{projectID: 7}
-	c.put(k, []Issue{{Number: 1}})
+	c.put(k, []Issue{{ShortID: "aaa1"}})
 	return c, k
 }
 
@@ -26,10 +26,10 @@ func TestCache_PutThenStaleThenRefetch(t *testing.T) {
 	assertStale(t, c, false)
 	c.markStale()
 	assertStale(t, c, true)
-	c.put(k, []Issue{{Number: 2}})
+	c.put(k, []Issue{{ShortID: "bbb2"}})
 	assertStale(t, c, false)
-	if len(c.data) != 1 || c.data[0].Number != 2 {
-		t.Fatalf("data = %+v, want [{Number:2}]", c.data)
+	if len(c.data) != 1 || c.data[0].ShortID != "bbb2" {
+		t.Fatalf("data = %+v, want [{ShortID:bbb2}]", c.data)
 	}
 }
 

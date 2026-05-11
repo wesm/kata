@@ -42,8 +42,8 @@ func TestClient_ListIssues_BuildsExpectedURLAndDecodes(t *testing.T) {
 		gotURL = r.URL.String()
 		respondJSON(t, w, map[string]any{
 			"issues": []map[string]any{
-				{"number": 1, "title": "a", "status": "open"},
-				{"number": 2, "title": "b", "status": "open"},
+				{"short_id": "aaa1", "title": "a", "status": "open"},
+				{"short_id": "bbb2", "title": "b", "status": "open"},
 			},
 		})
 	})
@@ -113,26 +113,32 @@ func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 		respondJSON(t, w, map[string]any{
 			"issue": map[string]any{
 				"uid": "01JZ0000000000000000000001", "project_uid": "01JZ0000000000000000000002",
-				"number": 42, "title": "fix", "status": "open",
+				"short_id": "abc4", "title": "fix", "status": "open",
 			},
 			"comments": []any{},
 			"links": []map[string]any{
 				{
-					"id": 1, "type": "blocks", "from_number": 42, "to_number": 7,
-					"from_issue_uid": "01JZ0000000000000000000001",
-					"to_issue_uid":   "01JZ0000000000000000000003",
+					"id": 1, "type": "blocks",
+					"from": map[string]any{
+						"uid":      "01JZ0000000000000000000001",
+						"short_id": "abc4",
+					},
+					"to": map[string]any{
+						"uid":      "01JZ0000000000000000000003",
+						"short_id": "def4",
+					},
 				},
 			},
 			"labels": []any{},
 		})
 	})
-	detail, err := c.GetIssueDetail(context.Background(), 7, 42)
+	detail, err := c.GetIssueDetail(context.Background(), 7, "abc4")
 	require.NoError(t, err)
-	if gotPath != "/api/v1/projects/7/issues/42" {
+	if gotPath != "/api/v1/projects/7/issues/abc4" {
 		t.Fatalf("unexpected path: %s", gotPath)
 	}
 	got := detail.Issue
-	if got == nil || got.Number != 42 || got.Title != "fix" {
+	if got == nil || got.ShortID != "abc4" || got.Title != "fix" {
 		t.Fatalf("unexpected issue: %+v", got)
 	}
 	if got.UID != "01JZ0000000000000000000001" {
@@ -141,24 +147,28 @@ func TestClient_GetIssueDetail_DecodesWrappedEnvelope(t *testing.T) {
 	if got.ProjectUID != "01JZ0000000000000000000002" {
 		t.Fatalf("project UID = %q", got.ProjectUID)
 	}
-	links, err := c.ListLinks(context.Background(), 7, 42)
+	links, err := c.ListLinks(context.Background(), 7, "abc4")
 	require.NoError(t, err)
-	if len(links) != 1 || links[0].FromIssueUID != "01JZ0000000000000000000001" ||
-		links[0].ToIssueUID != "01JZ0000000000000000000003" {
+	if len(links) != 1 || links[0].From.UID != "01JZ0000000000000000000001" ||
+		links[0].To.UID != "01JZ0000000000000000000003" {
 		t.Fatalf("link UIDs not decoded: %+v", links)
+	}
+	if links[0].From.ShortID != "abc4" || links[0].To.ShortID != "def4" {
+		t.Fatalf("link short_ids not decoded: %+v", links)
 	}
 }
 
 func TestClient_ShowIssue_DecodesHierarchy(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		respondJSON(t, w, map[string]any{
-			"issue": map[string]any{"number": 42, "title": "fix", "status": "open"},
+			"issue": map[string]any{"short_id": "abc4", "title": "fix", "status": "open"},
 			"parent": map[string]any{
-				"number": 12, "title": "workspace polish", "status": "open",
+				"uid": "01JZ0000000000000000000007", "short_id": "wp77",
+				"title": "workspace polish", "status": "open",
 			},
 			"children": []map[string]any{
 				{
-					"number": 43, "title": "child", "status": "open",
+					"short_id": "ch43", "title": "child", "status": "open",
 					"labels": []string{"bug", "ux"},
 					"child_counts": map[string]any{
 						"open": 1, "total": 2,
@@ -173,15 +183,15 @@ func TestClient_ShowIssue_DecodesHierarchy(t *testing.T) {
 			},
 		})
 	})
-	got, err := c.GetIssueDetail(context.Background(), 7, 42)
+	got, err := c.GetIssueDetail(context.Background(), 7, "abc4")
 	require.NoError(t, err)
-	if got.Issue == nil || got.Issue.Number != 42 {
+	if got.Issue == nil || got.Issue.ShortID != "abc4" {
 		t.Fatalf("unexpected issue: %+v", got.Issue)
 	}
-	if got.Parent == nil || got.Parent.Number != 12 || got.Parent.Title != "workspace polish" {
+	if got.Parent == nil || got.Parent.ShortID != "wp77" || got.Parent.Title != "workspace polish" {
 		t.Fatalf("unexpected parent: %+v", got.Parent)
 	}
-	if len(got.Children) != 1 || got.Children[0].Number != 43 {
+	if len(got.Children) != 1 || got.Children[0].ShortID != "ch43" {
 		t.Fatalf("unexpected children: %+v", got.Children)
 	}
 	if len(got.Children[0].Labels) != 2 || got.Children[0].Labels[0] != "bug" {
@@ -200,7 +210,7 @@ func TestClient_CreateIssue_SendsIdempotencyHeader(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotKey = r.Header.Get("Idempotency-Key")
 		respondJSON(t, w, map[string]any{
-			"issue":   map[string]any{"number": 1, "title": "t", "status": "open"},
+			"issue":   map[string]any{"short_id": "aaa1", "title": "t", "status": "open"},
 			"changed": true,
 		})
 	})
@@ -221,7 +231,7 @@ func TestClient_DecodeError_ReturnsAPIError(t *testing.T) {
 			`{"status":404,"error":{"code":"project_not_initialized",` +
 				`"message":"no .kata.toml ancestor","hint":"run kata init"}}`))
 	})
-	_, err := c.GetIssueDetail(context.Background(), 7, 42)
+	_, err := c.GetIssueDetail(context.Background(), 7, "abc4")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -250,11 +260,11 @@ func TestClient_RemoveLabel_PathEscapesLabel(t *testing.T) {
 		gotMethod = r.Method
 		gotActor = r.URL.Query().Get("actor")
 		respondJSON(t, w, map[string]any{
-			"issue":   map[string]any{"number": 1, "title": "t", "status": "open"},
+			"issue":   map[string]any{"short_id": "aaa1", "title": "t", "status": "open"},
 			"changed": true,
 		})
 	})
-	_, err := c.RemoveLabel(context.Background(), 7, 42, "team/backend", "alice")
+	_, err := c.RemoveLabel(context.Background(), 7, "abc4", "team/backend", "alice")
 	require.NoError(t, err)
 	if gotMethod != http.MethodDelete {
 		t.Fatalf("method = %s, want DELETE", gotMethod)
@@ -272,15 +282,15 @@ func TestClient_ListComments_RoutesThroughShowIssue(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		respondJSON(t, w, map[string]any{
-			"issue":    map[string]any{"number": 42, "title": "t", "status": "open"},
+			"issue":    map[string]any{"short_id": "abc4", "title": "t", "status": "open"},
 			"comments": []map[string]any{{"id": 1, "author": "a", "body": "hi"}},
 			"links":    []any{},
 			"labels":   []any{},
 		})
 	})
-	got, err := c.ListComments(context.Background(), 7, 42)
+	got, err := c.ListComments(context.Background(), 7, "abc4")
 	require.NoError(t, err)
-	if gotPath != "/api/v1/projects/7/issues/42" {
+	if gotPath != "/api/v1/projects/7/issues/abc4" {
 		t.Fatalf("unexpected path: %s", gotPath)
 	}
 	if len(got) != 1 || got[0].Body != "hi" {
@@ -293,18 +303,46 @@ func TestClient_AssignEmptyOwnerRoutesToUnassign(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		respondJSON(t, w, map[string]any{
-			"issue":   map[string]any{"number": 1, "title": "t", "status": "open"},
+			"issue":   map[string]any{"short_id": "aaa1", "title": "t", "status": "open"},
 			"changed": true,
 		})
 	})
-	_, err := c.Assign(context.Background(), 7, 42, "", "alice")
+	_, err := c.Assign(context.Background(), 7, "abc4", "", "alice")
 	require.NoError(t, err)
 	if !strings.HasSuffix(gotPath, "/actions/unassign") {
 		t.Fatalf("expected unassign path, got %s", gotPath)
 	}
 }
 
-func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
+// TestClient_AddLinkSendsToRef pins the wire-shape rename for the link
+// POST body: the daemon's CreateLinkRequest.Body carries {actor, type,
+// to_ref}, where to_ref accepts a short_id, qualified short_id, or
+// 26-char ULID. A pre-cutover client that still sends "to_number"
+// would be silently rejected as an unknown field; this regression-
+// locks the new shape.
+func TestClient_AddLinkSendsToRef(t *testing.T) {
+	var gotBody map[string]any
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		require.NoError(t, json.Unmarshal(bs, &gotBody))
+		respondJSON(t, w, map[string]any{
+			"issue":   map[string]any{"short_id": "abc4", "title": "t", "status": "open"},
+			"changed": true,
+		})
+	})
+	_, err := c.AddLink(context.Background(), 7, "abc4",
+		LinkBody{Type: "blocks", ToRef: "xyz4"}, "alice")
+	require.NoError(t, err)
+	assert.Equal(t, "blocks", gotBody["type"])
+	assert.Equal(t, "xyz4", gotBody["to_ref"])
+	assert.Equal(t, "alice", gotBody["actor"])
+	_, hasOldKey := gotBody["to_number"]
+	assert.False(t, hasOldKey, "pre-cutover to_number must not appear on the wire")
+}
+
+func TestClient_ListEvents_FiltersByIssueShortID(t *testing.T) {
+	matched := "abc4"
+	other := "xyz9"
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/projects/7/events" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
@@ -320,27 +358,33 @@ func TestClient_ListEvents_FiltersByIssueClientSide(t *testing.T) {
 		respondJSON(t, w, map[string]any{
 			"events": []map[string]any{
 				{
-					"event_id": 1, "type": "issue.commented", "issue_number": 42, "actor": "a",
+					"event_id": 1, "type": "issue.commented",
+					"issue_short_id": matched, "actor": "a",
 					"project_uid": "01JZ0000000000000000000002",
 					"issue_uid":   "01JZ0000000000000000000001",
 				},
-				{"event_id": 2, "type": "issue.commented", "issue_number": 99, "actor": "a"},
 				{
-					"event_id": 3, "type": "issue.labeled", "issue_number": 42, "actor": "a",
-					"project_uid":          "01JZ0000000000000000000002",
-					"issue_uid":            "01JZ0000000000000000000001",
-					"related_issue_uid":    "01JZ0000000000000000000004",
-					"related_issue_number": 84,
+					"event_id":       2,
+					"type":           "issue.commented",
+					"issue_short_id": other,
+					"actor":          "a",
+				},
+				{
+					"event_id": 3, "type": "issue.labeled",
+					"issue_short_id": matched, "actor": "a",
+					"project_uid":       "01JZ0000000000000000000002",
+					"issue_uid":         "01JZ0000000000000000000001",
+					"related_issue_uid": "01JZ0000000000000000000004",
 				},
 			},
 			"next_after_id":  3,
 			"reset_required": false,
 		})
 	})
-	got, err := c.ListEvents(context.Background(), 7, 42)
+	got, err := c.ListEvents(context.Background(), 7, "abc4")
 	require.NoError(t, err)
 	if len(got) != 2 {
-		t.Fatalf("got %d events for #42, want 2", len(got))
+		t.Fatalf("got %d events for abc4, want 2", len(got))
 	}
 	for _, e := range got {
 		if e.Type != "issue.commented" && e.Type != "issue.labeled" {
@@ -366,7 +410,7 @@ func TestClient_ListEvents_PaginatesProjectEventStream(t *testing.T) {
 		case "":
 			respondJSON(t, w, map[string]any{
 				"events": []map[string]any{
-					{"event_id": 1, "type": "issue.created", "issue_number": 1, "actor": "a"},
+					{"event_id": 1, "type": "issue.created", "issue_short_id": "aaa1", "actor": "a"},
 				},
 				"next_after_id":  1,
 				"reset_required": false,
@@ -374,8 +418,8 @@ func TestClient_ListEvents_PaginatesProjectEventStream(t *testing.T) {
 		case "1":
 			respondJSON(t, w, map[string]any{
 				"events": []map[string]any{
-					{"event_id": 2, "type": "issue.created", "issue_number": 42, "actor": "a"},
-					{"event_id": 3, "type": "issue.labeled", "issue_number": 42, "actor": "a"},
+					{"event_id": 2, "type": "issue.created", "issue_short_id": "abc4", "actor": "a"},
+					{"event_id": 3, "type": "issue.labeled", "issue_short_id": "abc4", "actor": "a"},
 				},
 				"next_after_id":  3,
 				"reset_required": false,
@@ -391,7 +435,7 @@ func TestClient_ListEvents_PaginatesProjectEventStream(t *testing.T) {
 		}
 	})
 
-	got, err := c.ListEvents(context.Background(), 7, 42)
+	got, err := c.ListEvents(context.Background(), 7, "abc4")
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, int64(2), got[0].ID)
@@ -405,12 +449,12 @@ func TestClient_ListEvents_PaginatesProjectEventStream(t *testing.T) {
 func TestClient_ListIssues_NotNilOnSuccess(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"issues":[{"number":1,"title":"a","status":"open"}]}`))
+		_, _ = w.Write([]byte(`{"issues":[{"short_id":"aaa1","title":"a","status":"open"}]}`))
 	})
 	got, err := c.ListIssues(context.Background(), 7, ListFilter{})
 	require.NoError(t, err)
-	if len(got) != 1 || got[0].Number != 1 {
-		t.Fatalf("got %+v, want one issue with number=1", got)
+	if len(got) != 1 || got[0].ShortID != "aaa1" {
+		t.Fatalf("got %+v, want one issue with short_id=aaa1", got)
 	}
 }
 
@@ -419,12 +463,12 @@ func TestClient_ListIssues_NotNilOnSuccess(t *testing.T) {
 func TestClient_ListAllIssues_NotNilOnSuccess(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"issues":[{"number":2,"title":"b","status":"open"}]}`))
+		_, _ = w.Write([]byte(`{"issues":[{"short_id":"bbb2","title":"b","status":"open"}]}`))
 	})
 	got, err := c.ListAllIssues(context.Background(), ListFilter{})
 	require.NoError(t, err)
-	if len(got) != 1 || got[0].Number != 2 {
-		t.Fatalf("got %+v, want one issue with number=2", got)
+	if len(got) != 1 || got[0].ShortID != "bbb2" {
+		t.Fatalf("got %+v, want one issue with short_id=bbb2", got)
 	}
 }
 
@@ -480,15 +524,15 @@ func TestListIssues_TUIDecodePopulatesLabels(t *testing.T) {
 		respondJSON(t, w, map[string]any{
 			"issues": []map[string]any{
 				{
-					"number": 1, "title": "first", "status": "open",
+					"short_id": "aaa1", "title": "first", "status": "open",
 					"labels": []string{"bug", "prio-1"},
 				},
 				{
-					"number": 2, "title": "second", "status": "open",
+					"short_id": "bbb2", "title": "second", "status": "open",
 					"labels": []string{"enhancement"},
 				},
 				{
-					"number": 3, "title": "third", "status": "open",
+					"short_id": "ccc3", "title": "third", "status": "open",
 					// no labels field — omitempty on the wire.
 				},
 			},
@@ -499,20 +543,20 @@ func TestListIssues_TUIDecodePopulatesLabels(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("got %d issues, want 3", len(got))
 	}
-	wantPerNumber := map[int64][]string{
-		1: {"bug", "prio-1"},
-		2: {"enhancement"},
-		3: nil,
+	wantPerShortID := map[string][]string{
+		"aaa1": {"bug", "prio-1"},
+		"bbb2": {"enhancement"},
+		"ccc3": nil,
 	}
 	for _, iss := range got {
-		want := wantPerNumber[iss.Number]
+		want := wantPerShortID[iss.ShortID]
 		if len(iss.Labels) != len(want) {
-			t.Fatalf("issue #%d labels = %v, want %v", iss.Number, iss.Labels, want)
+			t.Fatalf("issue #%s labels = %v, want %v", iss.ShortID, iss.Labels, want)
 		}
 		for i := range want {
 			if iss.Labels[i] != want[i] {
-				t.Fatalf("issue #%d labels[%d] = %q, want %q",
-					iss.Number, i, iss.Labels[i], want[i])
+				t.Fatalf("issue #%s labels[%d] = %q, want %q",
+					iss.ShortID, i, iss.Labels[i], want[i])
 			}
 		}
 	}
@@ -528,7 +572,7 @@ func TestListIssues_TUIDecodePopulatesLabels(t *testing.T) {
 func TestShowIssue_PopulatesLabelsFromTopLevel(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		respondJSON(t, w, map[string]any{
-			"issue":    map[string]any{"number": 42, "title": "fix", "status": "open"},
+			"issue":    map[string]any{"short_id": "abc4", "title": "fix", "status": "open"},
 			"comments": []any{},
 			"links":    []any{},
 			"labels": []map[string]any{
@@ -538,7 +582,7 @@ func TestShowIssue_PopulatesLabelsFromTopLevel(t *testing.T) {
 			},
 		})
 	})
-	resp, err := c.showIssue(context.Background(), 7, 42)
+	resp, err := c.showIssue(context.Background(), 7, "abc4")
 	require.NoError(t, err)
 	got := resp.Issue.Labels
 	want := []string{"bug", "needs-design", "prio-1"}
@@ -559,7 +603,7 @@ func TestAPIError_EmptyBodyFallback(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
-	_, err := c.GetIssueDetail(context.Background(), 7, 42)
+	_, err := c.GetIssueDetail(context.Background(), 7, "abc4")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -571,7 +615,7 @@ func TestAPIError_EmptyBodyFallback(t *testing.T) {
 	if !strings.Contains(msg, "HTTP 404") {
 		t.Fatalf("Error() = %q, want it to mention HTTP 404", msg)
 	}
-	if !strings.Contains(msg, "/api/v1/projects/7/issues/42") {
+	if !strings.Contains(msg, "/api/v1/projects/7/issues/abc4") {
 		t.Fatalf("Error() = %q, want it to mention the path", msg)
 	}
 }

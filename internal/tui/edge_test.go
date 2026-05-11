@@ -69,7 +69,7 @@ func TestEdge_WindowResize_NoPanic(t *testing.T) {
 // Status filter changes still dispatch a refetch (covered separately).
 func TestEdge_SSEDuringSearchPrompt(t *testing.T) {
 	m := newTestModel()
-	m.list.issues = []Issue{{ProjectID: 7, Number: 1, Title: "x"}}
+	m.list.issues = []Issue{{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "x"}}
 
 	// Open the search bar with '/'.
 	m = openBarFromCmd(t, m, '/')
@@ -88,7 +88,7 @@ func TestEdge_SSEDuringSearchPrompt(t *testing.T) {
 
 	// SSE event lands while the bar is still open. pendingRefetch
 	// flips and a debounce tick is queued; the bar state is untouched.
-	m, sseCmd := updateModel(m, eventReceivedMsg{projectID: 7, issueNumber: 0})
+	m, sseCmd := updateModel(m, eventReceivedMsg{projectID: 7})
 	if m.input.kind != inputSearchBar {
 		t.Fatal("SSE event closed the bar; should be transparent to it")
 	}
@@ -129,26 +129,26 @@ func TestEdge_SSEDuringSearchPrompt(t *testing.T) {
 func TestEdge_IdentitySelection_FollowsIssueAcrossReorder(t *testing.T) {
 	m := newTestModel()
 	m.list.issues = []Issue{
-		{Number: 1, Title: "alpha"},
-		{Number: 2, Title: "beta"},
-		{Number: 3, Title: "gamma"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "alpha"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "beta"},
+		{UID: "01TEST-ccc3", ShortID: "ccc3", Title: "gamma"},
 	}
 	m.list.cursor = 1
-	m.list.selectedNumber = 2 // cursor is on #2 ("beta")
+	m.list.selectedUID = "01TEST-bbb2" // cursor is on bbb2 ("beta")
 
-	// Simulate an SSE-driven refetch that reorders: #2 moved to row 0
+	// Simulate an SSE-driven refetch that reorders: bbb2 moved to row 0
 	// because it was just updated. With positional selection the cursor
 	// would still point at index 1 (now "alpha"), silently changing
 	// what the user sees as selected.
 	nm, _ := updateModel(m, refetchedMsg{
 		dispatchKey: m.currentCacheKey(),
 		issues: []Issue{
-			{Number: 2, Title: "beta"},
-			{Number: 1, Title: "alpha"},
-			{Number: 3, Title: "gamma"},
+			{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "beta"},
+			{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "alpha"},
+			{UID: "01TEST-ccc3", ShortID: "ccc3", Title: "gamma"},
 		},
 	})
-	assertSelection(t, nm, 0, 2)
+	assertSelection(t, nm, 0, "01TEST-bbb2")
 }
 
 // TestEdge_IdentitySelection_FallsBackWhenIssueDisappears: when the
@@ -159,22 +159,22 @@ func TestEdge_IdentitySelection_FollowsIssueAcrossReorder(t *testing.T) {
 func TestEdge_IdentitySelection_FallsBackWhenIssueDisappears(t *testing.T) {
 	m := newTestModel()
 	m.list.issues = []Issue{
-		{Number: 1, Title: "alpha"},
-		{Number: 2, Title: "beta"},
-		{Number: 3, Title: "gamma"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "alpha"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "beta"},
+		{UID: "01TEST-ccc3", ShortID: "ccc3", Title: "gamma"},
 	}
 	m.list.cursor = 1
-	m.list.selectedNumber = 2
+	m.list.selectedUID = "01TEST-bbb2"
 
 	nm, _ := updateModel(m, refetchedMsg{
 		dispatchKey: m.currentCacheKey(),
 		issues: []Issue{
-			{Number: 1, Title: "alpha"},
-			// #2 disappeared.
-			{Number: 3, Title: "gamma"},
+			{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "alpha"},
+			// bbb2 disappeared.
+			{UID: "01TEST-ccc3", ShortID: "ccc3", Title: "gamma"},
 		},
 	})
-	assertSelection(t, nm, 1, 3)
+	assertSelection(t, nm, 1, "01TEST-ccc3")
 }
 
 // TestEdge_PageUpPageDown_MovesCursorInChunks: pgup/pgdown shift the
@@ -188,7 +188,7 @@ func TestEdge_PageUpPageDown_MovesCursorInChunks(t *testing.T) {
 
 	// pgdown advances by pageStep (10).
 	nm, _ := updateModel(m, tea.KeyMsg{Type: tea.KeyPgDown})
-	assertSelection(t, nm, 15, 16)
+	assertSelection(t, nm, 15, "01TEST-r016")
 
 	// pgup walks back by pageStep.
 	nm, _ = updateModel(nm, tea.KeyMsg{Type: tea.KeyPgUp})
@@ -220,10 +220,12 @@ func TestEdge_ListViewport_KeepsCursorVisible(t *testing.T) {
 	lm.loading = false
 	issues := make([]Issue, 100)
 	for i := range issues {
+		sid := fmt.Sprintf("v%03d", i+1)
 		issues[i] = Issue{
-			Number: int64(i + 1),
-			Title:  rowTitleFor(i + 1),
-			Status: "open",
+			UID:     "01TEST-" + sid,
+			ShortID: sid,
+			Title:   rowTitleFor(i + 1),
+			Status:  "open",
 		}
 	}
 	lm.issues = issues
@@ -268,14 +270,14 @@ func numToTag(n int) string {
 // full list; filteredIssues narrows what renders afterward.
 func TestEdge_RefetchAfterRenderFilterChangeKeepsWorkingSet(t *testing.T) {
 	m := newTestModel()
-	m.list.issues = []Issue{{Number: 99, Title: "current-filter row"}}
+	m.list.issues = []Issue{{UID: "01TEST-99zz", ShortID: "99zz", Title: "current-filter row"}}
 	m.list.filter = ListFilter{Status: "open"}
 
 	fetched := refetchedMsg{
 		dispatchKey: cacheKey{projectID: 7, limit: queueFetchLimit},
 		issues: []Issue{
-			{Number: 1, Status: "closed", Title: "closed row"},
-			{Number: 2, Status: "open", Title: "open row"},
+			{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "closed", Title: "closed row"},
+			{UID: "01TEST-bbb2", ShortID: "bbb2", Status: "open", Title: "open row"},
 		},
 	}
 	nm, _ := updateModel(m, fetched)
@@ -283,7 +285,7 @@ func TestEdge_RefetchAfterRenderFilterChangeKeepsWorkingSet(t *testing.T) {
 		t.Fatalf("working set was not refreshed: %+v", nm.list.issues)
 	}
 	visible := filteredIssues(nm.list.issues, nm.list.filter)
-	if len(visible) != 1 || visible[0].Number != 2 {
+	if len(visible) != 1 || visible[0].ShortID != "bbb2" {
 		t.Fatalf("render filter did not narrow refreshed working set: %+v", visible)
 	}
 }
@@ -299,14 +301,14 @@ func TestEdge_StaleRefetch_DroppedAcrossScopeToggle(t *testing.T) {
 	// Currently in all-projects scope.
 	m.scope = scope{allProjects: true}
 	m.list.loading = false
-	m.list.issues = []Issue{{Number: 99, Title: "all-projects row"}}
+	m.list.issues = []Issue{{UID: "01TEST-99zz", ShortID: "99zz", Title: "all-projects row"}}
 
 	stale := refetchedMsg{
 		dispatchKey: cacheKey{projectID: 7}, // single-project at dispatch
-		issues:      []Issue{{Number: 1, Title: "single-project row"}},
+		issues:      []Issue{{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "single-project row"}},
 	}
 	nm, _ := updateModel(m, stale)
-	if len(nm.list.issues) != 1 || nm.list.issues[0].Number != 99 {
+	if len(nm.list.issues) != 1 || nm.list.issues[0].ShortID != "99zz" {
 		t.Fatalf("stale single-project refetch leaked into all-projects view: %+v",
 			nm.list.issues)
 	}
@@ -423,14 +425,17 @@ func TestEdge_DetailMutation_StaleGen_MarksCacheStale(t *testing.T) {
 	m.view = viewDetail
 	// Pretend the user is now on issue #99 (gen=10) after jumping
 	// from issue #42 (gen=5).
-	m.detail.issue = &Issue{ProjectID: 7, Number: 99}
+	m.detail.issue = &Issue{ProjectID: 7, UID: "01TEST-99zz", ShortID: "99zz"}
 	m.detail.gen = 10
 	// Prime the cache so isStale() can detect the stale mark.
-	m.cache.put(cacheKey{projectID: 7}, []Issue{{Number: 42}, {Number: 99}})
+	m.cache.put(cacheKey{projectID: 7}, []Issue{
+		{UID: "01TEST-42aa", ShortID: "42aa"},
+		{UID: "01TEST-99zz", ShortID: "99zz"},
+	})
 
 	mut := mutationDoneMsg{
 		origin: "detail", gen: 5, kind: "close",
-		resp: &MutationResp{Issue: &Issue{Number: 42}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa"}},
 	}
 	nm, _ := updateModel(m, mut)
 	if !nm.cache.isStale() {
@@ -451,13 +456,13 @@ func TestEdge_JumpDetail_ViewGuard(t *testing.T) {
 	m := newTestModel()
 	// User left detail view between the keypress and the jump msg.
 	m.view = viewList
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42}
+	m.detail.issue = &Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa"}
 	m.detail.scopePID = 7
 	m.detail.gen = 5
 	priorGen := m.detail.gen
-	priorIssue := m.detail.issue.Number
+	priorShortID := m.detail.issue.ShortID
 
-	nm, cmd := updateModel(m, jumpDetailMsg{number: 99})
+	nm, cmd := updateModel(m, jumpDetailMsg{ref: "99zz"})
 	if cmd != nil {
 		t.Fatalf("jump while not in viewDetail must dispatch no fetches, got %T", cmd)
 	}
@@ -465,53 +470,53 @@ func TestEdge_JumpDetail_ViewGuard(t *testing.T) {
 		t.Fatalf("detail.gen was bumped while not in viewDetail: %d → %d",
 			priorGen, nm.detail.gen)
 	}
-	if nm.detail.issue.Number != priorIssue {
-		t.Fatalf("detail.issue churned by stale jump: %d → %d",
-			priorIssue, nm.detail.issue.Number)
+	if nm.detail.issue.ShortID != priorShortID {
+		t.Fatalf("detail.issue churned by stale jump: %q → %q",
+			priorShortID, nm.detail.issue.ShortID)
 	}
 }
 
-// TestEdge_FilterChange_ClearsSelectedNumber: pressing `s` (cycle
+// TestEdge_FilterChange_ClearsSelectedUID: pressing `s` (cycle
 // status) or `c` (clear filters) must reset both cursor AND
-// selectedNumber without dispatching a refetch. Otherwise the next
+// selectedUID without dispatching a refetch. Otherwise the next
 // identity-restore can pull the cursor back to the previously-selected
 // issue if it survived the new filter, defeating the explicit "I changed
 // the filter" intent. Regression for roborev #90 finding 1.
-func TestEdge_FilterChange_ClearsSelectedNumber(t *testing.T) {
+func TestEdge_FilterChange_ClearsSelectedUID(t *testing.T) {
 	m := newTestModel()
 	m.list.issues = []Issue{
-		{Number: 1, Title: "alpha", Status: "open"},
-		{Number: 2, Title: "beta", Status: "open"},
-		{Number: 3, Title: "gamma", Status: "open"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "alpha", Status: "open"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "beta", Status: "open"},
+		{UID: "01TEST-ccc3", ShortID: "ccc3", Title: "gamma", Status: "open"},
 	}
 	m.list.cursor = 1
-	m.list.selectedNumber = 2 // cursor on #2
+	m.list.selectedUID = "01TEST-bbb2" // cursor on bbb2
 
 	nm, cmd := updateModel(m, runeKey('s'))
-	if nm.list.selectedNumber != 0 {
-		t.Fatalf("selectedNumber = %d, want 0 (filter change clears identity)",
-			nm.list.selectedNumber)
+	if nm.list.selectedUID != "" {
+		t.Fatalf("selectedUID = %q, want empty (filter change clears identity)",
+			nm.list.selectedUID)
 	}
 	if cmd != nil {
 		t.Fatalf("status filter change should not dispatch a refetch, got %T", cmd)
 	}
 }
 
-// TestEdge_ClearFilters_ClearsSelectedNumber: same as above for `c`
+// TestEdge_ClearFilters_ClearsSelectedUID: same as above for `c`
 // (clear filters).
-func TestEdge_ClearFilters_ClearsSelectedNumber(t *testing.T) {
+func TestEdge_ClearFilters_ClearsSelectedUID(t *testing.T) {
 	m := newTestModel()
 	m.list.filter = ListFilter{Status: "open", Owner: "alice"}
 	m.list.issues = []Issue{
-		{Number: 1, Title: "alpha", Status: "open", Owner: ptrString("alice")},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "alpha", Status: "open", Owner: ptrString("alice")},
 	}
 	m.list.cursor = 0
-	m.list.selectedNumber = 1
+	m.list.selectedUID = "01TEST-aaa1"
 
 	nm, _ := updateModel(m, runeKey('c'))
-	if nm.list.selectedNumber != 0 {
-		t.Fatalf("selectedNumber = %d, want 0 (clear filters resets identity)",
-			nm.list.selectedNumber)
+	if nm.list.selectedUID != "" {
+		t.Fatalf("selectedUID = %q, want empty (clear filters resets identity)",
+			nm.list.selectedUID)
 	}
 }
 
@@ -526,19 +531,19 @@ func TestEdge_ClearFilters_ClearsSelectedNumber(t *testing.T) {
 func TestEdge_ListMutation_CompletesAfterDetailOpen(t *testing.T) {
 	m := newTestModel()
 	m.list.actor = "tester"
-	m.list.issues = []Issue{{ProjectID: 7, Number: 1, Title: "x"}}
+	m.list.issues = []Issue{{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "x"}}
 	// Simulate having opened detail view after dispatching the close.
 	m.view = viewDetail
-	m.detail.issue = &Issue{ProjectID: 7, Number: 99, Title: "other"}
+	m.detail.issue = &Issue{ProjectID: 7, UID: "01TEST-99zz", ShortID: "99zz", Title: "other"}
 
 	mut := mutationDoneMsg{origin: "list", kind: "close",
-		resp: &MutationResp{Issue: &Issue{Number: 1}}}
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1"}}}
 	nm, _ := updateModel(m, mut)
 	if nm.list.status == "" {
 		t.Fatal("list mutation completion was dropped while detail was active")
 	}
-	if !strings.Contains(nm.list.status, "closed #1") {
-		t.Fatalf("list.status = %q, want hint about closed #1", nm.list.status)
+	if !strings.Contains(nm.list.status, "closed #aaa1") {
+		t.Fatalf("list.status = %q, want hint about closed #aaa1", nm.list.status)
 	}
 }
 
@@ -554,19 +559,19 @@ func TestEdge_DetailMutation_CompletesAfterPopToList(t *testing.T) {
 	// Detail is initialized with a current issue and gen=5 from a recent
 	// open; after popping, m.view is viewList but m.detail still holds
 	// the prior state until the next open.
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Title: "to close"}
+	m.detail.issue = &Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa", Title: "to close"}
 	m.detail.scopePID = 7
 	m.detail.gen = 5
 	m.view = viewList
 
 	mut := mutationDoneMsg{origin: "detail", gen: 5, kind: "close",
-		resp: &MutationResp{Issue: &Issue{Number: 42}}}
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa"}}}
 	nm, _ := updateModel(m, mut)
 	if nm.detail.status == "" {
 		t.Fatal("detail mutation completion was dropped while list was active")
 	}
-	if !strings.Contains(nm.detail.status, "closed #42") {
-		t.Fatalf("detail.status = %q, want hint about closed #42", nm.detail.status)
+	if !strings.Contains(nm.detail.status, "closed #42aa") {
+		t.Fatalf("detail.status = %q, want hint about closed #42aa", nm.detail.status)
 	}
 }
 
@@ -584,26 +589,31 @@ func TestEdge_DetailJumpBack(t *testing.T) {
 	// Build A with one link to issue #7. We seed activeTab=tabLinks and
 	// tabCursor=0 so Enter has a jump target on the first row.
 	original := detailModel{
-		issue:     &Issue{Number: 42, Title: "current", Status: "open"},
+		issue:     &Issue{UID: "01TEST-42aa", ShortID: "42aa", Title: "current", Status: "open"},
 		scopePID:  7,
 		activeTab: tabLinks,
 		tabCursor: 0,
 		gen:       1,
 		links: []LinkEntry{
-			{ID: 1, Type: "blocks", FromNumber: 42, ToNumber: 7, Author: "wesm"},
+			{
+				ID: 1, Type: "blocks",
+				From:   LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+				To:     LinkPeer{UID: "01TEST-7bb", ShortID: "7bb"},
+				Author: "wesm",
+			},
 		},
 	}
 	m.detail = original
 	m.nextGen = 1
 
-	// Press Enter on the link → emits jumpDetailMsg(7).
+	// Press Enter on the link → emits jumpDetailMsg(7bb).
 	m, cmd := updateModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected jump cmd from Enter")
 	}
 	jm, ok := cmd().(jumpDetailMsg)
-	if !ok || jm.number != 7 {
-		t.Fatalf("expected jumpDetailMsg(7), got %T (%v)", cmd(), cmd())
+	if !ok || jm.ref != "7bb" {
+		t.Fatalf("expected jumpDetailMsg(7bb), got %T (%v)", cmd(), cmd())
 	}
 
 	// Feed the jumpDetailMsg back so Model.handleJumpDetail performs
@@ -622,10 +632,11 @@ func TestEdge_DetailJumpBack(t *testing.T) {
 
 	// Apply the in-flight detailFetchedMsg so the stacked view has data.
 	m, _ = updateModel(m, detailFetchedMsg{
-		gen: m.detail.gen, issue: &Issue{Number: 7, Title: "linked target"},
+		gen:   m.detail.gen,
+		issue: &Issue{UID: "01TEST-7bb", ShortID: "7bb", Title: "linked target"},
 	})
-	if m.detail.issue == nil || m.detail.issue.Number != 7 {
-		t.Fatalf("post-fetch dm.issue.Number = %v, want 7", m.detail.issue)
+	if m.detail.issue == nil || m.detail.issue.ShortID != "7bb" {
+		t.Fatalf("post-fetch dm.issue.ShortID = %v, want 7bb", m.detail.issue)
 	}
 
 	// Press Esc → pop to original (handleBack restores from navStack).
@@ -633,8 +644,8 @@ func TestEdge_DetailJumpBack(t *testing.T) {
 	if popCmd != nil {
 		t.Fatalf("Esc on stacked detail must not emit a cmd, got %T", popCmd)
 	}
-	if m.detail.issue == nil || m.detail.issue.Number != 42 {
-		t.Fatalf("post-pop issue = %v, want #42 (original)", m.detail.issue)
+	if m.detail.issue == nil || m.detail.issue.ShortID != "42aa" {
+		t.Fatalf("post-pop issue = %v, want #42aa (original)", m.detail.issue)
 	}
 	if m.detail.activeTab != tabLinks {
 		t.Fatalf("activeTab not restored: got %d, want tabLinks", m.detail.activeTab)
@@ -646,7 +657,7 @@ func TestEdge_DetailJumpBack(t *testing.T) {
 		t.Fatalf("navStack should be empty after pop, got %d", len(m.detail.navStack))
 	}
 	// The original issue's links slice should also be intact.
-	if len(m.detail.links) != 1 || m.detail.links[0].ToNumber != 7 {
+	if len(m.detail.links) != 1 || m.detail.links[0].To.ShortID != "7bb" {
 		t.Fatalf("links not restored: %+v", m.detail.links)
 	}
 }
@@ -691,8 +702,11 @@ func TestDetail_ScrollIndicator_ViewportCoversWholeDocument(t *testing.T) {
 	}
 	dm := detailModel{
 		issue: &Issue{
-			Number: 1, Title: "x", Status: "open",
-			Body: strings.Repeat("body line\n", 12),
+			UID:     "01TEST-aaa1",
+			ShortID: "aaa1",
+			Title:   "x",
+			Status:  "open",
+			Body:    strings.Repeat("body line\n", 12),
 		},
 		comments:  cs,
 		activeTab: tabComments,

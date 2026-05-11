@@ -114,7 +114,7 @@ func TestListView_SanitizesMaliciousTitle(t *testing.T) {
 	lm := newListModel()
 	lm.loading = false
 	lm.issues = []Issue{
-		{Number: 1, Title: "\x1b]0;HIJACK\x07normal title", Status: "open"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "\x1b]0;HIJACK\x07normal title", Status: "open"},
 	}
 	out := lm.View(120, 30, viewChrome{})
 	assertSafeRender(t, out)
@@ -131,7 +131,7 @@ func TestListView_SanitizesMaliciousTitle(t *testing.T) {
 func TestDetailView_SanitizesMaliciousBody(t *testing.T) {
 	dm := detailModel{
 		issue: &Issue{
-			Number: 42, Title: "x", Status: "open",
+			UID: "01TEST-42aa", ShortID: "42aa", Title: "x", Status: "open",
 			Body: "first line\n\x1b[2Joverwrite-attack\nthird",
 		},
 	}

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,13 +27,13 @@ type fakeListAPI struct {
 	lastCreateProject  int64
 	lastCreateBody     CreateIssueBody
 	lastCloseProjectID int64
-	lastCloseNumber    int64
+	lastCloseRef       string
 	lastCloseActor     string
 	lastReopenProject  int64
-	lastReopenNumber   int64
+	lastReopenRef      string
 	lastReopenActor    string
 	lastPriorityPID    int64
-	lastPriorityNumber int64
+	lastPriorityRef    string
 	lastPriorityValue  *int64
 	lastPriorityActor  string
 	listIssuesResult   []Issue
@@ -76,31 +77,31 @@ func (f *fakeListAPI) CreateIssue(
 }
 
 func (f *fakeListAPI) Close(
-	_ context.Context, projectID, number int64, actor string,
+	_ context.Context, projectID int64, ref, actor string,
 ) (*MutationResp, error) {
 	f.closeCalls++
 	f.lastCloseProjectID = projectID
-	f.lastCloseNumber = number
+	f.lastCloseRef = ref
 	f.lastCloseActor = actor
 	return f.closeResult, f.closeErr
 }
 
 func (f *fakeListAPI) Reopen(
-	_ context.Context, projectID, number int64, actor string,
+	_ context.Context, projectID int64, ref, actor string,
 ) (*MutationResp, error) {
 	f.reopenCalls++
 	f.lastReopenProject = projectID
-	f.lastReopenNumber = number
+	f.lastReopenRef = ref
 	f.lastReopenActor = actor
 	return f.reopenResult, f.reopenErr
 }
 
 func (f *fakeListAPI) SetPriority(
-	_ context.Context, projectID, number int64, priority *int64, actor string,
+	_ context.Context, projectID int64, ref string, priority *int64, actor string,
 ) (*MutationResp, error) {
 	f.setPriorityCalls++
 	f.lastPriorityPID = projectID
-	f.lastPriorityNumber = number
+	f.lastPriorityRef = ref
 	f.lastPriorityValue = priority
 	f.lastPriorityActor = actor
 	return f.setPriorityResult, f.setPriorityErr
@@ -141,17 +142,17 @@ func drainCmd(
 func TestList_StatusCycle(t *testing.T) {
 	api, km, sc := newListEnv()
 	lm := listModel{issues: []Issue{
-		{Number: 1, Status: "open"},
-		{Number: 2, Status: "closed"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "open"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Status: "closed"},
 	}}
 
 	wants := []struct {
 		status  string
-		visible []int64
+		visible []string
 	}{
-		{status: "open", visible: []int64{1}},
-		{status: "closed", visible: []int64{2}},
-		{status: "", visible: []int64{1, 2}},
+		{status: "open", visible: []string{"aaa1"}},
+		{status: "closed", visible: []string{"bbb2"}},
+		{status: "", visible: []string{"aaa1", "bbb2"}},
 	}
 	for i, want := range wants {
 		var cmd tea.Cmd
@@ -164,12 +165,12 @@ func TestList_StatusCycle(t *testing.T) {
 		}
 		visible := filteredIssues(lm.issues, lm.filter)
 		if len(visible) != len(want.visible) {
-			t.Fatalf("step %d: visible = %+v, want numbers %v", i, visible, want.visible)
+			t.Fatalf("step %d: visible = %+v, want short_ids %v", i, visible, want.visible)
 		}
-		for j, wantNumber := range want.visible {
-			if visible[j].Number != wantNumber {
-				t.Fatalf("step %d row %d: visible #%d, want #%d",
-					i, j, visible[j].Number, wantNumber)
+		for j, wantSID := range want.visible {
+			if visible[j].ShortID != wantSID {
+				t.Fatalf("step %d row %d: visible #%s, want #%s",
+					i, j, visible[j].ShortID, wantSID)
 			}
 		}
 	}
@@ -180,15 +181,15 @@ func TestList_StatusCycle(t *testing.T) {
 
 func TestList_StatusOpenDoesNotAutoExpandMatchingChildren(t *testing.T) {
 	api, km, sc := newListEnv()
-	parent := int64(1)
+	parentSID := "p001"
 	lm := listModel{issues: []Issue{
 		{
-			ProjectID: 7, Number: parent, Status: "open",
+			ProjectID: 7, UID: "01TEST-" + parentSID, ShortID: parentSID, Status: "open",
 			Title: "parent", ChildCounts: &ChildCounts{Open: 1, Total: 1},
 		},
 		{
-			ProjectID: 7, Number: 2, Status: "open",
-			Title: "child", ParentNumber: &parent,
+			ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", Status: "open",
+			Title: "child", ParentShortID: &parentSID,
 		},
 	}}
 
@@ -197,28 +198,28 @@ func TestList_StatusOpenDoesNotAutoExpandMatchingChildren(t *testing.T) {
 		t.Fatalf("status toggle should not dispatch a command, got %T", cmd)
 	}
 	rows := lm.visibleRows()
-	if len(rows) != 1 || rows[0].issue.Number != parent {
+	if len(rows) != 1 || rows[0].issue.ShortID != parentSID {
 		t.Fatalf("visible rows after status=open = %+v, want collapsed parent only", rows)
 	}
 	if rows[0].expanded {
 		t.Fatalf("parent row expanded by status filter; want collapsed")
 	}
-	if lm.expanded[issueKey{projectID: 7, number: parent}] {
+	if lm.expanded[issueKey{projectID: 7, shortID: parentSID}] {
 		t.Fatalf("status filter mutated explicit expansion state: %+v", lm.expanded)
 	}
 }
 
 func TestList_StatusOpenPromotesChildWhenParentClosed(t *testing.T) {
 	api, km, sc := newListEnv()
-	parent := int64(17)
+	parentSID := "pp17"
 	lm := listModel{issues: []Issue{
 		{
-			ProjectID: 7, Number: parent, Status: "closed",
+			ProjectID: 7, UID: "01TEST-pp17", ShortID: parentSID, Status: "closed",
 			Title: "closed parent", ChildCounts: &ChildCounts{Open: 1, Total: 1},
 		},
 		{
-			ProjectID: 7, Number: 90, Status: "open",
-			Title: "open child", ParentNumber: &parent,
+			ProjectID: 7, UID: "01TEST-c090", ShortID: "c090", Status: "open",
+			Title: "open child", ParentShortID: &parentSID,
 		},
 	}}
 
@@ -227,7 +228,7 @@ func TestList_StatusOpenPromotesChildWhenParentClosed(t *testing.T) {
 		t.Fatalf("status toggle should not dispatch a command, got %T", cmd)
 	}
 	rows := lm.visibleRows()
-	if len(rows) != 1 || rows[0].issue.Number != 90 {
+	if len(rows) != 1 || rows[0].issue.ShortID != "c090" {
 		t.Fatalf("visible rows after status=open = %+v, want promoted open child only", rows)
 	}
 	if rows[0].depth != 0 || rows[0].context {
@@ -236,22 +237,22 @@ func TestList_StatusOpenPromotesChildWhenParentClosed(t *testing.T) {
 }
 
 func TestList_StatusOpenShowsNestedMatchingGrandchildContext(t *testing.T) {
-	parent := int64(1)
-	child := int64(2)
+	parentSID := "p001"
+	childSID := "c002"
 	rows := buildQueueRows([]Issue{
-		{ProjectID: 7, Number: parent, Status: "open", Title: "parent"},
-		{ProjectID: 7, Number: child, Status: "closed", Title: "child", ParentNumber: &parent},
-		{ProjectID: 7, Number: 3, Status: "open", Title: "grandchild", ParentNumber: &child},
+		{ProjectID: 7, UID: "01TEST-p001", ShortID: parentSID, Status: "open", Title: "parent"},
+		{ProjectID: 7, UID: "01TEST-c002", ShortID: childSID, Status: "closed", Title: "child", ParentShortID: &parentSID},
+		{ProjectID: 7, UID: "01TEST-g003", ShortID: "g003", Status: "open", Title: "grandchild", ParentShortID: &childSID},
 	}, ListFilter{Status: "open"}, nil)
 
 	require.Len(t, rows, 3)
-	assert.Equal(t, int64(1), rows[0].issue.Number)
+	assert.Equal(t, parentSID, rows[0].issue.ShortID)
 	assert.True(t, rows[0].expanded)
 	assert.False(t, rows[0].context)
-	assert.Equal(t, int64(2), rows[1].issue.Number)
+	assert.Equal(t, childSID, rows[1].issue.ShortID)
 	assert.True(t, rows[1].expanded)
 	assert.True(t, rows[1].context)
-	assert.Equal(t, int64(3), rows[2].issue.Number)
+	assert.Equal(t, "g003", rows[2].issue.ShortID)
 	assert.False(t, rows[2].context)
 }
 
@@ -373,7 +374,8 @@ func TestList_ClearFilters_ZeroesEveryField(t *testing.T) {
 func TestList_ApplyFetched_SetsTruncatedAboveWorkingSetLimitAndTrims(t *testing.T) {
 	issues := make([]Issue, queueFetchLimit)
 	for i := range issues {
-		issues[i] = Issue{Number: int64(i + 1)}
+		sid := fmt.Sprintf("w%03d", i+1)
+		issues[i] = Issue{UID: "01TEST-" + sid, ShortID: sid}
 	}
 
 	lm := listModel{}.applyFetched(initialFetchMsg{issues: issues})
@@ -403,14 +405,14 @@ func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
 	lm := listModel{
 		filter: ListFilter{Owner: "alice"},
 		issues: []Issue{
-			{Number: 1, Owner: ptrString("alice"), Title: "a"},
-			{Number: 2, Owner: ptrString("bob"), Title: "b"},
-			{Number: 3, Owner: ptrString("alice"), Title: "c"},
-			{Number: 4, Owner: ptrString("bob"), Title: "d"},
+			{UID: "01TEST-aaa1", ShortID: "aaa1", Owner: ptrString("alice"), Title: "a"},
+			{UID: "01TEST-bbb2", ShortID: "bbb2", Owner: ptrString("bob"), Title: "b"},
+			{UID: "01TEST-ccc3", ShortID: "ccc3", Owner: ptrString("alice"), Title: "c"},
+			{UID: "01TEST-ddd4", ShortID: "ddd4", Owner: ptrString("bob"), Title: "d"},
 		},
 	}
-	// Two filtered rows (1 and 3). j once → cursor=1 (the second
-	// filtered row, #3). j again clamps at len(filtered)-1=1.
+	// Two filtered rows (aaa1 and ccc3). j once → cursor=1 (the second
+	// filtered row, ccc3). j again clamps at len(filtered)-1=1.
 	lm, _ = lm.Update(runeKey('j'), km, api, sc)
 	if lm.cursor != 1 {
 		t.Fatalf("after j: cursor = %d, want 1", lm.cursor)
@@ -419,19 +421,20 @@ func TestList_Cursor_MovesInFilteredSpace(t *testing.T) {
 	if lm.cursor != 1 {
 		t.Fatalf("after second j: cursor = %d, want 1 (clamped)", lm.cursor)
 	}
-	// targetRow must point at filtered[1] = issue #3.
+	// targetRow must point at filtered[1] = issue ccc3.
 	iss, ok := lm.targetRow()
-	if !ok || iss.Number != 3 {
-		t.Fatalf("targetRow = (%+v, %v), want #3", iss, ok)
+	if !ok || iss.ShortID != "ccc3" {
+		t.Fatalf("targetRow = (%+v, %v), want ccc3", iss, ok)
 	}
 }
 
 func TestList_ExpandCollapse(t *testing.T) {
 	api, km, sc := newListEnv()
+	parentSID := "p001"
 	lm := listModel{
 		issues: []Issue{
-			{ProjectID: 7, Number: 1, ChildCounts: &ChildCounts{Open: 1, Total: 1}},
-			{ProjectID: 7, Number: 2, ParentNumber: int64Ptr(1)},
+			{ProjectID: 7, UID: "01TEST-p001", ShortID: parentSID, ChildCounts: &ChildCounts{Open: 1, Total: 1}},
+			{ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", ParentShortID: &parentSID},
 		},
 	}
 
@@ -450,7 +453,7 @@ func TestList_ExpandCollapse(t *testing.T) {
 
 func TestList_ExpandCollapse_LeafNoOp(t *testing.T) {
 	api, km, sc := newListEnv()
-	lm := listModel{issues: []Issue{{ProjectID: 7, Number: 1}}}
+	lm := listModel{issues: []Issue{{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1"}}}
 
 	next, cmd := lm.Update(tea.KeyMsg{Type: tea.KeySpace}, km, api, sc)
 	if cmd != nil {
@@ -462,22 +465,22 @@ func TestList_ExpandCollapse_LeafNoOp(t *testing.T) {
 }
 
 func TestList_SelectionPreservedAcrossRefetchWithParentInsertion(t *testing.T) {
-	parentNumber := int64(1)
+	parentSID := "p001"
 	lm := listModel{
-		issues:            []Issue{{ProjectID: 7, Number: 2, Title: "child"}},
-		selectedNumber:    2,
+		issues:            []Issue{{ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", Title: "child"}},
+		selectedUID:       "01TEST-c002",
 		selectedProjectID: 7,
 	}
 
 	lm = lm.applyFetched(refetchedMsg{issues: []Issue{
-		{ProjectID: 7, Number: 1, Title: "parent", ChildCounts: &ChildCounts{Open: 1, Total: 1}},
-		{ProjectID: 7, Number: 2, Title: "child", ParentNumber: &parentNumber},
+		{ProjectID: 7, UID: "01TEST-p001", ShortID: parentSID, Title: "parent", ChildCounts: &ChildCounts{Open: 1, Total: 1}},
+		{ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", Title: "child", ParentShortID: &parentSID},
 	}})
 	iss, ok := lm.targetRow()
-	if !ok || iss.Number != 2 {
-		t.Fatalf("targetRow = (%+v, %v), want selected child #2", iss, ok)
+	if !ok || iss.ShortID != "c002" {
+		t.Fatalf("targetRow = (%+v, %v), want selected child c002", iss, ok)
 	}
-	if !lm.expanded[issueKey{projectID: 7, number: 1}] {
+	if !lm.expanded[issueKey{projectID: 7, shortID: parentSID}] {
 		t.Fatalf("parent was not auto-expanded: %+v", lm.expanded)
 	}
 }
@@ -486,20 +489,20 @@ func TestList_SelectionClampsWhenFilterHidesSelectedChild(t *testing.T) {
 	lm := listModel{
 		filter:            ListFilter{Status: "closed"},
 		cursor:            1,
-		selectedNumber:    2,
+		selectedUID:       "01TEST-bbb2",
 		selectedProjectID: 7,
 	}
 
 	lm = lm.applyFetched(refetchedMsg{issues: []Issue{
-		{ProjectID: 7, Number: 1, Status: "closed", Title: "visible"},
-		{ProjectID: 7, Number: 2, Status: "open", Title: "hidden"},
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Status: "closed", Title: "visible"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Status: "open", Title: "hidden"},
 	}})
 	iss, ok := lm.targetRow()
-	if !ok || iss.Number != 1 {
-		t.Fatalf("targetRow = (%+v, %v), want fallback visible #1", iss, ok)
+	if !ok || iss.ShortID != "aaa1" {
+		t.Fatalf("targetRow = (%+v, %v), want fallback visible aaa1", iss, ok)
 	}
-	if lm.selectedNumber != 1 {
-		t.Fatalf("selectedNumber = %d, want 1 after clamp", lm.selectedNumber)
+	if lm.selectedUID != "01TEST-aaa1" {
+		t.Fatalf("selectedUID = %q, want 01TEST-aaa1 after clamp", lm.selectedUID)
 	}
 }
 
@@ -533,18 +536,22 @@ func TestList_NewIssue_AllProjectsModeIsNoOp(t *testing.T) {
 func TestList_NewIssueCreateSeedsSelectionToNewIssue(t *testing.T) {
 	api := &fakeListAPI{}
 	lm := listModel{
-		issues:         []Issue{{Number: 5}, {Number: 4}, {Number: 3}},
-		cursor:         2,
-		selectedNumber: 3,
+		issues: []Issue{
+			{UID: "01TEST-eee5", ShortID: "eee5"},
+			{UID: "01TEST-ddd4", ShortID: "ddd4"},
+			{UID: "01TEST-ccc3", ShortID: "ccc3"},
+		},
+		cursor:      2,
+		selectedUID: "01TEST-ccc3",
 	}
 	mut := mutationDoneMsg{
 		origin: "list", kind: "create",
-		resp: &MutationResp{Issue: &Issue{Number: 99}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-99zz", ShortID: "99zz"}},
 	}
 	out, _ := lm.applyMutation(mut, api, scope{projectID: 7})
-	if out.selectedNumber != 99 {
-		t.Fatalf("selectedNumber = %d, want 99 (seeded to new issue)",
-			out.selectedNumber)
+	if out.selectedUID != "01TEST-99zz" {
+		t.Fatalf("selectedUID = %q, want 01TEST-99zz (seeded to new issue)",
+			out.selectedUID)
 	}
 	if out.cursor != 0 {
 		t.Fatalf("cursor = %d, want 0 (new issue at top of recency list)",
@@ -681,15 +688,15 @@ func lmFromUpdate(
 // covered by TestList_NoFilter_PassThrough).
 func TestList_OwnerFilter_NarrowsDisplay(t *testing.T) {
 	issues := []Issue{
-		{Number: 1, Owner: ptrString("alice"), Title: "a"},
-		{Number: 2, Owner: ptrString("bob"), Title: "b"},
-		{Number: 3, Owner: ptrString("alice"), Title: "c"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Owner: ptrString("alice"), Title: "a"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Owner: ptrString("bob"), Title: "b"},
+		{UID: "01TEST-ccc3", ShortID: "ccc3", Owner: ptrString("alice"), Title: "c"},
 	}
 	out := filteredIssues(issues, ListFilter{Owner: "alice"})
 	if len(out) != 2 {
 		t.Fatalf("got %d, want 2", len(out))
 	}
-	if out[0].Number != 1 || out[1].Number != 3 {
+	if out[0].ShortID != "aaa1" || out[1].ShortID != "ccc3" {
 		t.Fatalf("wrong issues filtered: %+v", out)
 	}
 }
@@ -700,12 +707,12 @@ func TestList_OwnerFilter_NarrowsDisplay(t *testing.T) {
 // owner is the case under test here.)
 func TestList_OwnerFilter_NilOwnerNeverMatches(t *testing.T) {
 	issues := []Issue{
-		{Number: 1, Title: "no owner"},
-		{Number: 2, Owner: ptrString("alice"), Title: "owned"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "no owner"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Owner: ptrString("alice"), Title: "owned"},
 	}
 	out := filteredIssues(issues, ListFilter{Owner: "alice"})
-	if len(out) != 1 || out[0].Number != 2 {
-		t.Fatalf("expected only #2, got %+v", out)
+	if len(out) != 1 || out[0].ShortID != "bbb2" {
+		t.Fatalf("expected only bbb2, got %+v", out)
 	}
 }
 
@@ -713,12 +720,12 @@ func TestList_OwnerFilter_NilOwnerNeverMatches(t *testing.T) {
 // about case so users typing "login" find "LOGIN bug" and vice versa.
 func TestList_SearchFilter_CaseInsensitive(t *testing.T) {
 	issues := []Issue{
-		{Number: 1, Title: "Fix LOGIN bug"},
-		{Number: 2, Title: "deploy"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "Fix LOGIN bug"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "deploy"},
 	}
 	out := filteredIssues(issues, ListFilter{Search: "login"})
-	if len(out) != 1 || out[0].Number != 1 {
-		t.Fatalf("expected #1 only, got %+v", out)
+	if len(out) != 1 || out[0].ShortID != "aaa1" {
+		t.Fatalf("expected aaa1 only, got %+v", out)
 	}
 }
 
@@ -727,8 +734,8 @@ func TestList_SearchFilter_CaseInsensitive(t *testing.T) {
 // per-render allocation.
 func TestList_NoFilter_PassThrough(t *testing.T) {
 	issues := []Issue{
-		{Number: 1, Owner: ptrString("alice"), Title: "a"},
-		{Number: 2, Title: "b"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Owner: ptrString("alice"), Title: "a"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "b"},
 	}
 	out := filteredIssues(issues, ListFilter{})
 	if len(out) != 2 {
@@ -744,15 +751,15 @@ func TestList_NoFilter_PassThrough(t *testing.T) {
 func TestFilteredIssues_FastPathIncludesLabels(t *testing.T) {
 	f := ListFilter{Labels: []string{"bug"}}
 	issues := []Issue{
-		{Number: 1, Labels: []string{"bug"}},
-		{Number: 2, Labels: []string{"feature"}},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Labels: []string{"bug"}},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Labels: []string{"feature"}},
 	}
 	got := filteredIssues(issues, f)
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1 (label filter must narrow)", len(got))
 	}
-	if got[0].Number != 1 {
-		t.Fatalf("got #%d, want #1 (the labeled-bug row)", got[0].Number)
+	if got[0].ShortID != "aaa1" {
+		t.Fatalf("got #%s, want aaa1 (the labeled-bug row)", got[0].ShortID)
 	}
 }
 
@@ -762,7 +769,7 @@ func TestFilteredIssues_FastPathIncludesLabels(t *testing.T) {
 // the filter's Labels slice. Empty filter Labels is the no-filter
 // case (every issue matches).
 func TestMatchesFilter_LabelsAnyOfSemantics(t *testing.T) {
-	iss := Issue{Number: 1, Labels: []string{"bug", "prio-1"}}
+	iss := Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Labels: []string{"bug", "prio-1"}}
 	cases := []struct {
 		name   string
 		filter ListFilter
@@ -786,7 +793,7 @@ func TestMatchesFilter_LabelsAnyOfSemantics(t *testing.T) {
 // labels can never match a non-empty Labels filter (the any-of set is
 // empty, so no overlap with any non-empty filter slice).
 func TestMatchesFilter_LabelsAnyOf_EmptyIssueLabels(t *testing.T) {
-	iss := Issue{Number: 1, Labels: nil}
+	iss := Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Labels: nil}
 	if matchesFilter(iss, ListFilter{Labels: []string{"bug"}}) {
 		t.Fatal("issue with no labels must not match any non-empty Labels filter")
 	}
@@ -799,12 +806,12 @@ func TestMatchesFilter_LabelsAnyOf_EmptyIssueLabels(t *testing.T) {
 // author, this test guards the wiring.
 func TestList_AuthorFilter_NarrowsDisplay(t *testing.T) {
 	issues := []Issue{
-		{Number: 1, Author: "wes", Title: "a"},
-		{Number: 2, Author: "claude", Title: "b"},
-		{Number: 3, Author: "wes", Title: "c"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Author: "wes", Title: "a"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Author: "claude", Title: "b"},
+		{UID: "01TEST-ccc3", ShortID: "ccc3", Author: "wes", Title: "c"},
 	}
 	out := filteredIssues(issues, ListFilter{Author: "wes"})
-	if len(out) != 2 || out[0].Number != 1 || out[1].Number != 3 {
+	if len(out) != 2 || out[0].ShortID != "aaa1" || out[1].ShortID != "ccc3" {
 		t.Fatalf("wrong issues filtered: %+v", out)
 	}
 }
@@ -814,12 +821,12 @@ func TestList_AuthorFilter_NarrowsDisplay(t *testing.T) {
 // uses two rows so cursor!=0 is observable.
 func TestList_Close_DispatchesAPI(t *testing.T) {
 	api, km, sc := newListEnv()
-	api.closeResult = &MutationResp{Issue: &Issue{Number: 2, Status: "closed"}}
+	api.closeResult = &MutationResp{Issue: &Issue{UID: "01TEST-bbb2", ShortID: "bbb2", Status: "closed"}}
 	lm := listModel{
 		actor: "tester",
 		issues: []Issue{
-			{ProjectID: 7, Number: 1, Title: "first"},
-			{ProjectID: 7, Number: 2, Title: "second"},
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "first"},
+			{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "second"},
 		},
 	}
 
@@ -835,9 +842,9 @@ func TestList_Close_DispatchesAPI(t *testing.T) {
 	if api.closeCalls != 1 {
 		t.Fatalf("closeCalls = %d, want 1", api.closeCalls)
 	}
-	if api.lastCloseProjectID != 7 || api.lastCloseNumber != 2 {
-		t.Fatalf("close args wrong: pid=%d num=%d",
-			api.lastCloseProjectID, api.lastCloseNumber)
+	if api.lastCloseProjectID != 7 || api.lastCloseRef != "bbb2" {
+		t.Fatalf("close args wrong: pid=%d ref=%q",
+			api.lastCloseProjectID, api.lastCloseRef)
 	}
 	if api.lastCloseActor != "tester" {
 		t.Fatalf("lastCloseActor = %q, want tester", api.lastCloseActor)
@@ -848,11 +855,11 @@ func TestList_Close_DispatchesAPI(t *testing.T) {
 // the 'r' binding.
 func TestList_Reopen_DispatchesAPI(t *testing.T) {
 	api, km, sc := newListEnv()
-	api.reopenResult = &MutationResp{Issue: &Issue{Number: 1, Status: "open"}}
+	api.reopenResult = &MutationResp{Issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "open"}}
 	lm := listModel{
 		actor: "tester",
 		issues: []Issue{
-			{ProjectID: 7, Number: 1, Title: "first"},
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "first"},
 		},
 	}
 
@@ -864,9 +871,9 @@ func TestList_Reopen_DispatchesAPI(t *testing.T) {
 	if api.reopenCalls != 1 {
 		t.Fatalf("reopenCalls = %d, want 1", api.reopenCalls)
 	}
-	if api.lastReopenNumber != 1 || api.lastReopenActor != "tester" {
-		t.Fatalf("reopen args wrong: num=%d actor=%q",
-			api.lastReopenNumber, api.lastReopenActor)
+	if api.lastReopenRef != "aaa1" || api.lastReopenActor != "tester" {
+		t.Fatalf("reopen args wrong: ref=%q actor=%q",
+			api.lastReopenRef, api.lastReopenActor)
 	}
 }
 
@@ -876,11 +883,11 @@ func TestList_Reopen_DispatchesAPI(t *testing.T) {
 // dispatch so the success status text is what the user sees.
 func TestList_SetPriority_PendingThenDigit(t *testing.T) {
 	api, km, sc := newListEnv()
-	api.setPriorityResult = &MutationResp{Issue: &Issue{Number: 1, Status: "open"}}
+	api.setPriorityResult = &MutationResp{Issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "open"}}
 	lm := listModel{
 		actor: "tester",
 		issues: []Issue{
-			{ProjectID: 7, Number: 1, Title: "issue"},
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "issue"},
 		},
 	}
 
@@ -906,8 +913,8 @@ func TestList_SetPriority_PendingThenDigit(t *testing.T) {
 	if api.setPriorityCalls != 1 {
 		t.Fatalf("setPriorityCalls = %d, want 1", api.setPriorityCalls)
 	}
-	if api.lastPriorityNumber != 1 {
-		t.Fatalf("lastPriorityNumber = %d, want 1", api.lastPriorityNumber)
+	if api.lastPriorityRef != "aaa1" {
+		t.Fatalf("lastPriorityRef = %q, want aaa1", api.lastPriorityRef)
 	}
 	if api.lastPriorityValue == nil || *api.lastPriorityValue != 2 {
 		t.Fatalf("lastPriorityValue = %v, want *int64=2", api.lastPriorityValue)
@@ -921,12 +928,12 @@ func TestList_SetPriority_PendingThenDigit(t *testing.T) {
 // priority via a nil pointer.
 func TestList_SetPriority_ClearWithDash(t *testing.T) {
 	api, km, sc := newListEnv()
-	api.setPriorityResult = &MutationResp{Issue: &Issue{Number: 1, Status: "open"}}
+	api.setPriorityResult = &MutationResp{Issue: &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "open"}}
 	priority := int64(3)
 	lm := listModel{
 		actor: "tester",
 		issues: []Issue{
-			{ProjectID: 7, Number: 1, Title: "issue", Priority: &priority},
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "issue", Priority: &priority},
 		},
 	}
 
@@ -951,7 +958,7 @@ func TestList_SetPriority_EscCancels(t *testing.T) {
 	lm := listModel{
 		actor: "tester",
 		issues: []Issue{
-			{ProjectID: 7, Number: 1, Title: "issue"},
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "issue"},
 		},
 	}
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -710,8 +709,8 @@ func (m Model) openInputFromMsg(msg openInputMsg) (Model, tea.Cmd) {
 	case kind == inputNewIssueForm:
 		m.nextFormGen++
 		s := newNewIssueForm()
-		if msg.parentNumber != nil {
-			s = newNewIssueFormWithParent(*msg.parentNumber)
+		if msg.parentShortID != nil {
+			s = newNewIssueFormWithParent(*msg.parentShortID)
 		}
 		s.formGen = m.nextFormGen
 		m.input = s
@@ -732,7 +731,7 @@ func (m Model) openInputFromMsg(msg openInputMsg) (Model, tea.Cmd) {
 
 // panelPromptTarget builds the formTarget for a detail-side panel
 // prompt: scopePID is authoritative (works for both single-project
-// and all-projects scope), issueNumber + detailGen come from the
+// and all-projects scope), issueShortID + detailGen come from the
 // open detail's identity. Zero values when no detail is open
 // (defensive — shouldn't happen via the normal key path).
 func (m Model) panelPromptTarget() formTarget {
@@ -740,9 +739,9 @@ func (m Model) panelPromptTarget() formTarget {
 		return formTarget{}
 	}
 	return formTarget{
-		projectID:   m.detail.scopePID,
-		issueNumber: m.detail.issue.Number,
-		detailGen:   m.detail.gen,
+		projectID:    m.detail.scopePID,
+		issueShortID: m.detail.issue.ShortID,
+		detailGen:    m.detail.gen,
 	}
 }
 
@@ -775,9 +774,9 @@ func (m Model) openBodyEditForm() Model {
 		return m
 	}
 	target := formTarget{
-		projectID:   m.detail.scopePID,
-		issueNumber: m.detail.issue.Number,
-		detailGen:   m.detail.gen,
+		projectID:    m.detail.scopePID,
+		issueShortID: m.detail.issue.ShortID,
+		detailGen:    m.detail.gen,
 	}
 	m.nextFormGen++
 	form := newBodyEditForm(target, m.detail.issue.Body)
@@ -794,9 +793,9 @@ func (m Model) openCommentForm() Model {
 		return m
 	}
 	target := formTarget{
-		projectID:   m.detail.scopePID,
-		issueNumber: m.detail.issue.Number,
-		detailGen:   m.detail.gen,
+		projectID:    m.detail.scopePID,
+		issueShortID: m.detail.issue.ShortID,
+		detailGen:    m.detail.gen,
 	}
 	m.nextFormGen++
 	form := newCommentForm(target)
@@ -1049,7 +1048,7 @@ func editorKindFor(k inputKind) string {
 // Two success paths:
 //
 //  1. inputNewIssueForm — route through list create handling so
-//     selectedNumber seeds with the new issue's number, the cursor
+//     selectedUID seeds with the new issue's UID, the cursor
 //     lands on it after refetch, and the list status hint surfaces
 //     ("created #N"). The form does NOT auto-open the new issue's
 //     detail view; the user lands back on the list with the new row
@@ -1209,9 +1208,9 @@ func (m Model) commitInput() (Model, tea.Cmd) {
 
 // commitFilterForm reads the three filter axes off the form and
 // applies them to lm.filter as a single atomic update. Cursor and
-// selectedNumber are reset to 0 so the next render lands on a fresh
-// row (the prior selection may no longer match the new filter, and
-// a clamp would be less predictable than starting at the top); the
+// selectedUID are reset so the next render lands on a fresh row
+// (the prior selection may no longer match the new filter, and a
+// clamp would be less predictable than starting at the top); the
 // status line clears so any prior mutation hint doesn't linger over
 // the new view. The form clears in one step; all filters are applied
 // client-side over the cached all-status working set.
@@ -1235,7 +1234,7 @@ func (m Model) commitFilterForm(form inputState) (Model, tea.Cmd) {
 		m.list.filter.Status = ""
 	}
 	m.list.cursor = 0
-	m.list.selectedNumber = 0
+	m.list.selectedUID = ""
 	m.list.status = ""
 	m.input = inputState{}
 	return m, nil
@@ -1326,7 +1325,7 @@ func newIssueBodyFromForm(fields []inputField, actor string) (CreateIssueBody, e
 	if len(fields) < 5 {
 		return CreateIssueBody{}, fmt.Errorf("new issue form is incomplete")
 	}
-	parent, err := normalizeParentNumber(fields[newIssueFormParentIndex].input.Value())
+	parent, err := normalizeParentRef(fields[newIssueFormParentIndex].input.Value())
 	if err != nil {
 		return CreateIssueBody{}, err
 	}
@@ -1337,26 +1336,24 @@ func newIssueBodyFromForm(fields []inputField, actor string) (CreateIssueBody, e
 		Owner:  normalizeOwner(fields[3].input.Value()),
 		Actor:  actor,
 	}
-	if parent != nil {
+	if parent != "" {
 		body.Links = []CreateInitialLinkBody{{
-			Type:     "parent",
-			ToNumber: *parent,
+			Type:  "parent",
+			ToRef: parent,
 		}}
 	}
 	return body, nil
 }
 
-func normalizeParentNumber(buf string) (*int64, error) {
-	trimmed := strings.TrimSpace(buf)
-	if trimmed == "" {
-		return nil, nil
-	}
-	trimmed = strings.TrimPrefix(trimmed, "#")
-	n, err := strconv.ParseInt(trimmed, 10, 64)
-	if err != nil || n <= 0 {
-		return nil, fmt.Errorf("parent must be an issue number")
-	}
-	return &n, nil
+// normalizeParentRef trims a parent-field buffer, strips a leading "#"
+// sigil, and returns the bare ref. Empty input means "no parent".
+// Validation of the ref shape (short_id length, ULID format) belongs to
+// the daemon — surfacing parse errors here would require duplicating
+// that policy, and the daemon's 400 is the same UX after one round
+// trip.
+func normalizeParentRef(buf string) (string, error) {
+	trimmed := strings.TrimPrefix(strings.TrimSpace(buf), "#")
+	return trimmed, nil
 }
 
 // normalizeLabels splits buf on commas, trims whitespace per token,
@@ -1415,11 +1412,11 @@ func dispatchFormCreateIssue(
 func dispatchFormAddComment(
 	api detailAPI, target formTarget, body, actor string, formGen int64,
 ) tea.Cmd {
-	pid, num := target.projectID, target.issueNumber
+	pid, ref := target.projectID, target.issueShortID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.AddComment(ctx, pid, num, body, actor)
+		resp, err := api.AddComment(ctx, pid, ref, body, actor)
 		return mutationDoneMsg{
 			origin: "form", kind: "form.comment.add", formGen: formGen,
 			resp: resp, err: err,
@@ -1432,11 +1429,11 @@ func dispatchFormAddComment(
 func dispatchFormEditBody(
 	api detailAPI, target formTarget, body, actor string, formGen int64,
 ) tea.Cmd {
-	pid, num := target.projectID, target.issueNumber
+	pid, ref := target.projectID, target.issueShortID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.EditBody(ctx, pid, num, body, actor)
+		resp, err := api.EditBody(ctx, pid, ref, body, actor)
 		return mutationDoneMsg{
 			origin: "form", kind: "form.body.edit", formGen: formGen,
 			resp: resp, err: err,
@@ -1724,12 +1721,11 @@ func (m Model) eventAffectsView(msg eventReceivedMsg) bool {
 // touches the body header. Refetching all four is cheap (the daemon
 // has these in cache) and keeps every tab fresh without a kind switch.
 //
-// The match requires both projectID and issueNumber to align with the
-// open detail. In all-projects scope, issue numbers are project-scoped,
-// so a project-B #42 event must NOT churn an open project-A #42 view.
-// Each fetch is tagged with the current detail-open gen so applyFetched
-// drops the result if the user navigates away before the response
-// lands.
+// The match requires both projectID and the watched issue's UID to
+// align with the event's subject — UID is canonical and the
+// authoritative key across short_id cutovers. Each fetch is tagged
+// with the current detail-open gen so applyFetched drops the result
+// if the user navigates away before the response lands.
 func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 	if m.api == nil {
 		return nil
@@ -1748,104 +1744,114 @@ func (m Model) maybeRefetchOpenDetail(msg eventReceivedMsg) tea.Cmd {
 		return nil
 	}
 	pid := m.detail.scopePID
-	num := m.detail.issue.Number
-	if !msg.matchesIssue(num, m.detail.issue.UID) {
+	ref := m.detail.issue.ShortID
+	uid := m.detail.issue.UID
+	if !msg.matchesIssue(ref, uid) {
 		return nil
 	}
 	gen := m.detail.gen
 	return tea.Batch(
-		fetchIssue(m.api, pid, num, gen),
-		fetchComments(m.api, pid, num, gen),
-		fetchEvents(m.api, pid, num, gen),
-		fetchLinks(m.api, pid, num, gen),
+		fetchIssue(m.api, pid, ref, gen),
+		fetchComments(m.api, pid, ref, gen),
+		fetchEvents(m.api, pid, ref, gen),
+		fetchLinks(m.api, pid, ref, gen),
 	)
 }
 
 // matchesIssue reports whether the event names the watched issue.
-// number / uid describe the open detail pane; uid is "" when the
-// caller has no UID handy (legacy callsites). UID-aware matching for
-// linksChanged peers prefers UIDs when the event carries them, since
-// project-scoped numbers can collide across `kata reset-counter`.
-// Numbers remain authoritative for the URL issue match (msg.issueNumber)
-// and the parent link endpoints, which are project-fresh by construction.
-func (msg eventReceivedMsg) matchesIssue(number int64, uid string) bool {
-	if msg.issueNumber != 0 && msg.issueNumber == number {
+// ref / uid describe the open detail pane; uid is the canonical key
+// and wins whenever the event carries any peer UID. ref is the
+// short_id snapshot used as a fallback only when no UIDs are present
+// (currently unused in steady state — all daemon-emitted events post-
+// kata#1 carry UIDs).
+//
+// UID-priority rule: if the event carries any UIDs for a particular
+// match channel, the short_id fallback for THAT channel is suppressed.
+// short_ids can collide across federation merges, so a UID mismatch
+// must beat a short_id match — otherwise an open pane at UID-A would
+// refresh on every event for UID-B that happens to share UID-A's
+// short_id. See TestHandleEventReceived_LinksChangedUIDMismatchSameShortID.
+func (msg eventReceivedMsg) matchesIssue(ref, uid string) bool {
+	if msg.issueUID != "" && uid != "" && msg.issueUID == uid {
 		return true
 	}
-	if from, to, ok := msg.parentLinkEndpoints(); ok && (from == number || to == number) {
+	if msg.issueShortID != "" && msg.issueShortID == ref && msg.issueUID == "" {
 		return true
 	}
-	// issue.links_changed surfaces every peer (parent set/removed plus
-	// blocks/blocked_by/related adds and removes). Set/Removed and Refs
-	// are checked so unit tests that construct linksChangedParents
-	// without running it through the parser stay valid (Refs is the
-	// parser's flattened view; Set/Removed is the parent-specific view).
-	if msg.linksChanged != nil {
-		// UID-authoritative path: when the event carries any peer UID,
-		// match exclusively on UID. A pre-reset event whose number
-		// happens to collide with the watched detail must not refresh
-		// it; only a UID match should drive the refetch.
-		if hasAnyPeerUID(msg.linksChanged) {
-			if uid == "" {
-				return false
-			}
-			if msg.linksChanged.SetUID == uid || msg.linksChanged.RemovedUID == uid {
-				return true
-			}
-			for _, u := range msg.linksChanged.RefUIDs {
-				if u == uid {
-					return true
-				}
-			}
-			return false
-		}
-		// Fallback: pre-kata#1 events without *_uid / *_uids fields.
-		if msg.linksChanged.Set == number || msg.linksChanged.Removed == number {
+	if fromUID, toUID, ok := msg.parentLinkEndpointUIDs(); ok && uid != "" {
+		if fromUID == uid || toUID == uid {
 			return true
 		}
-		for _, n := range msg.linksChanged.Refs {
-			if n == number {
+	}
+	if msg.linksChanged != nil && msg.linksChangedMatches(ref, uid) {
+		return true
+	}
+	return false
+}
+
+// linksChangedMatches reports whether the event's linksChanged payload
+// references the watched issue. UID-keyed match wins when the payload
+// carries UIDs; the short_id-keyed fallback fires only when NO UIDs
+// are present (legacy / synthetic events).
+func (msg eventReceivedMsg) linksChangedMatches(ref, uid string) bool {
+	lc := msg.linksChanged
+	if uid != "" {
+		if lc.SetUID == uid || lc.RemovedUID == uid {
+			return true
+		}
+		for _, u := range lc.RefUIDs {
+			if u == uid {
 				return true
 			}
+		}
+	}
+	if lc.hasAnyUIDs() {
+		return false
+	}
+	if ref == "" {
+		return false
+	}
+	if lc.Set == ref || lc.Removed == ref {
+		return true
+	}
+	for _, r := range lc.Refs {
+		if r == ref {
+			return true
 		}
 	}
 	return false
 }
 
-// hasAnyPeerUID reports whether the linksChanged shape carries at
-// least one peer UID, indicating UID-authoritative matching applies.
-func hasAnyPeerUID(lc *linksChangedParents) bool {
+// hasAnyUIDs reports whether the linksChanged payload carries any peer
+// UIDs. When true, the short_id fallback is suppressed so a UID
+// mismatch beats an incidental short_id collision.
+func (lc *linksChangedParents) hasAnyUIDs() bool {
 	if lc.SetUID != "" || lc.RemovedUID != "" {
 		return true
 	}
-	for _, u := range lc.RefUIDs {
-		if u != "" {
-			return true
-		}
-	}
-	return false
+	return len(lc.RefUIDs) > 0
 }
 
-// parentLinkEndpoints returns the (from, to) pair when the event is
-// a parent-link signal: either a direct issue.linked / issue.unlinked
-// frame whose link.Type == "parent", or an issue.created frame whose
-// payload `links` array carries a parent entry (the agent-creates-
-// subissue path). decodeEventReceived normalises the second case
-// onto the same msg.link shape so this consumer doesn't have to
-// branch on event type beyond the allowlist.
-func (msg eventReceivedMsg) parentLinkEndpoints() (from, to int64, ok bool) {
+// parentLinkEndpointUIDs returns the (from_uid, to_uid) pair when the
+// event is a parent-link signal: either a direct issue.linked /
+// issue.unlinked frame whose link.Type == "parent", or an
+// issue.created frame whose payload `links` array carries a parent
+// entry (the agent-creates-subissue path). decodeEventReceived
+// normalises the second case onto the same msg.link shape so this
+// consumer doesn't have to branch on event type beyond the allowlist.
+func (msg eventReceivedMsg) parentLinkEndpointUIDs() (fromUID, toUID string, ok bool) {
 	switch msg.eventType {
 	case "issue.linked", "issue.unlinked", "issue.created":
 	default:
-		return 0, 0, false
+		return "", "", false
 	}
 	if msg.link == nil || msg.link.Type != "parent" {
-		return 0, 0, false
+		return "", "", false
 	}
-	if msg.link.FromNumber == 0 || msg.link.ToNumber == 0 {
-		return 0, 0, false
+	if msg.link.FromIssueUID == "" || msg.link.ToIssueUID == "" {
+		return "", "", false
 	}
-	return msg.link.FromNumber, msg.link.ToNumber, true
+	return msg.link.FromIssueUID, msg.link.ToIssueUID, true
 }
 
 // handleRefetchTick fires after the debounce window. Clears the
@@ -1917,13 +1923,13 @@ func (m Model) refetchOpenDetail() tea.Cmd {
 		return nil
 	}
 	pid := m.detail.scopePID
-	num := m.detail.issue.Number
+	ref := m.detail.issue.ShortID
 	gen := m.detail.gen
 	return tea.Batch(
-		fetchIssue(m.api, pid, num, gen),
-		fetchComments(m.api, pid, num, gen),
-		fetchEvents(m.api, pid, num, gen),
-		fetchLinks(m.api, pid, num, gen),
+		fetchIssue(m.api, pid, ref, gen),
+		fetchComments(m.api, pid, ref, gen),
+		fetchEvents(m.api, pid, ref, gen),
+		fetchLinks(m.api, pid, ref, gen),
 	)
 }
 
@@ -2057,10 +2063,10 @@ func (m Model) handleOpenDetail(msg openDetailMsg) (tea.Model, tea.Cmd) {
 	}
 	gen := m.detail.gen
 	cmds := []tea.Cmd{
-		fetchIssue(m.api, pid, iss.Number, gen),
-		fetchComments(m.api, pid, iss.Number, gen),
-		fetchEvents(m.api, pid, iss.Number, gen),
-		fetchLinks(m.api, pid, iss.Number, gen),
+		fetchIssue(m.api, pid, iss.ShortID, gen),
+		fetchComments(m.api, pid, iss.ShortID, gen),
+		fetchEvents(m.api, pid, iss.ShortID, gen),
+		fetchLinks(m.api, pid, iss.ShortID, gen),
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -2125,10 +2131,10 @@ func (m Model) handleJumpDetail(msg jumpDetailMsg) (tea.Model, tea.Cmd) {
 	}
 	m.detail = m.applyDetailViewportCache(next)
 	cmds := []tea.Cmd{
-		fetchIssue(m.api, pid, msg.number, gen),
-		fetchComments(m.api, pid, msg.number, gen),
-		fetchEvents(m.api, pid, msg.number, gen),
-		fetchLinks(m.api, pid, msg.number, gen),
+		fetchIssue(m.api, pid, msg.ref, gen),
+		fetchComments(m.api, pid, msg.ref, gen),
+		fetchEvents(m.api, pid, msg.ref, gen),
+		fetchLinks(m.api, pid, msg.ref, gen),
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -2203,15 +2209,15 @@ func (m Model) dispatchToSplitPane(msg tea.Msg) (tea.Model, tea.Cmd) {
 //
 // "Highlighted row changed" is the composite (project_id, number)
 // identity returned by pickHighlightedIssue — comparing
-// selectedNumber alone would miss the case where two rows share a
+// selectedUID alone would miss the case where two rows share a
 // Number across projects (in all-projects mode, currently gated off
 // but the code is forward-looking). roborev #251 finding 1.
 func (m Model) dispatchListKey(msg tea.Msg) (Model, tea.Cmd) {
-	prevPID, prevNum, prevHas := highlightedIdentity(m.list)
+	prevPID, prevUID, prevHas := highlightedIdentity(m.list)
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg, m.keymap, m.api, m.scope)
-	newPID, newNum, newHas := highlightedIdentity(m.list)
-	if prevHas == newHas && prevPID == newPID && prevNum == newNum {
+	newPID, newUID, newHas := highlightedIdentity(m.list)
+	if prevHas == newHas && prevPID == newPID && prevUID == newUID {
 		return m, cmd
 	}
 	// Highlighted row changed. Retarget detail immediately so the
@@ -2226,16 +2232,17 @@ func (m Model) dispatchListKey(msg tea.Msg) (Model, tea.Cmd) {
 	return m, tea.Batch(cmd, followCmd)
 }
 
-// highlightedIdentity returns the composite (project_id, number) of
-// the row currently under lm.cursor. has=false when the filtered
-// list is empty. Used by dispatchListKey to detect cross-project
-// row changes that issue.Number alone would conflate.
-func highlightedIdentity(lm listModel) (pid, number int64, has bool) {
+// highlightedIdentity returns the composite (project_id, uid) of the
+// row currently under lm.cursor. has=false when the filtered list is
+// empty. Used by dispatchListKey to detect cross-project row changes
+// or short_id collisions that the project-scoped short_id alone
+// would conflate.
+func highlightedIdentity(lm listModel) (pid int64, uid string, has bool) {
 	iss, ok := pickHighlightedIssue(lm)
 	if !ok {
-		return 0, 0, false
+		return 0, "", false
 	}
-	return iss.ProjectID, iss.Number, true
+	return iss.ProjectID, iss.UID, true
 }
 
 // isDetailFetchMsg reports whether msg is one of the four detail
@@ -2313,13 +2320,13 @@ func (m Model) handleDetailFollowTick(msg detailFollowTickMsg) (Model, tea.Cmd) 
 		return m, nil
 	}
 	pid := m.detail.scopePID
-	num := m.detail.issue.Number
+	ref := m.detail.issue.ShortID
 	gen := m.detail.gen
 	return m, tea.Batch(
-		fetchIssue(m.api, pid, num, gen),
-		fetchComments(m.api, pid, num, gen),
-		fetchEvents(m.api, pid, num, gen),
-		fetchLinks(m.api, pid, num, gen),
+		fetchIssue(m.api, pid, ref, gen),
+		fetchComments(m.api, pid, ref, gen),
+		fetchEvents(m.api, pid, ref, gen),
+		fetchLinks(m.api, pid, ref, gen),
 	)
 }
 

@@ -335,31 +335,31 @@ func TestGroupBanding_ParentChildShareBand(t *testing.T) {
 
 func TestRenderListBody_UsesQueueRowsWithDisclosureAndChildCounts(t *testing.T) {
 	useNoColor(t)
-	parentNum := int64(1)
+	parentSID := "p001"
 	lm := listModel{issues: []Issue{
 		{
-			ProjectID: 7, Number: parentNum, Title: "parent", Status: "open",
+			ProjectID: 7, UID: "01TEST-p001", ShortID: parentSID, Title: "parent", Status: "open",
 			ChildCounts: &ChildCounts{Open: 1, Total: 2},
 		},
-		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", ParentShortID: &parentSID, Title: "child", Status: "open"},
 	}}
 
 	collapsed := renderBodyNoColor(lm, 100, 6, viewChrome{})
 	assertContainsAll(t, collapsed, "+", "1/2")
 	assertStringsLack(t, collapsed, "child")
 
-	lm.expanded = expansionSet{{projectID: 7, number: parentNum}: true}
+	lm.expanded = expansionSet{{projectID: 7, shortID: parentSID}: true}
 	expanded := renderBodyNoColor(lm, 100, 6, viewChrome{})
 	assertContainsAll(t, expanded, "-", "child")
 }
 
 func TestRenderListBody_ContextRowHasVisibleMarkerInNoColor(t *testing.T) {
 	useNoColor(t)
-	parentNum := int64(1)
+	parentSID := "p001"
 	lm := listModel{
 		issues: []Issue{
-			{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
-			{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child login", Status: "open"},
+			{ProjectID: 7, UID: "01TEST-p001", ShortID: parentSID, Title: "parent", Status: "open"},
+			{ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", ParentShortID: &parentSID, Title: "child login", Status: "open"},
 		},
 		filter: ListFilter{Search: "login"},
 	}
@@ -375,8 +375,8 @@ func TestRenderListBody_ContextRowHasVisibleMarkerInNoColor(t *testing.T) {
 func TestRenderListBody_AllProjectsPrefixesTitle(t *testing.T) {
 	useNoColor(t)
 	lm := listModel{issues: []Issue{
-		{ProjectID: 7, Number: 1, Title: "alpha bug", Status: "open"},
-		{ProjectID: 9, Number: 1, Title: "beta bug", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-7aaa", ShortID: "7aaa", Title: "alpha bug", Status: "open"},
+		{ProjectID: 9, UID: "01TEST-9aaa", ShortID: "9aaa", Title: "beta bug", Status: "open"},
 	}}
 	chrome := viewChrome{
 		scope:        scope{allProjects: true},
@@ -393,7 +393,7 @@ func TestRenderListBody_AllProjectsPrefixesTitle(t *testing.T) {
 func TestRenderListBody_AllProjectsFallsBackToPID(t *testing.T) {
 	useNoColor(t)
 	lm := listModel{issues: []Issue{
-		{ProjectID: 42, Number: 1, Title: "ghost project", Status: "open"},
+		{ProjectID: 42, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "ghost project", Status: "open"},
 	}}
 	chrome := viewChrome{
 		scope:        scope{allProjects: true},
@@ -411,7 +411,7 @@ func TestRenderListBody_AllProjectsFallsBackToPID(t *testing.T) {
 func TestRenderListBody_SingleProjectOmitsPrefix(t *testing.T) {
 	useNoColor(t)
 	lm := listModel{issues: []Issue{
-		{ProjectID: 7, Number: 1, Title: "alpha bug", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "alpha bug", Status: "open"},
 	}}
 	chrome := viewChrome{
 		scope:        scope{projectID: 7, projectName: "alpha"},
@@ -430,7 +430,7 @@ func TestRenderListBody_HeaderBackgroundReplacesSeparatorRule(t *testing.T) {
 		t.Fatal("tableHeaderStyle must carry a background in color modes")
 	}
 
-	lm := listModel{issues: []Issue{{Number: 1, Title: "row", Status: "open"}}}
+	lm := listModel{issues: []Issue{{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "row", Status: "open"}}}
 	got := stripANSI(lm.renderBody(80, 6, viewChrome{}))
 	for _, line := range strings.Split(got, "\n") {
 		if strings.Trim(line, "─") == "" && strings.Contains(line, "─") {
@@ -442,10 +442,10 @@ func TestRenderListBody_HeaderBackgroundReplacesSeparatorRule(t *testing.T) {
 func TestListView_BodyBudgetCountsOnlyTableHeader(t *testing.T) {
 	useNoColor(t)
 	lm := listModel{issues: []Issue{
-		{Number: 1, Title: "one", Status: "open"},
-		{Number: 2, Title: "two", Status: "open"},
-		{Number: 3, Title: "three", Status: "open"},
-		{Number: 4, Title: "four", Status: "open"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "one", Status: "open"},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "two", Status: "open"},
+		{UID: "01TEST-ccc3", ShortID: "ccc3", Title: "three", Status: "open"},
+		{UID: "01TEST-ddd4", ShortID: "ddd4", Title: "four", Status: "open"},
 	}}
 
 	got := stripANSI(lm.View(100, 10, viewChrome{scope: scope{projectName: "kata"}}))
@@ -468,7 +468,7 @@ func TestRenderListBody_EmptyStateDoesNotRenderSeparatorRule(t *testing.T) {
 
 func TestRenderListInfoLine_TruncationNotice(t *testing.T) {
 	useNoColor(t)
-	lm := listModel{truncated: true, issues: []Issue{{Number: 1, Status: "open"}}}
+	lm := listModel{truncated: true, issues: []Issue{{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "open"}}}
 	got := stripANSI(renderListInfoLine(100, viewChrome{}, lm, 10))
 	want := "showing first 2000 issues; refine filters"
 	if !strings.Contains(got, want) {
@@ -498,14 +498,14 @@ func TestBuildRows_FoldsSelectionContextAndDisclosureIntoNavCell(t *testing.T) {
 	applyColorMode(colorNone, io.Discard)
 	rows := buildRows([]queueRow{
 		{
-			issue:       Issue{Number: 1, Status: "open", Title: "context parent"},
+			issue:       Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Status: "open", Title: "context parent"},
 			hasChildren: true,
 			expanded:    true,
 			context:     true,
 		},
-		{issue: Issue{Number: 2, Status: "open", Title: "context leaf"}, context: true},
+		{issue: Issue{UID: "01TEST-bbb2", ShortID: "bbb2", Status: "open", Title: "context leaf"}, context: true},
 		{
-			issue:       Issue{Number: 3, Status: "open", Title: "context child parent"},
+			issue:       Issue{UID: "01TEST-ccc3", ShortID: "ccc3", Status: "open", Title: "context child parent"},
 			depth:       1,
 			hasChildren: true,
 			context:     true,

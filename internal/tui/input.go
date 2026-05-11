@@ -239,13 +239,14 @@ type inputState struct {
 // on. Threaded into the form when it opens, into the editor handoff
 // (so the return can be matched against the still-open form), and
 // into the mutation dispatch (so a stale response on the daemon
-// side can be discarded against detail.gen). projectID + issueNumber
-// are zero for forms that don't yet have a target (none today, but
-// the shape leaves room for forward-looking shells).
+// side can be discarded against detail.gen). projectID is zero and
+// issueShortID is empty for forms that don't yet have a target
+// (none today, but the shape leaves room for forward-looking
+// shells).
 type formTarget struct {
-	projectID   int64
-	issueNumber int64
-	detailGen   int64
+	projectID    int64
+	issueShortID string
+	detailGen    int64
 }
 
 // inputAction names what the caller should do after Update. Actions
@@ -604,7 +605,7 @@ func newPanelPrompt(kind inputKind, target formTarget) inputState {
 	ti.Prompt = ""
 	return inputState{
 		kind:   kind,
-		title:  panelPromptTitle(kind, target.issueNumber),
+		title:  panelPromptTitle(kind, target.issueShortID),
 		fields: []inputField{{kind: fieldSingleLine, input: ti}},
 		target: target,
 	}
@@ -612,24 +613,24 @@ func newPanelPrompt(kind inputKind, target formTarget) inputState {
 
 // panelPromptTitle is the verbal label that appears in the prompt
 // border. Mirrors the modalLabel mapping from the now-retired
-// modal.go but reads as a sentence ("add label to #42") rather than
-// a CLI-style colon prefix.
-func panelPromptTitle(kind inputKind, n int64) string {
+// modal.go but reads as a sentence ("add label to #abc4") rather
+// than a CLI-style colon prefix.
+func panelPromptTitle(kind inputKind, ref string) string {
 	switch kind {
 	case inputLabelPrompt:
-		return fmt.Sprintf("add label to #%d", n)
+		return fmt.Sprintf("add label to #%s", ref)
 	case inputRemoveLabelPrompt:
-		return fmt.Sprintf("remove label from #%d", n)
+		return fmt.Sprintf("remove label from #%s", ref)
 	case inputOwnerPrompt:
-		return fmt.Sprintf("assign #%d to", n)
+		return fmt.Sprintf("assign #%s to", ref)
 	case inputParentPrompt:
-		return fmt.Sprintf("set parent of #%d", n)
+		return fmt.Sprintf("set parent of #%s", ref)
 	case inputBlockerPrompt:
-		return fmt.Sprintf("add blocker to #%d", n)
+		return fmt.Sprintf("add blocker to #%s", ref)
 	case inputLinkPrompt:
-		return fmt.Sprintf("add related link to #%d", n)
+		return fmt.Sprintf("add related link to #%s", ref)
 	case inputPriorityPrompt:
-		return fmt.Sprintf("set priority of #%d (0..4 or '-')", n)
+		return fmt.Sprintf("set priority of #%s (0..4 or '-')", ref)
 	}
 	return ""
 }
@@ -650,7 +651,7 @@ const (
 func newBodyEditForm(target formTarget, current string) inputState {
 	return inputState{
 		kind:   inputBodyEditForm,
-		title:  fmt.Sprintf("edit body of #%d", target.issueNumber),
+		title:  fmt.Sprintf("edit body of #%s", target.issueShortID),
 		fields: []inputField{newFormTextarea(current)},
 		target: target,
 	}
@@ -664,7 +665,7 @@ func newBodyEditForm(target formTarget, current string) inputState {
 func newCommentForm(target formTarget) inputState {
 	return inputState{
 		kind:   inputCommentForm,
-		title:  fmt.Sprintf("comment on #%d", target.issueNumber),
+		title:  fmt.Sprintf("comment on #%s", target.issueShortID),
 		fields: []inputField{newFormTextarea("")},
 		target: target,
 	}
@@ -775,9 +776,9 @@ func newNewIssueForm() inputState {
 	return newNewIssueFormBase("new issue")
 }
 
-func newNewIssueFormWithParent(parentNumber int64) inputState {
+func newNewIssueFormWithParent(parentShortID string) inputState {
 	s := newNewIssueFormBase("new child issue")
-	s.fields[newIssueFormParentIndex].input.SetValue(fmt.Sprintf("%d", parentNumber))
+	s.fields[newIssueFormParentIndex].input.SetValue(parentShortID)
 	s.fields[newIssueFormParentIndex].locked = true
 	return s
 }

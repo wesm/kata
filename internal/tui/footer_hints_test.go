@@ -15,7 +15,7 @@ func TestQueueHelpRows_ConditionalItems(t *testing.T) {
 		helpItem{key: "o", desc: "order"})
 
 	leaf := Model{list: listModel{issues: []Issue{
-		{ProjectID: 7, Number: 1, Title: "leaf", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "leaf", Status: "open"},
 	}}}
 	assertHelpItemAbsent(t, flattenHelpRows(leaf.queueHelpRows()),
 		helpItem{key: "space", desc: "expand"})
@@ -36,7 +36,7 @@ func TestQueueHelpRows_ConditionalItems(t *testing.T) {
 // header (↑↓ child / ↵ open child) but keeps the action surface.
 func TestDetailHelpRows_Contexts(t *testing.T) {
 	activity := Model{detail: detailModel{
-		issue:       &Issue{Number: 1, Title: "issue", Status: "open"},
+		issue:       &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "issue", Status: "open"},
 		detailFocus: focusActivity,
 		activeTab:   tabComments,
 	}}
@@ -183,21 +183,21 @@ func TestDetailViewFooterUsesAdaptiveChildrenFocusHints(t *testing.T) {
 	assertStringContains(t, got, "N child")
 }
 
-// hierarchyIssues returns a parent (Number=1) and one child (Number=2)
+// hierarchyIssues returns a parent (ShortID=p001) and one child (ShortID=c002)
 // under ProjectID 7, the standard fixture for tests that need a queue
 // or detail view with a parent/child relationship.
 func hierarchyIssues() []Issue {
-	parentNum := int64(1)
+	parentSID := "p001"
 	return []Issue{
-		{ProjectID: 7, Number: parentNum, Title: "parent", Status: "open"},
-		{ProjectID: 7, Number: 2, ParentNumber: &parentNum, Title: "child", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-p001", ShortID: parentSID, Title: "parent", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", ParentShortID: &parentSID, Title: "child", Status: "open"},
 	}
 }
 
 func hierarchyDetailModel(focus detailFocus) detailModel {
 	return detailModel{
-		issue:       &Issue{Number: 1, Title: "parent", Status: "open"},
-		children:    []Issue{{Number: 2, Title: "child", Status: "open"}},
+		issue:       &Issue{UID: "01TEST-p001", ShortID: "p001", Title: "parent", Status: "open"},
+		children:    []Issue{{UID: "01TEST-c002", ShortID: "c002", Title: "child", Status: "open"}},
 		detailFocus: focus,
 	}
 }

@@ -10,7 +10,7 @@ import (
 // every suggest-render test in this file: project 7, issue 1.
 func defaultTestPrompt() inputState {
 	return newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: 1,
+		projectID: 7, issueShortID: "aaa1",
 	})
 }
 
