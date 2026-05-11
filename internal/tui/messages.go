@@ -177,13 +177,17 @@ type eventReceivedMsg struct {
 
 // linkPayload mirrors the per-link issue.linked / issue.unlinked
 // envelope. UIDs are canonical; short_ids are display snapshots that
-// may shift across a short_id cutover or federation merge.
+// may shift across a short_id cutover or federation merge. The daemon
+// emits `from_uid` / `to_uid` on link events (see queries_links.go's
+// CreateLinkAndEvent / DeleteLinkAndEvent); the issue.created path
+// builds this struct field-by-field through parentLinkFromCreatedPayload
+// so its wire shape (to_issue_uid) doesn't drive the tags here.
 type linkPayload struct {
 	Type         string `json:"type"`
 	FromShortID  string `json:"from_short_id,omitempty"`
 	ToShortID    string `json:"to_short_id,omitempty"`
-	FromIssueUID string `json:"from_issue_uid,omitempty"`
-	ToIssueUID   string `json:"to_issue_uid,omitempty"`
+	FromIssueUID string `json:"from_uid,omitempty"`
+	ToIssueUID   string `json:"to_uid,omitempty"`
 }
 
 // linksChangedParents holds every peer issue referenced by an

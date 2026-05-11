@@ -141,8 +141,8 @@ func TestSSEParser_LinkPayloadType(t *testing.T) {
 			"type":"parent",
 			"from_short_id":"43bb",
 			"to_short_id":"42aa",
-			"from_issue_uid":"01JZ0000000000000000000001",
-			"to_issue_uid":"01JZ0000000000000000000004"
+			"from_uid":"01JZ0000000000000000000001",
+			"to_uid":"01JZ0000000000000000000004"
 		}
 	}`)
 	got := decodeEventReceived(frame{kind: frameEvent, data: body})
@@ -161,6 +161,39 @@ func TestSSEParser_LinkPayloadType(t *testing.T) {
 	if got.link.FromIssueUID != "01JZ0000000000000000000001" ||
 		got.link.ToIssueUID != "01JZ0000000000000000000004" {
 		t.Fatalf("link payload UIDs = %+v", got.link)
+	}
+}
+
+// TestSSEParser_LinkPayloadDecodesDaemonWireShape pins that the TUI
+// linkPayload decoder reads the daemon's emitted UID field names
+// (`from_uid` / `to_uid` — see queries_links.go::CreateLinkAndEvent and
+// DeleteLinkAndEvent). Earlier the struct's JSON tags spelled
+// `from_issue_uid` / `to_issue_uid`, so both UIDs decoded as empty
+// strings and parentLinkEndpointUIDs lost the (from, to) pair the
+// detail-pane refetch logic needs to invalidate the OTHER endpoint of
+// a parent transition.
+func TestSSEParser_LinkPayloadDecodesDaemonWireShape(t *testing.T) {
+	body := []byte(`{
+		"type":"issue.unlinked",
+		"project_id":7,
+		"issue_short_id":"43bb",
+		"payload":{
+			"type":"blocks",
+			"from_short_id":"43bb",
+			"to_short_id":"42aa",
+			"from_uid":"01JZ0000000000000000000001",
+			"to_uid":"01JZ0000000000000000000002"
+		}
+	}`)
+	got := decodeEventReceived(frame{kind: frameEvent, data: body})
+	if got.link == nil {
+		t.Fatal("link payload was not decoded")
+	}
+	if got.link.FromIssueUID != "01JZ0000000000000000000001" {
+		t.Errorf("FromIssueUID = %q, want 01JZ0000000000000000000001 (decoded from from_uid)", got.link.FromIssueUID)
+	}
+	if got.link.ToIssueUID != "01JZ0000000000000000000002" {
+		t.Errorf("ToIssueUID = %q, want 01JZ0000000000000000000002 (decoded from to_uid)", got.link.ToIssueUID)
 	}
 }
 
