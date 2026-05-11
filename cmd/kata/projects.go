@@ -25,17 +25,25 @@ type projectAliasRef struct {
 }
 
 type projectRef struct {
-	ID              int64             `json:"id"`
-	Name            string            `json:"name"`
-	NextIssueNumber int64             `json:"next_issue_number"`
-	Aliases         []projectAliasRef `json:"aliases,omitempty"`
+	ID      int64             `json:"id"`
+	Name    string            `json:"name"`
+	Aliases []projectAliasRef `json:"aliases,omitempty"`
+}
+
+// shortIDExtensionItem mirrors api.MergeShortIDExtension for decoding the
+// merge response. One entry per source-side issue whose short_id was
+// auto-extended during the merge to break a target-side collision
+// (spec §9.4).
+type shortIDExtensionItem struct {
+	UID              string `json:"uid"`
+	PreMergeShortID  string `json:"pre_merge_short_id"`
+	PostMergeShortID string `json:"post_merge_short_id"`
 }
 
 func newProjectsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "projects", Short: "list and inspect kata projects"}
 	cmd.AddCommand(projectsListCmd(), projectsShowCmd(), projectsRenameCmd(),
-		projectsMergeCmd(), projectsRemoveCmd(), projectsDetachCmd(),
-		projectsResetCounterCmd())
+		projectsMergeCmd(), projectsRemoveCmd(), projectsDetachCmd())
 	return cmd
 }
 
@@ -71,17 +79,16 @@ func projectsListCmd() *cobra.Command {
 			}
 			var b struct {
 				Projects []struct {
-					ID              int64  `json:"id"`
-					Name            string `json:"name"`
-					NextIssueNumber int64  `json:"next_issue_number"`
+					ID   int64  `json:"id"`
+					Name string `json:"name"`
 				} `json:"projects"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
 			for _, p := range b.Projects {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%d  %s  (next #%d)\n",
-					p.ID, textsafe.Line(p.Name), p.NextIssueNumber); err != nil {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%d  %s\n",
+					p.ID, textsafe.Line(p.Name)); err != nil {
 					return err
 				}
 			}
@@ -147,67 +154,6 @@ func projectsRenameCmd() *cobra.Command {
 	}
 }
 
-func projectsResetCounterCmd() *cobra.Command {
-	var to int64
-	cmd := &cobra.Command{
-		Use:   "reset-counter <project_id>",
-		Short: "reset next_issue_number for an empty project",
-		Long: "Reset projects.next_issue_number on an empty project. " +
-			"Refuses if any issues exist; the only path to empty is to purge them first.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil {
-				return &cliError{Message: "project id must be an integer", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			if to < 1 {
-				return &cliError{Message: "--to must be >= 1", Kind: kindValidation, ExitCode: ExitValidation}
-			}
-			ctx := cmd.Context()
-			baseURL, err := ensureDaemon(ctx)
-			if err != nil {
-				return err
-			}
-			client, err := httpClientFor(ctx, baseURL)
-			if err != nil {
-				return err
-			}
-			reqBody := map[string]any{"to": to}
-			status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
-				fmt.Sprintf("%s/api/v1/projects/%d/reset-counter", baseURL, id), reqBody)
-			if err != nil {
-				return err
-			}
-			if status >= 400 {
-				return apiErrFromBody(status, bs)
-			}
-			if flags.JSON {
-				var buf bytes.Buffer
-				if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
-					return err
-				}
-				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
-				return err
-			}
-			var b struct {
-				Project struct {
-					ID              int64  `json:"id"`
-					Name            string `json:"name"`
-					NextIssueNumber int64  `json:"next_issue_number"`
-				} `json:"project"`
-			}
-			if err := json.Unmarshal(bs, &b); err != nil {
-				return err
-			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (next #%d)\n",
-				b.Project.ID, textsafe.Line(b.Project.Name), b.Project.NextIssueNumber)
-			return err
-		},
-	}
-	cmd.Flags().Int64Var(&to, "to", 1, "value to set next_issue_number to (>= 1)")
-	return cmd
-}
-
 func projectsMergeCmd() *cobra.Command {
 	var targetName string
 	cmd := &cobra.Command{
@@ -252,11 +198,12 @@ func projectsMergeCmd() *cobra.Command {
 				return apiErrFromBody(status, bs)
 			}
 			var b struct {
-				Source       projectRef `json:"source"`
-				Target       projectRef `json:"target"`
-				IssuesMoved  int64      `json:"issues_moved"`
-				AliasesMoved int64      `json:"aliases_moved"`
-				EventsMoved  int64      `json:"events_moved"`
+				Source            projectRef             `json:"source"`
+				Target            projectRef             `json:"target"`
+				IssuesMoved       int64                  `json:"issues_moved"`
+				AliasesMoved      int64                  `json:"aliases_moved"`
+				EventsMoved       int64                  `json:"events_moved"`
+				ShortIDExtensions []shortIDExtensionItem `json:"short_id_extensions,omitempty"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
@@ -272,14 +219,24 @@ func projectsMergeCmd() *cobra.Command {
 				_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(),
-				"merged project #%d into #%d (%s); moved %s, %s, %s; next #%d\n",
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(),
+				"merged project #%d into #%d (%s); moved %s, %s, %s\n",
 				b.Source.ID, b.Target.ID, textsafe.Line(b.Target.Name),
 				pluralCount(b.IssuesMoved, "issue"),
 				pluralCount(b.AliasesMoved, "alias"),
 				pluralCount(b.EventsMoved, "event"),
-				b.Target.NextIssueNumber)
-			return err
+			); err != nil {
+				return err
+			}
+			for _, ext := range b.ShortIDExtensions {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(),
+					"extended %s#%s from %s to %s\n",
+					textsafe.Line(b.Target.Name), ext.PostMergeShortID,
+					ext.PreMergeShortID, ext.PostMergeShortID); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&targetName, "rename-target", "", "rename the surviving target project after merge")
@@ -363,16 +320,15 @@ func projectsShowCmd() *cobra.Command {
 			}
 			var b struct {
 				Project struct {
-					ID              int64  `json:"id"`
-					Name            string `json:"name"`
-					NextIssueNumber int64  `json:"next_issue_number"`
+					ID   int64  `json:"id"`
+					Name string `json:"name"`
 				} `json:"project"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s (next #%d)\n",
-				b.Project.ID, textsafe.Line(b.Project.Name), b.Project.NextIssueNumber)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d %s\n",
+				b.Project.ID, textsafe.Line(b.Project.Name))
 			return err
 		},
 	}

@@ -24,7 +24,12 @@ func TestDaemonStartRunsAutoCutoverBeforeOpen(t *testing.T) {
 	err = runDaemon(ctx)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "export_version")
+	// The cutover step runs before db.Open, so when AutoCutover fails its
+	// error must reach runDaemon. We assert on the export-side prefix
+	// because that is the first thing AutoCutover does after detecting an
+	// old schema_version — any failure before db.Open is enough to prove
+	// the cutover gate runs first.
+	assert.Contains(t, err.Error(), "export projects")
 	ver, peekErr := db.PeekSchemaVersion(context.Background(), dbPath)
 	require.NoError(t, peekErr)
 	assert.Equal(t, 0, ver)

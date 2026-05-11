@@ -42,7 +42,8 @@ func TestProjectsRename_RenamesProject(t *testing.T) {
 	assert.Contains(t, out, "renamed project #"+itoa(projectID)+" to Kata Tracker")
 
 	show := requireCmdOutput(t, env, "projects", "show", itoa(projectID))
-	assert.Contains(t, show, "Kata Tracker (next #")
+	assert.Contains(t, show, "Kata Tracker")
+	assert.NotContains(t, show, "next #")
 }
 
 func TestProjectsRename_AcceptsProjectSelector(t *testing.T) {
