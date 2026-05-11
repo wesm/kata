@@ -960,11 +960,28 @@ func (d *DB) CloseIssue(
 		return Issue{}, nil, false, fmt.Errorf("close: %w", err)
 	}
 
+	// Freeze the close-time parent onto the payload so audit history
+	// survives a later reparent / remove-parent. The pointer
+	// distinguishes "no parent at close" (non-nil empty) from "legacy
+	// event that predates this field" (nil) — the audit projection
+	// falls back to a live links lookup only for the legacy case.
+	parentSID, hasParent, err := txParentShortID(ctx, tx, issueID)
+	if err != nil {
+		return Issue{}, nil, false, err
+	}
+	var parentForPayload *string
+	if hasParent {
+		parentForPayload = &parentSID
+	} else {
+		empty := ""
+		parentForPayload = &empty
+	}
 	payloadBytes, err := json.Marshal(struct {
-		Reason   string     `json:"reason"`
-		Message  string     `json:"message,omitempty"`
-		Evidence []Evidence `json:"evidence,omitempty"`
-	}{Reason: reason, Message: message, Evidence: evidence})
+		Reason        string     `json:"reason"`
+		Message       string     `json:"message,omitempty"`
+		Evidence      []Evidence `json:"evidence,omitempty"`
+		ParentShortID *string    `json:"parent_short_id,omitempty"`
+	}{Reason: reason, Message: message, Evidence: evidence, ParentShortID: parentForPayload})
 	if err != nil {
 		return Issue{}, nil, false, fmt.Errorf("close payload: %w", err)
 	}

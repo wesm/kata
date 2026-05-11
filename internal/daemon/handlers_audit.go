@@ -97,26 +97,36 @@ func parseAuditWindow(sinceIn, untilIn string) (since, until string, err error) 
 // closeEventPayload is the wire shape the daemon writes into the
 // payload column for issue.closed events. Defined locally because the
 // db package does not export it.
+//
+// ParentShortID is the parent's short_id at the moment of close,
+// captured inside the close transaction so audit history survives a
+// later reparent / remove-parent on the closed child. Nil = legacy
+// event that predates this field (the audit projection falls back to
+// a live links lookup); non-nil empty = the issue had no parent at
+// close time.
 type closeEventPayload struct {
-	Reason   string         `json:"reason"`
-	Message  string         `json:"message,omitempty"`
-	Evidence []api.Evidence `json:"evidence,omitempty"`
+	Reason        string         `json:"reason"`
+	Message       string         `json:"message,omitempty"`
+	Evidence      []api.Evidence `json:"evidence,omitempty"`
+	ParentShortID *string        `json:"parent_short_id,omitempty"`
 }
 
 // buildAuditRows projects close events into AuditCloseRow shape and
-// applies the reason / parent / no-evidence filters. Parent filtering
-// is implemented as a post-pass over the event set because the close
-// event itself does not carry parent context; we batch-lookup parents
-// per child issue id.
+// applies the reason / parent / no-evidence filters. Parent context
+// comes from the close event's stored parent_short_id (frozen at
+// close-time inside the close tx) so a later reparent / remove-parent
+// cannot mutate historical audit rows or shift them out of a --parent
+// filter. Legacy events that predate the stored field fall back to a
+// live links lookup — the best we can do for that subset.
 func buildAuditRows(
 	ctx context.Context, cfg ServerConfig,
 	in *api.AuditClosesRequest, events []db.Event,
 ) ([]api.AuditCloseRow, error) {
-	parents, err := loadParentsForCloseEvents(ctx, cfg, in.ProjectID, events)
+	throttled := throttledIssuesByActor(events)
+	legacyParents, err := loadLegacyParentsForCloseEvents(ctx, cfg, in.ProjectID, events)
 	if err != nil {
 		return nil, err
 	}
-	throttled := throttledIssuesByActor(events)
 	rows := make([]api.AuditCloseRow, 0, len(events))
 	for _, ev := range events {
 		if ev.Type != "issue.closed" {
@@ -140,8 +150,11 @@ func buildAuditRows(
 		if ev.IssueShortID != nil {
 			row.Issue = *ev.IssueShortID
 		}
-		if ev.IssueID != nil {
-			if pn, ok := parents[*ev.IssueID]; ok {
+		switch {
+		case p.ParentShortID != nil:
+			row.Parent = *p.ParentShortID
+		case ev.IssueID != nil:
+			if pn, ok := legacyParents[*ev.IssueID]; ok {
 				row.Parent = pn
 			}
 		}
@@ -200,9 +213,17 @@ func throttleKey(issue, actor string) string {
 	return fmt.Sprintf("%s|%s", issue, actor)
 }
 
-// loadParentsForCloseEvents gathers the issue ids of close events and
-// resolves each child -> parent short_id in one batched lookup.
-func loadParentsForCloseEvents(
+// loadLegacyParentsForCloseEvents gathers the issue ids of close events
+// whose payload lacks the parent_short_id field (legacy events from
+// before close-time parent freezing) and resolves each child -> parent
+// via the live links table. New events skip the lookup entirely because
+// their payload already carries the close-time parent.
+//
+// The live lookup remains best-effort for legacy data — if the issue
+// was reparented since closing, the audit row reflects the current
+// link, not the close-time link. There is no record of the original
+// parent for legacy events.
+func loadLegacyParentsForCloseEvents(
 	ctx context.Context, cfg ServerConfig,
 	projectID int64, events []db.Event,
 ) (map[int64]string, error) {
@@ -210,6 +231,11 @@ func loadParentsForCloseEvents(
 	seen := map[int64]struct{}{}
 	for _, ev := range events {
 		if ev.Type != "issue.closed" || ev.IssueID == nil {
+			continue
+		}
+		var p closeEventPayload
+		_ = json.Unmarshal([]byte(ev.Payload), &p)
+		if p.ParentShortID != nil {
 			continue
 		}
 		if _, ok := seen[*ev.IssueID]; ok {

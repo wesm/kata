@@ -147,6 +147,41 @@ func TestAuditCloses_FilterByParent(t *testing.T) {
 	assert.NotContains(t, out, `"issue":"`+unrelated+`"`)
 }
 
+// TestAuditCloses_ParentFrozenAtCloseTime pins close-time parent
+// capture: the audit row's parent must reflect the parent at the
+// moment of close, not whatever the live `links` table happens to
+// hold when the audit runs. Without the frozen parent_short_id in
+// the event payload, an agent could close children under parent A
+// and then reparent them to B to shift their audit rows out of
+// `audit closes --parent A`.
+func TestAuditCloses_ParentFrozenAtCloseTime(t *testing.T) {
+	env, dir, pid, parentA := setupWorkspaceWithIssue(t, "parent A")
+	parentB := createIssue(t, env, pid, "parent B")
+	child := createIssue(t, env, pid, "child of A")
+	runCLI(t, env, dir, "edit", child, "--parent", parentA)
+	runCLI(t, env, dir, "close", child, "--done",
+		"--message", "Fixed the child of parent A and ran the unit tests.",
+		"--commit", "abc1234")
+
+	out := runCLI(t, env, dir, "audit", "closes", "--parent", parentA, "--json")
+	assert.Contains(t, out, `"issue":"`+child+`"`,
+		"audit before reparent must include the close under parent A")
+
+	// Reparent the now-closed child onto B and re-query. The original
+	// close happened under A — the audit row must still attribute it
+	// to A, and the --parent B filter must NOT pick it up.
+	runCLI(t, env, dir, "reopen", child)
+	runCLI(t, env, dir, "edit", child, "--remove-parent", parentA)
+	runCLI(t, env, dir, "edit", child, "--parent", parentB)
+
+	outA := runCLI(t, env, dir, "audit", "closes", "--parent", parentA, "--json")
+	assert.Contains(t, outA, `"issue":"`+child+`"`,
+		"audit after reparent must still attribute the close to A")
+	outB := runCLI(t, env, dir, "audit", "closes", "--parent", parentB, "--json")
+	assert.NotContains(t, outB, `"issue":"`+child+`"`,
+		"audit after reparent must not migrate the historical close onto B")
+}
+
 // TestAuditCloses_ThrottledFlagIgnoresLaterThrottle pins the temporal
 // rule: a close.throttled event whose id is GREATER than the successful
 // close it could naively be matched against must not flag that close.
