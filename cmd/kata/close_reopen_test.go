@@ -247,6 +247,34 @@ func TestCloseAPI_TUISourceBypassesSubstanceAndEvidence(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode, "TUI close must succeed: %s", bs)
 }
 
+// TestCloseAPI_TUISourceWithNonDoneReasonStillValidates pins the
+// scope of the source="tui" bypass: only reason="done" is exempt
+// from substance / evidence validation. A caller setting
+// source="tui" with reason="duplicate" or "superseded" must still
+// pass the evidence-target check — otherwise an agent could forge
+// the TUI origin to skip the duplicate-of / superseded-by guard and
+// persist a corrupt audit row.
+func TestCloseAPI_TUISourceWithNonDoneReasonStillValidates(t *testing.T) {
+	env, _, pid, ref := setupWorkspaceWithIssue(t, "issue one")
+	body, err := json.Marshal(map[string]any{
+		"actor":  "agent",
+		"source": "tui",
+		"reason": "duplicate",
+		// Deliberately omit duplicate-of evidence; the daemon must
+		// refuse rather than bypass validation on the TUI claim.
+	})
+	require.NoError(t, err)
+	resp, err := http.Post( //nolint:noctx,gosec // test-only loopback
+		fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/close", env.URL, pid, ref),
+		"application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, 400, resp.StatusCode,
+		"source=tui with reason=duplicate must still require duplicate-of evidence: %s", bs)
+}
+
 // TestCloseAPI_NonTUIRequiresSubstance is the symmetric guard: without
 // source="tui", an empty message must surface as 400 validation.
 func TestCloseAPI_NonTUIRequiresSubstance(t *testing.T) {

@@ -50,15 +50,18 @@ typically serial and the next close in the window still trips the
 guard and emits `close.throttled`. Don't re-raise — if a real attack
 path exists, name it concretely.
 
-## TUI close bypass: intentional trust-on-claim
+## TUI close bypass: intentional trust-on-claim, scoped to reason=done
 
 `internal/daemon/handlers_actions.go` skips substance/evidence
-validation when the body has `source == "tui"`. Forging that field
-costs the same as forging evidence — adding a server-issued capability
-only inconveniences honest callers. Audit still flags `no-evidence`
-closes; structural guards still run. Don't recommend a separate
-endpoint or capability token; if you find a check that should run for
-TUI but doesn't, raise *that* check.
+validation only when `source == "tui"` AND `reason == "done"` (the
+only shape the interactive close keystroke produces). A TUI claim
+with any other reason still runs full validation, including
+duplicate-of / superseded-by target checks. Forging the source field
+on a `done` close costs the same as forging evidence — adding a
+server-issued capability only inconveniences honest callers. Audit
+still flags `no-evidence` closes; structural guards still run. Don't
+recommend a separate endpoint or capability token; if you find a
+check that should run for TUI but doesn't, raise *that* check.
 
 ## Project archival
 

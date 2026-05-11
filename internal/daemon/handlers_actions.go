@@ -40,6 +40,15 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if tuiClose && in.Body.Reason == "" {
 			in.Body.Reason = "done"
 		}
+		// The TUI bypass is scoped to reason="done" — the only shape
+		// the interactive "press x to close" path ever produces. A
+		// caller sending source="tui" with reason="duplicate" or
+		// reason="superseded" is either a misconfigured client or an
+		// agent trying to route around the evidence-target check by
+		// claiming a TUI origin; require full validation in that case
+		// so duplicate/superseded closes still must carry their typed
+		// targets and won't corrupt the audit trail.
+		tuiBypass := tuiClose && in.Body.Reason == "done"
 		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
@@ -56,7 +65,7 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 			out.Body.Issue = issue
 			return out, nil
 		}
-		if !tuiClose {
+		if !tuiBypass {
 			if err := ValidateCloseInput(in.Body.Reason, in.Body.Message, in.Body.Evidence); err != nil {
 				return nil, api.NewError(400, "validation", err.Error(), "", nil)
 			}
