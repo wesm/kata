@@ -168,6 +168,13 @@ func CheckRepeatedMessageGuard(
 		return "", "", nil
 	}
 	norm := NormalizeMessage(message)
+	// An empty normalized message carries no signature to match against.
+	// Skip the guard so the TUI bypass path (which stores message="") and
+	// any legitimate caller that forgot to supply a message do not get
+	// false 429s for "identical" empty prose across siblings.
+	if norm == "" {
+		return "", "", nil
+	}
 	since := now.Add(-repeatedMessageWindow)
 	prior, err := d.RecentSameMessageClose(ctx, projectID, parentLink.ToIssueID, actor, norm, since)
 	if err != nil || prior == nil {

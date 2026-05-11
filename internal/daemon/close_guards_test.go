@@ -373,6 +373,36 @@ func TestRepeatedMessageGuard_SkipsForUnparentedIssues(t *testing.T) {
 		"second close: %s", string(secondBody))
 }
 
+// TestRepeatedMessageGuard_SkipsTUIBypassEmptyMessage pins the
+// TUI-consecutive-close path: two TUI closes of sibling issues under
+// the same parent within the 30-min window each carry an empty
+// message (the TUI bypass stores reason="done", message=""). Without
+// the empty-norm short-circuit in CheckRepeatedMessageGuard, the
+// second close would match the first's empty message and be refused
+// as duplicate_message, breaking the interactive close keystroke.
+func TestRepeatedMessageGuard_SkipsTUIBypassEmptyMessage(t *testing.T) {
+	env := testenv.New(t)
+	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
+	parent := createIssueViaHTTP(t, env, pid, "parent issue")
+	a := createIssueViaHTTP(t, env, pid, "child a")
+	b := createIssueViaHTTP(t, env, pid, "child b")
+	postLink(t, env, pid, a, "parent", parent)
+	postLink(t, env, pid, b, "parent", parent)
+
+	tuiClose := func(issueID int64) (*http.Response, []byte) {
+		return envDoRaw(t, env, http.MethodPost,
+			issuePath(pid, issueID, "actions/close"),
+			map[string]any{"actor": "agent-a", "source": "tui"}, nil)
+	}
+	firstResp, firstBody := tuiClose(a)
+	require.Equalf(t, http.StatusOK, firstResp.StatusCode,
+		"first TUI close: %s", string(firstBody))
+	secondResp, secondBody := tuiClose(b)
+	require.Equalf(t, http.StatusOK, secondResp.StatusCode,
+		"second TUI close must not 429 on empty-message match: %s",
+		string(secondBody))
+}
+
 func TestThrottle_EmitsCloseThrottledEvent_SiblingBurst(t *testing.T) {
 	env := testenv.New(t)
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
