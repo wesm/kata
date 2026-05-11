@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	katauid "github.com/wesm/kata/internal/uid"
@@ -718,6 +719,56 @@ func (d *DB) IssueByUID(ctx context.Context, issueUID string, include IncludeDel
 	return scanIssue(row)
 }
 
+// ShortIDsByUIDs returns the current short_id for each requested issue
+// UID inside projectID. UIDs that don't resolve (purged, never existed,
+// or live in a different project) are omitted from the result. Used by
+// the audit projection to map a close-time parent UID to the parent's
+// CURRENT short_id, which is stable across project-merge collision
+// reshuffles even though the short_id itself is not.
+func (d *DB) ShortIDsByUIDs(
+	ctx context.Context, projectID int64, uids []string,
+) (map[string]string, error) {
+	out := map[string]string{}
+	if len(uids) == 0 {
+		return out, nil
+	}
+	const chunk = 500
+	for i := 0; i < len(uids); i += chunk {
+		end := i + chunk
+		if end > len(uids) {
+			end = len(uids)
+		}
+		slice := uids[i:end]
+		placeholders := make([]string, len(slice))
+		args := make([]any, 0, len(slice)+1)
+		args = append(args, projectID)
+		for j, u := range slice {
+			placeholders[j] = "?"
+			args = append(args, u)
+		}
+		q := `SELECT uid, short_id FROM issues
+		      WHERE project_id = ? AND uid IN (` + strings.Join(placeholders, ",") + `)`
+		rows, err := d.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, fmt.Errorf("short ids by uids: %w", err)
+		}
+		for rows.Next() {
+			var uid, sid string
+			if err := rows.Scan(&uid, &sid); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan short id by uid: %w", err)
+			}
+			out[uid] = sid
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("iterate short ids by uids: %w", err)
+		}
+		_ = rows.Close()
+	}
+	return out, nil
+}
+
 // IssueUIDPrefixMatch returns issues whose UID starts with prefix, ordered by
 // UID for deterministic ambiguity reporting. Soft-deleted rows are returned
 // only when include == IncludeDeletedYes (spec §6 carveout, matching
@@ -960,28 +1011,37 @@ func (d *DB) CloseIssue(
 		return Issue{}, nil, false, fmt.Errorf("close: %w", err)
 	}
 
-	// Freeze the close-time parent onto the payload so audit history
-	// survives a later reparent / remove-parent. The pointer
-	// distinguishes "no parent at close" (non-nil empty) from "legacy
-	// event that predates this field" (nil) — the audit projection
-	// falls back to a live links lookup only for the legacy case.
-	parentSID, hasParent, err := txParentShortID(ctx, tx, issueID)
+	// Freeze the close-time parent identity onto the payload so audit
+	// history survives a later reparent / remove-parent AND a
+	// project-merge collision rewrite of the parent's short_id. UID is
+	// the immutable identity; short_id is the close-time display value
+	// kept as a fallback when the parent has since been purged and the
+	// UID no longer resolves. Pointer presence distinguishes "no parent
+	// at close" (non-nil empty) from "legacy event that predates these
+	// fields" (nil) — the audit projection falls back to a live links
+	// lookup only for the legacy case.
+	parentUID, parentSID, hasParent, err := txParentIdentity(ctx, tx, issueID)
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
-	var parentForPayload *string
+	parentUIDForPayload, parentSIDForPayload := new(string), new(string)
 	if hasParent {
-		parentForPayload = &parentSID
-	} else {
-		empty := ""
-		parentForPayload = &empty
+		*parentUIDForPayload = parentUID
+		*parentSIDForPayload = parentSID
 	}
 	payloadBytes, err := json.Marshal(struct {
 		Reason        string     `json:"reason"`
 		Message       string     `json:"message,omitempty"`
 		Evidence      []Evidence `json:"evidence,omitempty"`
+		ParentUID     *string    `json:"parent_uid,omitempty"`
 		ParentShortID *string    `json:"parent_short_id,omitempty"`
-	}{Reason: reason, Message: message, Evidence: evidence, ParentShortID: parentForPayload})
+	}{
+		Reason:        reason,
+		Message:       message,
+		Evidence:      evidence,
+		ParentUID:     parentUIDForPayload,
+		ParentShortID: parentSIDForPayload,
+	})
 	if err != nil {
 		return Issue{}, nil, false, fmt.Errorf("close payload: %w", err)
 	}

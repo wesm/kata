@@ -98,46 +98,60 @@ func parseAuditWindow(sinceIn, untilIn string) (since, until string, err error) 
 // payload column for issue.closed events. Defined locally because the
 // db package does not export it.
 //
-// ParentShortID is the parent's short_id at the moment of close,
-// captured inside the close transaction so audit history survives a
-// later reparent / remove-parent on the closed child. Nil = legacy
-// event that predates this field (the audit projection falls back to
-// a live links lookup); non-nil empty = the issue had no parent at
-// close time.
+// ParentUID is the parent's immutable UID at close time. ParentShortID
+// is the close-time display value, retained as a fallback when the
+// parent has since been purged and the UID no longer resolves through
+// the live issues table. Resolving UID → current short_id at audit
+// time keeps the row stable across project-merge collision reshuffles
+// (which can rewrite source-side short_ids) without losing the audit
+// signal. Nil pointers signal "legacy event that predates these
+// fields" — the audit projection falls back to a live links lookup
+// only for that case; non-nil empty signals "no parent at close".
 type closeEventPayload struct {
 	Reason        string         `json:"reason"`
 	Message       string         `json:"message,omitempty"`
 	Evidence      []api.Evidence `json:"evidence,omitempty"`
+	ParentUID     *string        `json:"parent_uid,omitempty"`
 	ParentShortID *string        `json:"parent_short_id,omitempty"`
 }
 
 // buildAuditRows projects close events into AuditCloseRow shape and
 // applies the reason / parent / no-evidence filters. Parent context
-// comes from the close event's stored parent_short_id (frozen at
-// close-time inside the close tx) so a later reparent / remove-parent
-// cannot mutate historical audit rows or shift them out of a --parent
-// filter. Legacy events that predate the stored field fall back to a
-// live links lookup — the best we can do for that subset.
+// comes from the close event's frozen parent_uid (resolved to the
+// CURRENT short_id at read time so a project-merge collision rewrite
+// is reflected) with parent_short_id as a fallback when the UID has
+// since been purged. Legacy events that predate both fields fall
+// back to a live links lookup — the best we can do for that subset.
 func buildAuditRows(
 	ctx context.Context, cfg ServerConfig,
 	in *api.AuditClosesRequest, events []db.Event,
 ) ([]api.AuditCloseRow, error) {
 	throttled := throttledIssuesByActor(events)
-	legacyParents, err := loadLegacyParentsForCloseEvents(ctx, cfg, in.ProjectID, events)
+	parsed := make([]closeEventPayload, len(events))
+	for i, ev := range events {
+		if ev.Type != "issue.closed" {
+			continue
+		}
+		_ = json.Unmarshal([]byte(ev.Payload), &parsed[i])
+	}
+	parentUIDToSID, err := resolveParentUIDs(ctx, cfg, in.ProjectID, parsed)
+	if err != nil {
+		return nil, err
+	}
+	legacyParents, err := loadLegacyParentsForCloseEvents(ctx, cfg, in.ProjectID, events, parsed)
 	if err != nil {
 		return nil, err
 	}
 	rows := make([]api.AuditCloseRow, 0, len(events))
-	for _, ev := range events {
+	for i, ev := range events {
 		if ev.Type != "issue.closed" {
 			continue
 		}
 		closeEventID := ev.ID
-		var p closeEventPayload
 		// Lenient: a malformed payload surfaces as a row with empty
 		// reason/evidence so a reviewer sees the gap rather than the
 		// audit silently dropping it.
-		_ = json.Unmarshal([]byte(ev.Payload), &p)
+		p := parsed[i]
 		if in.Reason != "" && p.Reason != in.Reason {
 			continue
 		}
@@ -151,7 +165,22 @@ func buildAuditRows(
 			row.Issue = *ev.IssueShortID
 		}
 		switch {
+		case p.ParentUID != nil && *p.ParentUID != "":
+			if sid, ok := parentUIDToSID[*p.ParentUID]; ok {
+				row.Parent = sid
+			} else if p.ParentShortID != nil {
+				// UID no longer resolves (parent purged). Fall back to
+				// the stored short_id as best-effort display; it may be
+				// stale after a merge, but it is the only label we kept
+				// for an issue that no longer exists.
+				row.Parent = *p.ParentShortID
+			}
+		case p.ParentUID != nil:
+			// Modern event with no parent at close time. Leave empty.
 		case p.ParentShortID != nil:
+			// Transition-only: a payload with parent_short_id but no
+			// parent_uid would mean a brief intermediate format; trust
+			// the stored short_id.
 			row.Parent = *p.ParentShortID
 		case ev.IssueID != nil:
 			if pn, ok := legacyParents[*ev.IssueID]; ok {
@@ -214,10 +243,10 @@ func throttleKey(issue, actor string) string {
 }
 
 // loadLegacyParentsForCloseEvents gathers the issue ids of close events
-// whose payload lacks the parent_short_id field (legacy events from
-// before close-time parent freezing) and resolves each child -> parent
-// via the live links table. New events skip the lookup entirely because
-// their payload already carries the close-time parent.
+// whose payload carries neither parent_uid nor parent_short_id (legacy
+// events from before close-time parent freezing) and resolves each
+// child -> parent via the live links table. New events skip the lookup
+// entirely because their payload already carries the close-time parent.
 //
 // The live lookup remains best-effort for legacy data — if the issue
 // was reparented since closing, the audit row reflects the current
@@ -225,17 +254,15 @@ func throttleKey(issue, actor string) string {
 // parent for legacy events.
 func loadLegacyParentsForCloseEvents(
 	ctx context.Context, cfg ServerConfig,
-	projectID int64, events []db.Event,
+	projectID int64, events []db.Event, parsed []closeEventPayload,
 ) (map[int64]string, error) {
 	ids := make([]int64, 0, len(events))
 	seen := map[int64]struct{}{}
-	for _, ev := range events {
+	for i, ev := range events {
 		if ev.Type != "issue.closed" || ev.IssueID == nil {
 			continue
 		}
-		var p closeEventPayload
-		_ = json.Unmarshal([]byte(ev.Payload), &p)
-		if p.ParentShortID != nil {
+		if parsed[i].ParentUID != nil || parsed[i].ParentShortID != nil {
 			continue
 		}
 		if _, ok := seen[*ev.IssueID]; ok {
@@ -252,6 +279,37 @@ func loadLegacyParentsForCloseEvents(
 		return nil, api.NewError(500, "internal", err.Error(), "", nil)
 	}
 	return parents, nil
+}
+
+// resolveParentUIDs gathers every distinct, non-empty parent_uid across
+// the parsed close payloads and asks the db to resolve them to current
+// short_ids. The result map omits UIDs that no longer resolve (parent
+// purged); the audit projection falls back to the close-time
+// parent_short_id for those.
+func resolveParentUIDs(
+	ctx context.Context, cfg ServerConfig,
+	projectID int64, parsed []closeEventPayload,
+) (map[string]string, error) {
+	seen := map[string]struct{}{}
+	uids := make([]string, 0, len(parsed))
+	for _, p := range parsed {
+		if p.ParentUID == nil || *p.ParentUID == "" {
+			continue
+		}
+		if _, ok := seen[*p.ParentUID]; ok {
+			continue
+		}
+		seen[*p.ParentUID] = struct{}{}
+		uids = append(uids, *p.ParentUID)
+	}
+	if len(uids) == 0 {
+		return map[string]string{}, nil
+	}
+	out, err := cfg.DB.ShortIDsByUIDs(ctx, projectID, uids)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	return out, nil
 }
 
 func auditFlagsContain(xs []string, s string) bool {

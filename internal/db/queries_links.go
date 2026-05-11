@@ -443,28 +443,28 @@ func txHasOpenChildren(ctx context.Context, tx *sql.Tx, projectID, parentIssueID
 	return total > 0, nil
 }
 
-// txParentShortID returns the parent short_id for childIssueID at the
-// moment of the close transaction, or "" when the child has no parent
-// link. Used by CloseIssue to freeze the close-time parent onto the
-// issue.closed event payload so audit history survives a later
-// reparent / remove-parent. ok=false signals "no parent set"; we cannot
-// distinguish a missing parent from "(*string)(nil)" at the JSON layer
-// otherwise.
-func txParentShortID(ctx context.Context, tx *sql.Tx, childIssueID int64) (string, bool, error) {
-	var sid string
-	err := tx.QueryRowContext(ctx,
-		`SELECT parent.short_id
+// txParentIdentity returns the parent UID and short_id for childIssueID
+// at the moment of the close transaction. UID is the stable identity
+// (immutable across project merges and federation reshuffles); short_id
+// is the close-time display value. ok=false signals "no parent set" so
+// CloseIssue can write empty markers into the payload rather than
+// dropping the fields entirely (the audit projection uses field
+// presence to distinguish "no parent at close" from "legacy event that
+// predates this freezing").
+func txParentIdentity(ctx context.Context, tx *sql.Tx, childIssueID int64) (uid, shortID string, ok bool, err error) {
+	err = tx.QueryRowContext(ctx,
+		`SELECT parent.uid, parent.short_id
 		 FROM links l
 		 JOIN issues parent ON parent.id = l.to_issue_id
 		 WHERE l.from_issue_id = ? AND l.type = 'parent'`,
-		childIssueID).Scan(&sid)
+		childIssueID).Scan(&uid, &shortID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("close-time parent lookup: %w", err)
+		return "", "", false, fmt.Errorf("close-time parent lookup: %w", err)
 	}
-	return sid, true, nil
+	return uid, shortID, true, nil
 }
 
 // OpenChildrenOf returns up to limit non-deleted, non-closed children of
