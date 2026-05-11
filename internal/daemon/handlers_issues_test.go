@@ -113,14 +113,14 @@ func TestIssues_CreateRoundtrip(t *testing.T) {
 
 	var body struct {
 		Issue struct {
-			Number int64
-			Title  string
-			Status string
-		}
-		Event struct{ Type string }
+			ShortID string `json:"short_id"`
+			Title   string `json:"title"`
+			Status  string `json:"status"`
+		} `json:"issue"`
+		Event struct{ Type string } `json:"event"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &body))
-	assert.EqualValues(t, 1, body.Issue.Number)
+	assert.NotEmpty(t, body.Issue.ShortID, "short_id missing from create response")
 	assert.Equal(t, "first", body.Issue.Title)
 	assert.Equal(t, "open", body.Issue.Status)
 	assert.Equal(t, "issue.created", body.Event.Type)
@@ -137,7 +137,7 @@ func TestIssues_UIDWireShapeAndLookup(t *testing.T) {
 		Issue struct {
 			UID        string `json:"uid"`
 			ProjectUID string `json:"project_uid"`
-			Number     int64  `json:"number"`
+			ShortID    string `json:"short_id"`
 		} `json:"issue"`
 		Event struct {
 			ProjectUID string  `json:"project_uid"`
@@ -147,6 +147,7 @@ func TestIssues_UIDWireShapeAndLookup(t *testing.T) {
 	require.NoError(t, json.Unmarshal(bs, &created))
 	assert.True(t, uid.Valid(created.Issue.UID))
 	assert.True(t, uid.Valid(created.Issue.ProjectUID))
+	assert.NotEmpty(t, created.Issue.ShortID)
 	assert.Equal(t, created.Issue.ProjectUID, created.Event.ProjectUID)
 	require.NotNil(t, created.Event.IssueUID)
 	assert.Equal(t, created.Issue.UID, *created.Event.IssueUID)
@@ -157,7 +158,7 @@ func TestIssues_UIDWireShapeAndLookup(t *testing.T) {
 
 	byUIDResp, byUIDBS := getStatusBody(t, ts, "/api/v1/issues/"+created.Issue.UID)
 	require.Equal(t, 200, byUIDResp.StatusCode, string(byUIDBS))
-	assert.Contains(t, string(byUIDBS), `"number":`+strconv.FormatInt(created.Issue.Number, 10))
+	assert.Contains(t, string(byUIDBS), `"short_id":"`+created.Issue.ShortID+`"`)
 	assert.Contains(t, string(byUIDBS), `"uid":"`+created.Issue.UID+`"`)
 
 	badResp, badBS := getStatusBody(t, ts, "/api/v1/issues/not-a-ulid")
@@ -256,148 +257,181 @@ func TestCreateIssue_BlankActorIs400(t *testing.T) {
 // creates the corresponding link and reports it back in the response's
 // `changes` block. This is the foundation the larger atomic PATCH builds on.
 func TestEditIssue_LinksDelta_AddBlocks(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
 	// Create a second issue so we have a target to block.
 	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "blocked target"})
 	require.Equalf(t, 200, resp.StatusCode, "create #2: %s", string(bs))
+	var created struct {
+		Issue struct {
+			ID      int64  `json:"id"`
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &created))
+	target := created.Issue.ShortID
+	srcShortID := issueRefByID(t, h, src)
 
-	resp, bs = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURL(pid, src, ""), map[string]any{
 		"actor": "tester",
 		"links_delta": map[string]any{
-			"add_blocks": []int64{2},
+			"add_blocks": []string{target},
 		},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Issue struct {
-			Number int64 `json:"number"`
+			ShortID string `json:"short_id"`
 		} `json:"issue"`
 		Changes struct {
-			BlocksAdded []int64 `json:"blocks_added"`
+			BlocksAdded []linkPeerTest `json:"blocks_added"`
 		} `json:"changes"`
 		Changed bool `json:"changed"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
-	assert.Equal(t, int64(1), out.Issue.Number)
+	assert.Equal(t, srcShortID, out.Issue.ShortID)
 	assert.True(t, out.Changed, "changed flag should be true")
-	assert.Equal(t, []int64{2}, out.Changes.BlocksAdded)
+	require.Len(t, out.Changes.BlocksAdded, 1)
+	assert.Equal(t, target, out.Changes.BlocksAdded[0].ShortID)
 
-	// Verify the link persisted: GET issue 1 and inspect its links list.
-	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	// Verify the link persisted: GET issue and inspect its links list.
+	getResp, err := http.Get(ts.URL + issueURL(pid, src, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
 	defer func() { _ = getResp.Body.Close() }()
 	require.Equal(t, 200, getResp.StatusCode)
 	var show struct {
 		Links []struct {
-			Type       string `json:"type"`
-			FromNumber int64  `json:"from_number"`
-			ToNumber   int64  `json:"to_number"`
+			Type string       `json:"type"`
+			From linkPeerTest `json:"from"`
+			To   linkPeerTest `json:"to"`
 		} `json:"links"`
 	}
 	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
 	require.Len(t, show.Links, 1)
 	assert.Equal(t, "blocks", show.Links[0].Type)
-	assert.Equal(t, int64(1), show.Links[0].FromNumber)
-	assert.Equal(t, int64(2), show.Links[0].ToNumber)
+	assert.Equal(t, srcShortID, show.Links[0].From.ShortID)
+	assert.Equal(t, target, show.Links[0].To.ShortID)
 }
 
 // TestEditIssue_LinksDelta_AddBlockedBy verifies the inverse-direction add:
 // `add_blocked_by: [N]` on URL issue X stores a `blocks` link from N to X
 // (i.e. N blocks X). The Changes block reports it under blocked_by_added.
 func TestEditIssue_LinksDelta_AddBlockedBy(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "blocker"})
 	require.Equal(t, 200, resp.StatusCode)
+	var created struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &created))
+	blocker := created.Issue.ShortID
+	srcShortID := issueRefByID(t, h, src)
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURL(pid, src, ""), map[string]any{
 		"actor": "tester",
 		"links_delta": map[string]any{
-			"add_blocked_by": []int64{2},
+			"add_blocked_by": []string{blocker},
 		},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			BlockedByAdded []int64 `json:"blocked_by_added"`
+			BlockedByAdded []linkPeerTest `json:"blocked_by_added"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
-	assert.Equal(t, []int64{2}, out.Changes.BlockedByAdded)
+	require.Len(t, out.Changes.BlockedByAdded, 1)
+	assert.Equal(t, blocker, out.Changes.BlockedByAdded[0].ShortID)
 
-	// Persistence: GET issue 1, expect a blocks link FROM 2 TO 1.
-	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	// Persistence: GET URL issue, expect a blocks link FROM blocker TO src.
+	getResp, err := http.Get(ts.URL + issueURL(pid, src, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
 	defer func() { _ = getResp.Body.Close() }()
 	var show struct {
 		Links []struct {
-			Type       string `json:"type"`
-			FromNumber int64  `json:"from_number"`
-			ToNumber   int64  `json:"to_number"`
+			Type string       `json:"type"`
+			From linkPeerTest `json:"from"`
+			To   linkPeerTest `json:"to"`
 		} `json:"links"`
 	}
 	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
 	require.Len(t, show.Links, 1)
 	assert.Equal(t, "blocks", show.Links[0].Type)
-	assert.Equal(t, int64(2), show.Links[0].FromNumber)
-	assert.Equal(t, int64(1), show.Links[0].ToNumber)
+	assert.Equal(t, blocker, show.Links[0].From.ShortID)
+	assert.Equal(t, srcShortID, show.Links[0].To.ShortID)
 }
 
 // TestEditIssue_LinksDelta_AddRelated covers the symmetric link type. The
 // related link is canonical-ordered server-side; the Changes block reports
-// the target as the agent passed it (issue number from the operating issue's
+// the target as the agent passed it (issue ref from the operating issue's
 // POV), regardless of canonical storage order.
 func TestEditIssue_LinksDelta_AddRelated(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	_, ts, pid, src := bootstrapProjectWithIssue(t)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "other"})
 	require.Equal(t, 200, resp.StatusCode)
+	var created struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &created))
+	other := created.Issue.ShortID
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURL(pid, src, ""), map[string]any{
 		"actor": "tester",
 		"links_delta": map[string]any{
-			"add_related": []int64{2},
+			"add_related": []string{other},
 		},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			RelatedAdded []int64 `json:"related_added"`
+			RelatedAdded []linkPeerTest `json:"related_added"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
-	assert.Equal(t, []int64{2}, out.Changes.RelatedAdded)
+	require.Len(t, out.Changes.RelatedAdded, 1)
+	assert.Equal(t, other, out.Changes.RelatedAdded[0].ShortID)
 }
 
 // TestEditIssue_LinksDelta_SetParent sets the parent slot. With no existing
 // parent, set_parent inserts a parent link. Changes reports parent_set.
 func TestEditIssue_LinksDelta_SetParent(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	_, ts, pid, src := bootstrapProjectWithIssue(t)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "parent"})
 	require.Equal(t, 200, resp.StatusCode)
+	var created struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &created))
+	parentRef := created.Issue.ShortID
 
-	parentNum := int64(2)
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURL(pid, src, ""), map[string]any{
 		"actor": "tester",
 		"links_delta": map[string]any{
-			"set_parent": parentNum,
+			"set_parent": parentRef,
 		},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			ParentSet *int64 `json:"parent_set"`
+			ParentSet *linkPeerTest `json:"parent_set"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
 	require.NotNil(t, out.Changes.ParentSet)
-	assert.Equal(t, parentNum, *out.Changes.ParentSet)
+	assert.Equal(t, parentRef, out.Changes.ParentSet.ShortID)
 }
 
 // TestEditIssue_LinksDelta_RemoveBlocksAfterPeerSoftDeleted pins that
@@ -406,40 +440,45 @@ func TestEditIssue_LinksDelta_SetParent(t *testing.T) {
 // real and the user can still ask to clean it up; the peer's open/
 // closed/deleted state is irrelevant for addressing the link.
 func TestEditIssue_LinksDelta_RemoveBlocksAfterPeerSoftDeleted(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "peer"})
 	require.Equal(t, 200, resp.StatusCode)
+	peer := issueShortIDFromCreate(t, bs)
+	srcShortID := issueRefByID(t, h, src)
+	project, err := h.DB().ProjectByID(context.Background(), pid)
+	require.NoError(t, err)
 
-	// #1 blocks #2.
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	// src blocks peer.
+	resp, _ = patchJSON(t, ts, issueURL(pid, src, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"add_blocks": []int64{2}},
+		"links_delta": map[string]any{"add_blocks": []string{peer}},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	// Soft-delete #2.
-	delResp := postWithHeader(t, ts, issueURL(pid, 2, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #2"},
+	// Soft-delete peer.
+	delResp := postWithHeader(t, ts, issueURLRef(pid, peer, "actions/delete"),
+		map[string]string{"X-Kata-Confirm": "DELETE " + project.Name + "#" + peer},
 		map[string]any{"actor": "tester"})
 	require.Equalf(t, 200, delResp.status, "delete: %s", string(delResp.body))
 
-	// Now remove the link from #1's side. Without soft-delete-tolerance,
+	// Now remove the link from src's side. Without soft-delete-tolerance,
 	// the per-target lookup returned ErrNotFound and the remove silently
 	// no-op'd, leaving the link orphaned.
-	rmResp, rmBs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	rmResp, rmBs := patchJSON(t, ts, issueURLRef(pid, srcShortID, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_blocks": []int64{2}},
+		"links_delta": map[string]any{"remove_blocks": []string{peer}},
 	})
 	require.Equalf(t, 200, rmResp.StatusCode, "remove: %s", string(rmBs))
 	var out struct {
 		Changes struct {
-			BlocksRemoved []int64 `json:"blocks_removed"`
+			BlocksRemoved []linkPeerTest `json:"blocks_removed"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(rmBs, &out))
-	assert.Equal(t, []int64{2}, out.Changes.BlocksRemoved,
+	require.Len(t, out.Changes.BlocksRemoved, 1,
 		"the link to a soft-deleted peer must still be removable")
+	assert.Equal(t, peer, out.Changes.BlocksRemoved[0].ShortID)
 }
 
 // TestShowIssue_LinkPeerSoftDeletedReturns200 pins that GET on an
@@ -449,28 +488,32 @@ func TestEditIssue_LinksDelta_RemoveBlocksAfterPeerSoftDeleted(t *testing.T) {
 // promise explicit so a future regression can't silently reintroduce
 // a 500.
 func TestShowIssue_LinkPeerSoftDeletedReturns200(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "peer"})
 	require.Equal(t, 200, resp.StatusCode)
+	peer := issueShortIDFromCreate(t, bs)
+	srcShortID := issueRefByID(t, h, src)
+	project, err := h.DB().ProjectByID(context.Background(), pid)
+	require.NoError(t, err)
 
-	// #1 blocks #2.
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	// src blocks peer.
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcShortID, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"add_blocks": []int64{2}},
+		"links_delta": map[string]any{"add_blocks": []string{peer}},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	// Soft-delete #2.
-	delResp := postWithHeader(t, ts, issueURL(pid, 2, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #2"},
+	// Soft-delete peer.
+	delResp := postWithHeader(t, ts, issueURLRef(pid, peer, "actions/delete"),
+		map[string]string{"X-Kata-Confirm": "DELETE " + project.Name + "#" + peer},
 		map[string]any{"actor": "tester"})
 	require.Equalf(t, 200, delResp.status, "delete: %s", string(delResp.body))
 
-	// Show #1 — the surviving end. Must succeed (200) and surface the
-	// link to the soft-deleted peer; the peer's number rides on the
+	// Show src — the surviving end. Must succeed (200) and surface the
+	// link to the soft-deleted peer; the peer's short_id rides on the
 	// link row even though its issue row is hidden.
-	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	getResp, err := http.Get(ts.URL + issueURLRef(pid, srcShortID, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
 	defer func() { _ = getResp.Body.Close() }()
 	showBody, err := io.ReadAll(getResp.Body)
@@ -478,40 +521,46 @@ func TestShowIssue_LinkPeerSoftDeletedReturns200(t *testing.T) {
 	require.Equalf(t, 200, getResp.StatusCode, "show survivor must not 500: %s", string(showBody))
 	var out struct {
 		Issue struct {
-			Number int64 `json:"number"`
+			ShortID string `json:"short_id"`
 		} `json:"issue"`
 		Links []struct {
-			Type     string `json:"type"`
-			ToNumber int64  `json:"to_number"`
+			Type string       `json:"type"`
+			To   linkPeerTest `json:"to"`
 		} `json:"links"`
 	}
 	require.NoError(t, json.Unmarshal(showBody, &out))
-	assert.Equal(t, int64(1), out.Issue.Number)
+	assert.Equal(t, srcShortID, out.Issue.ShortID)
 	require.Len(t, out.Links, 1, "link to soft-deleted peer must still appear")
 	assert.Equal(t, "blocks", out.Links[0].Type)
-	assert.Equal(t, int64(2), out.Links[0].ToNumber)
+	assert.Equal(t, peer, out.Links[0].To.ShortID)
 }
 
 // TestShowIssue_ParentPeerSoftDeletedReturns200 pins the same property
 // for the parent slot: a child whose parent is soft-deleted must still
 // render through GET. Companion of the link-peer test above.
 func TestShowIssue_ParentPeerSoftDeletedReturns200(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	// #1 already exists. Make #2, set #2's parent to #1, then soft-delete #1.
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, par := bootstrapProjectWithIssue(t)
+	parRef := issueRefByID(t, h, par)
+	// Seeded issue acts as the future parent. Make a child issue, set its
+	// parent to the seeded one, then soft-delete the seeded one.
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "child"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = patchJSON(t, ts, issueURL(pid, 2, ""), map[string]any{
+	childRef := issueShortIDFromCreate(t, bs)
+	project, err := h.DB().ProjectByID(context.Background(), pid)
+	require.NoError(t, err)
+
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, childRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"set_parent": int64(1)},
+		"links_delta": map[string]any{"set_parent": parRef},
 	})
 	require.Equal(t, 200, resp.StatusCode)
-	delResp := postWithHeader(t, ts, issueURL(pid, 1, "actions/delete"),
-		map[string]string{"X-Kata-Confirm": "DELETE #1"},
+	delResp := postWithHeader(t, ts, issueURLRef(pid, parRef, "actions/delete"),
+		map[string]string{"X-Kata-Confirm": "DELETE " + project.Name + "#" + parRef},
 		map[string]any{"actor": "tester"})
 	require.Equalf(t, 200, delResp.status, "delete: %s", string(delResp.body))
 
-	getResp, err := http.Get(ts.URL + issueURL(pid, 2, "")) //nolint:gosec,noctx // test loopback
+	getResp, err := http.Get(ts.URL + issueURLRef(pid, childRef, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
 	defer func() { _ = getResp.Body.Close() }()
 	showBody, err := io.ReadAll(getResp.Body)
@@ -519,48 +568,49 @@ func TestShowIssue_ParentPeerSoftDeletedReturns200(t *testing.T) {
 	require.Equalf(t, 200, getResp.StatusCode, "child show must not 500 with soft-deleted parent: %s", string(showBody))
 	var out struct {
 		Parent *struct {
-			Number int64 `json:"number"`
+			ShortID string `json:"short_id"`
 		} `json:"parent"`
 	}
 	require.NoError(t, json.Unmarshal(showBody, &out))
 	require.NotNil(t, out.Parent, "soft-deleted parent must still surface in show")
-	assert.Equal(t, int64(1), out.Parent.Number)
+	assert.Equal(t, parRef, out.Parent.ShortID)
 }
 
 // TestEditIssue_LinksDelta_SetParent_RejectsCycle pins that set_parent
 // rejects an edit that would create a parent cycle. Builds a graph where
-// #2 is a descendant of #1 (#2's parent = #1) and asks #1 to set its
-// parent to #2; the edit must fail with 400 validation, leaving the
-// existing parent state untouched.
+// child's parent = src (so src is an ancestor of child) and asks src to
+// set its parent to child; the edit must fail with 400 validation, leaving
+// the existing parent state untouched.
 func TestEditIssue_LinksDelta_SetParent_RejectsCycle(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "child"})
 	require.Equal(t, 200, resp.StatusCode)
-	// #2's parent = #1 (so #1 is an ancestor of #2).
-	resp, _ = patchJSON(t, ts, issueURL(pid, 2, ""), map[string]any{
+	childRef := issueShortIDFromCreate(t, bs)
+	// child's parent = src.
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, childRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"set_parent": int64(1)},
+		"links_delta": map[string]any{"set_parent": srcRef},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	// Now ask #1 to set its parent to #2 — that would create the cycle
-	// #1 → #2 → #1.
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	// Now ask src to set its parent to child — that would create the cycle.
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"set_parent": int64(2)},
+		"links_delta": map[string]any{"set_parent": childRef},
 	})
 	assertAPIError(t, resp.StatusCode, bs, 400, "validation")
 
-	// #1 must still have no parent (rollback semantics).
-	getResp, err := http.Get(ts.URL + issueURL(pid, 1, "")) //nolint:gosec,noctx // test loopback
+	// src must still have no parent (rollback semantics).
+	getResp, err := http.Get(ts.URL + issueURLRef(pid, srcRef, "")) //nolint:gosec,noctx // test loopback
 	require.NoError(t, err)
 	defer func() { _ = getResp.Body.Close() }()
 	var show struct {
 		Parent any `json:"parent,omitempty"`
 	}
 	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&show))
-	assert.Nil(t, show.Parent, "#1's parent must remain unset after the cycle rejection")
+	assert.Nil(t, show.Parent, "src's parent must remain unset after the cycle rejection")
 }
 
 // TestEditIssue_LinksDelta_SetParent_ReplaceRecordsBoth pins that
@@ -569,94 +619,102 @@ func TestEditIssue_LinksDelta_SetParent_RejectsCycle(t *testing.T) {
 // of issue.links_changed and the digest accounting see a parent
 // replace as a pure add and lose track of the prior parent.
 func TestEditIssue_LinksDelta_SetParent_ReplaceRecordsBoth(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "old-parent"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = postJSON(t, ts, issuesURL(pid),
+	oldParent := issueShortIDFromCreate(t, bs)
+	resp, bs = postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "new-parent"})
 	require.Equal(t, 200, resp.StatusCode)
+	newParent := issueShortIDFromCreate(t, bs)
 
-	// Set #1's parent to #2.
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	// Set src's parent to oldParent.
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"set_parent": int64(2)},
+		"links_delta": map[string]any{"set_parent": oldParent},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	// Replace: set parent to #3. The change payload must list both #3
-	// (set) and #2 (removed).
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	// Replace: set parent to newParent. The change payload must list both
+	// newParent (set) and oldParent (removed).
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"set_parent": int64(3)},
+		"links_delta": map[string]any{"set_parent": newParent},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			ParentSet     *int64 `json:"parent_set"`
-			ParentRemoved *int64 `json:"parent_removed"`
+			ParentSet     *linkPeerTest `json:"parent_set"`
+			ParentRemoved *linkPeerTest `json:"parent_removed"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
 	require.NotNil(t, out.Changes.ParentSet, "parent_set must be present on replace")
-	assert.Equal(t, int64(3), *out.Changes.ParentSet)
+	assert.Equal(t, newParent, out.Changes.ParentSet.ShortID)
 	require.NotNil(t, out.Changes.ParentRemoved, "parent_removed must be present on replace")
-	assert.Equal(t, int64(2), *out.Changes.ParentRemoved)
+	assert.Equal(t, oldParent, out.Changes.ParentRemoved.ShortID)
 }
 
 // TestEditIssue_LinksDelta_RemoveParent_StrictSuccess removes the parent
 // link when the asserted current parent matches reality.
 func TestEditIssue_LinksDelta_RemoveParent_StrictSuccess(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "parent"})
 	require.Equal(t, 200, resp.StatusCode)
-	// Set issue 1's parent to 2 first.
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	parentRef := issueShortIDFromCreate(t, bs)
+	// Set src's parent to parentRef first.
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"set_parent": int64(2)},
+		"links_delta": map[string]any{"set_parent": parentRef},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	// Remove asserting #2. Must succeed.
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	// Remove asserting parentRef. Must succeed.
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_parent": int64(2)},
+		"links_delta": map[string]any{"remove_parent": parentRef},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			ParentRemoved *int64 `json:"parent_removed"`
+			ParentRemoved *linkPeerTest `json:"parent_removed"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
 	require.NotNil(t, out.Changes.ParentRemoved)
-	assert.Equal(t, int64(2), *out.Changes.ParentRemoved)
+	assert.Equal(t, parentRef, out.Changes.ParentRemoved.ShortID)
 }
 
 // TestEditIssue_LinksDelta_RemoveParent_MismatchIs409 fails loudly when the
 // asserted parent does not match the current parent. This is the optimistic-
 // concurrency safety check that protects agents acting on stale state.
 func TestEditIssue_LinksDelta_RemoveParent_MismatchIs409(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "parent"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = postJSON(t, ts, issuesURL(pid),
+	parentRef := issueShortIDFromCreate(t, bs)
+	resp, bs = postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "wrong-parent"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	wrongRef := issueShortIDFromCreate(t, bs)
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"set_parent": int64(2)},
+		"links_delta": map[string]any{"set_parent": parentRef},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	// Assert #3 even though current parent is #2 → 409.
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	// Assert wrongRef even though current parent is parentRef → 409.
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_parent": int64(3)},
+		"links_delta": map[string]any{"remove_parent": wrongRef},
 	})
 	assertAPIError(t, resp.StatusCode, bs, 409, "parent_mismatch")
 }
@@ -665,29 +723,32 @@ func TestEditIssue_LinksDelta_RemoveParent_MismatchIs409(t *testing.T) {
 // URL issue to the target. Idempotent: removing a missing link is a no-op
 // (handled by a separate test).
 func TestEditIssue_LinksDelta_RemoveBlocks(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "blocked"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	target := issueShortIDFromCreate(t, bs)
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"add_blocks": []int64{2}},
+		"links_delta": map[string]any{"add_blocks": []string{target}},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_blocks": []int64{2}},
+		"links_delta": map[string]any{"remove_blocks": []string{target}},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			BlocksRemoved []int64 `json:"blocks_removed"`
+			BlocksRemoved []linkPeerTest `json:"blocks_removed"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
-	assert.Equal(t, []int64{2}, out.Changes.BlocksRemoved)
+	require.Len(t, out.Changes.BlocksRemoved, 1)
+	assert.Equal(t, target, out.Changes.BlocksRemoved[0].ShortID)
 }
 
 // TestEditIssue_LinksDelta_RemoveBlocks_NonexistentTargetIsNoop pins
@@ -700,17 +761,18 @@ func TestEditIssue_LinksDelta_RemoveBlocks(t *testing.T) {
 // semantics; that path asserts a fact about the current parent and
 // is covered by the parent-mismatch test elsewhere.
 func TestEditIssue_LinksDelta_RemoveBlocks_NonexistentTargetIsNoop(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs := patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_blocks": []int64{99}},
+		"links_delta": map[string]any{"remove_blocks": []string{"zzzz"}},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "remove against missing target must succeed: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			BlocksRemoved []int64 `json:"blocks_removed"`
+			BlocksRemoved []linkPeerTest `json:"blocks_removed"`
 		} `json:"changes"`
 		Changed bool `json:"changed"`
 	}
@@ -722,20 +784,22 @@ func TestEditIssue_LinksDelta_RemoveBlocks_NonexistentTargetIsNoop(t *testing.T)
 // TestEditIssue_LinksDelta_RemoveBlocks_IdempotentNoop succeeds and reports
 // no changes when the link doesn't exist.
 func TestEditIssue_LinksDelta_RemoveBlocks_IdempotentNoop(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "other"})
 	require.Equal(t, 200, resp.StatusCode)
+	other := issueShortIDFromCreate(t, bs)
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_blocks": []int64{2}},
+		"links_delta": map[string]any{"remove_blocks": []string{other}},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			BlocksRemoved []int64 `json:"blocks_removed"`
+			BlocksRemoved []linkPeerTest `json:"blocks_removed"`
 		} `json:"changes"`
 		Changed bool `json:"changed"`
 	}
@@ -747,57 +811,63 @@ func TestEditIssue_LinksDelta_RemoveBlocks_IdempotentNoop(t *testing.T) {
 // TestEditIssue_LinksDelta_RemoveBlockedBy removes the inverse-direction
 // link: a `blocks` link FROM the target TO the URL issue.
 func TestEditIssue_LinksDelta_RemoveBlockedBy(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "blocker"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	blocker := issueShortIDFromCreate(t, bs)
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"add_blocked_by": []int64{2}},
+		"links_delta": map[string]any{"add_blocked_by": []string{blocker}},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_blocked_by": []int64{2}},
+		"links_delta": map[string]any{"remove_blocked_by": []string{blocker}},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			BlockedByRemoved []int64 `json:"blocked_by_removed"`
+			BlockedByRemoved []linkPeerTest `json:"blocked_by_removed"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
-	assert.Equal(t, []int64{2}, out.Changes.BlockedByRemoved)
+	require.Len(t, out.Changes.BlockedByRemoved, 1)
+	assert.Equal(t, blocker, out.Changes.BlockedByRemoved[0].ShortID)
 }
 
 // TestEditIssue_LinksDelta_RemoveRelated removes a related link.
 // Storage canonicalization is invisible to the caller.
 func TestEditIssue_LinksDelta_RemoveRelated(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "other"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	other := issueShortIDFromCreate(t, bs)
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"add_related": []int64{2}},
+		"links_delta": map[string]any{"add_related": []string{other}},
 	})
 	require.Equal(t, 200, resp.StatusCode)
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":       "tester",
-		"links_delta": map[string]any{"remove_related": []int64{2}},
+		"links_delta": map[string]any{"remove_related": []string{other}},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
 	var out struct {
 		Changes struct {
-			RelatedRemoved []int64 `json:"related_removed"`
+			RelatedRemoved []linkPeerTest `json:"related_removed"`
 		} `json:"changes"`
 	}
 	require.NoError(t, json.Unmarshal(bs, &out))
-	assert.Equal(t, []int64{2}, out.Changes.RelatedRemoved)
+	require.Len(t, out.Changes.RelatedRemoved, 1)
+	assert.Equal(t, other, out.Changes.RelatedRemoved[0].ShortID)
 }
 
 // TestEditIssue_LinksDelta_ConflictAddRemoveSameTarget rejects a delta that
@@ -943,25 +1013,27 @@ func TestEditIssue_FieldsUnchanged_NoOp(t *testing.T) {
 
 // TestEditIssue_AggregatedEvent_PayloadCarriesUIDs pins that the
 // aggregated payload includes stable UIDs for every referenced peer in
-// addition to the user-friendly numbers. UIDs are required for the
-// purge cleanup query to identify peers safely after a project's number
-// sequence has been reset (numbers can collide across resets; UIDs
-// cannot).
+// addition to the user-friendly short_ids. UIDs are required so events
+// remain meaningful after a federation merge re-extends a peer's
+// short_id; UIDs cannot collide.
 func TestEditIssue_AggregatedEvent_PayloadCarriesUIDs(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "parent"})
 	require.Equal(t, 200, resp.StatusCode)
-	resp, _ = postJSON(t, ts, issuesURL(pid),
+	parentRef := issueShortIDFromCreate(t, bs)
+	resp, bs = postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "block-target"})
 	require.Equal(t, 200, resp.StatusCode)
+	blockTarget := issueShortIDFromCreate(t, bs)
 
 	cursor := highestEventID(t, ts, pid)
-	resp, _ = patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, _ = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor": "tester",
 		"links_delta": map[string]any{
-			"set_parent": int64(2),
-			"add_blocks": []int64{3},
+			"set_parent": parentRef,
+			"add_blocks": []string{blockTarget},
 		},
 	})
 	require.Equal(t, 200, resp.StatusCode)
@@ -973,10 +1045,10 @@ func TestEditIssue_AggregatedEvent_PayloadCarriesUIDs(t *testing.T) {
 			continue
 		}
 		payload := e.PayloadString()
-		// Both UID fields must be present alongside the numeric forms.
-		assert.Contains(t, payload, `"parent_set":2`)
+		// Both short_id and UID fields must be present.
+		assert.Contains(t, payload, `"parent_set":"`+parentRef+`"`)
 		assert.Contains(t, payload, `"parent_set_uid":`)
-		assert.Contains(t, payload, `"blocks_added":[3]`)
+		assert.Contains(t, payload, `"blocks_added":["`+blockTarget+`"]`)
 		assert.Contains(t, payload, `"blocks_added_uids":[`)
 		sawUIDs = true
 	}
@@ -991,15 +1063,17 @@ func TestEditIssue_AggregatedEvent_PayloadCarriesUIDs(t *testing.T) {
 // `events: []` with every emitted event in order; `event` is retained
 // pointing at the final entry as a back-compat alias.
 func TestEditIssue_Response_ExposesAllEvents(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
-	resp, _ := postJSON(t, ts, issuesURL(pid),
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "tester", "title": "target"})
 	require.Equal(t, 200, resp.StatusCode)
+	target := issueShortIDFromCreate(t, bs)
 
-	resp, bs := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, bs = patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor":        "tester",
 		"set_priority": int64(1),
-		"links_delta":  map[string]any{"add_blocks": []int64{2}},
+		"links_delta":  map[string]any{"add_blocks": []string{target}},
 	})
 	require.Equalf(t, 200, resp.StatusCode, "patch: %s", string(bs))
 
@@ -1029,23 +1103,26 @@ func TestEditIssue_Response_ExposesAllEvents(t *testing.T) {
 // multiple link mutations produces exactly one issue.links_changed event
 // (not one event per link). The payload lists every applied add and remove.
 func TestEditIssue_AggregatedEvent_OnePerEdit(t *testing.T) {
-	_, ts, pid, _ := bootstrapProjectWithIssue(t)
+	h, ts, pid, src := bootstrapProjectWithIssue(t)
+	srcRef := issueRefByID(t, h, src)
+	refs := make([]string, 0, 4)
 	for i := 0; i < 4; i++ {
-		resp, _ := postJSON(t, ts, issuesURL(pid),
+		resp, bs := postJSON(t, ts, issuesURL(pid),
 			map[string]any{"actor": "tester", "title": fmt.Sprintf("t%d", i)})
 		require.Equal(t, 200, resp.StatusCode)
+		refs = append(refs, issueShortIDFromCreate(t, bs))
 	}
 
 	// Snapshot the highest-known event ID before the PATCH so we can read
 	// only the events emitted by the edit under test.
 	cursorBefore := highestEventID(t, ts, pid)
 
-	resp, _ := patchJSON(t, ts, issueURL(pid, 1, ""), map[string]any{
+	resp, _ := patchJSON(t, ts, issueURLRef(pid, srcRef, ""), map[string]any{
 		"actor": "tester",
 		"links_delta": map[string]any{
-			"add_blocks":     []int64{2, 3},
-			"add_blocked_by": []int64{4},
-			"add_related":    []int64{5},
+			"add_blocks":     []string{refs[0], refs[1]},
+			"add_blocked_by": []string{refs[2]},
+			"add_related":    []string{refs[3]},
 		},
 	})
 	require.Equal(t, 200, resp.StatusCode)
@@ -1058,9 +1135,9 @@ func TestEditIssue_AggregatedEvent_OnePerEdit(t *testing.T) {
 		case "issue.links_changed":
 			sawAggregated = true
 			payload := e.PayloadString()
-			assert.Contains(t, payload, `"blocks_added":[2,3]`)
-			assert.Contains(t, payload, `"blocked_by_added":[4]`)
-			assert.Contains(t, payload, `"related_added":[5]`)
+			assert.Contains(t, payload, `"blocks_added":["`+refs[0]+`","`+refs[1]+`"]`)
+			assert.Contains(t, payload, `"blocked_by_added":["`+refs[2]+`"]`)
+			assert.Contains(t, payload, `"related_added":["`+refs[3]+`"]`)
 		case "issue.linked", "issue.unlinked":
 			linkEventCount++
 		}
@@ -1163,11 +1240,12 @@ func TestEditIssue_BlankActorIs400(t *testing.T) {
 func TestCreateIssue_WithInitialState(t *testing.T) {
 	env := testenv.New(t)
 	pid, parent, _ := setupTwoIssues(t, env)
+	parentRef := refForIssue(t, env, parent)
 
 	var out struct {
 		Issue struct {
-			Number int64   `json:"number"`
-			Owner  *string `json:"owner"`
+			ShortID string  `json:"short_id"`
+			Owner   *string `json:"owner"`
 		} `json:"issue"`
 		Event struct {
 			Type    string `json:"type"`
@@ -1179,7 +1257,7 @@ func TestCreateIssue_WithInitialState(t *testing.T) {
 		"title":  "child",
 		"owner":  "alice",
 		"labels": []string{"bug", "needs-review"},
-		"links":  []map[string]any{{"type": "parent", "to_number": parent}},
+		"links":  []map[string]any{{"type": "parent", "to_ref": parentRef}},
 	}, &out)
 	require.NotNil(t, out.Issue.Owner)
 	assert.Equal(t, "alice", *out.Issue.Owner)
@@ -1194,7 +1272,7 @@ func TestCreateIssue_InitialLinkToMissingTargetIs404(t *testing.T) {
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
 	resp, _ := envDoRaw(t, env, http.MethodPost, projectPath(pid)+"/issues", map[string]any{
 		"actor": "tester", "title": "child",
-		"links": []map[string]any{{"type": "parent", "to_number": 99}},
+		"links": []map[string]any{{"type": "parent", "to_ref": "zzzz"}},
 	}, nil)
 	assert.Equal(t, 404, resp.StatusCode)
 }
@@ -1309,19 +1387,23 @@ func TestCreate_IdempotencyMismatch(t *testing.T) {
 		map[string]any{"actor": "agent-1", "title": "different title", "body": "different body"})
 	require.Equal(t, 409, second.status, string(second.body))
 	assert.Contains(t, string(second.body), `"code":"idempotency_mismatch"`)
-	// Decode the response and pin the original_issue_number echo so a future
-	// regression that drops the data field surfaces immediately. The wire
-	// envelope is {status, error: {code, message, data: {...}}}.
+	// Decode the response and pin the short_id echo so a future regression
+	// that drops the data field surfaces immediately. The wire envelope is
+	// {status, error: {code, message, data: {...}}}.
 	var errBody struct {
 		Error struct {
 			Data struct {
-				OriginalIssueNumber int64 `json:"original_issue_number"`
+				ShortID     string `json:"short_id"`
+				UID         string `json:"uid"`
+				QualifiedID string `json:"qualified_id"`
 			} `json:"data"`
 		} `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(second.body, &errBody), string(second.body))
-	assert.EqualValues(t, 1, errBody.Error.Data.OriginalIssueNumber,
-		"mismatch payload must echo the original issue's number")
+	assert.NotEmpty(t, errBody.Error.Data.ShortID,
+		"mismatch payload must echo the original issue's short_id")
+	assert.NotEmpty(t, errBody.Error.Data.UID, "mismatch payload must echo UID")
+	assert.NotEmpty(t, errBody.Error.Data.QualifiedID, "mismatch payload must echo qualified_id")
 }
 
 // TestCreate_IdempotencyMismatchOnPriorityChange verifies that reusing the
@@ -1398,7 +1480,10 @@ func TestCreate_IdempotencyDeletedIs409(t *testing.T) {
 		map[string]any{"actor": "agent-1", "title": "soft delete me", "body": "details"})
 	require.Equal(t, 409, second.status, string(second.body))
 	assert.Contains(t, string(second.body), `"code":"idempotency_deleted"`)
-	assert.Contains(t, string(second.body), `kata restore 1`,
+	// Look up the original issue's short_id to pin the hint format.
+	deletedIssue, err := h.DB().IssueByID(context.Background(), firstResp.Issue.ID)
+	require.NoError(t, err)
+	assert.Contains(t, string(second.body), "kata restore "+deletedIssue.ShortID,
 		"hint must point at the restore command")
 }
 
@@ -1430,15 +1515,21 @@ func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
 	first := postWithHeader(t, ts, path, nil,
 		map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"})
 	requireOK(t, first)
+	var firstOut struct {
+		Issue struct{ ShortID string `json:"short_id"` } `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(first.body, &firstOut))
 
 	second := postWithHeader(t, ts, path, nil,
 		map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here", "force_new": true})
 	requireOK(t, second)
 	var out struct {
-		Issue struct{ Number int64 } `json:"issue"`
+		Issue struct{ ShortID string `json:"short_id"` } `json:"issue"`
 	}
 	require.NoError(t, json.Unmarshal(second.body, &out))
-	assert.EqualValues(t, 2, out.Issue.Number, "force_new must yield a new issue, not reuse")
+	assert.NotEmpty(t, out.Issue.ShortID, "force_new response must carry a short_id")
+	assert.NotEqual(t, firstOut.Issue.ShortID, out.Issue.ShortID,
+		"force_new must yield a new issue, not reuse")
 }
 
 // TestCreate_IdempotencyWinsOverForceNew verifies the spec §3.7 ordering: an
@@ -1483,20 +1574,22 @@ func TestListIssues_HydratesLabels(t *testing.T) {
 	postLabel(t, env, pid, first, "bug")
 	postLabel(t, env, pid, second, "enhancement")
 
+	firstShort := refForIssue(t, env, first)
+	secondShort := refForIssue(t, env, second)
 	var out struct {
 		Issues []struct {
-			Number int64    `json:"number"`
-			Labels []string `json:"labels"`
+			ShortID string   `json:"short_id"`
+			Labels  []string `json:"labels"`
 		} `json:"issues"`
 	}
 	envGetJSON(t, env, projectPath(pid)+"/issues", &out)
 	require.Len(t, out.Issues, 2)
-	byNumber := map[int64][]string{}
+	byShort := map[string][]string{}
 	for _, iss := range out.Issues {
-		byNumber[iss.Number] = iss.Labels
+		byShort[iss.ShortID] = iss.Labels
 	}
-	assert.Equal(t, []string{"bug", "prio-1"}, byNumber[first])
-	assert.Equal(t, []string{"enhancement"}, byNumber[second])
+	assert.Equal(t, []string{"bug", "prio-1"}, byShort[firstShort])
+	assert.Equal(t, []string{"enhancement"}, byShort[secondShort])
 }
 
 func TestListIssues_IncludesHierarchyMetadata(t *testing.T) {
@@ -1505,12 +1598,14 @@ func TestListIssues_IncludesHierarchyMetadata(t *testing.T) {
 	parent := createIssueViaHTTP(t, env, pid, "parent")
 	child := createIssueViaHTTP(t, env, pid, "child")
 	postLink(t, env, pid, child, "parent", parent)
+	parentShort := refForIssue(t, env, parent)
+	childShort := refForIssue(t, env, child)
 
 	var out struct {
 		Issues []struct {
-			Number       int64  `json:"number"`
-			ParentNumber *int64 `json:"parent_number"`
-			ChildCounts  *struct {
+			ShortID       string  `json:"short_id"`
+			ParentShortID *string `json:"parent_short_id"`
+			ChildCounts   *struct {
 				Open  int `json:"open"`
 				Total int `json:"total"`
 			} `json:"child_counts"`
@@ -1518,27 +1613,27 @@ func TestListIssues_IncludesHierarchyMetadata(t *testing.T) {
 	}
 	envGetJSON(t, env, projectPath(pid)+"/issues", &out)
 	require.Len(t, out.Issues, 2)
-	byNumber := map[int64]struct {
-		ParentNumber *int64
-		ChildCounts  *struct {
+	byShort := map[string]struct {
+		ParentShortID *string
+		ChildCounts   *struct {
 			Open  int `json:"open"`
 			Total int `json:"total"`
 		}
 	}{}
 	for _, iss := range out.Issues {
-		byNumber[iss.Number] = struct {
-			ParentNumber *int64
-			ChildCounts  *struct {
+		byShort[iss.ShortID] = struct {
+			ParentShortID *string
+			ChildCounts   *struct {
 				Open  int `json:"open"`
 				Total int `json:"total"`
 			}
-		}{ParentNumber: iss.ParentNumber, ChildCounts: iss.ChildCounts}
+		}{ParentShortID: iss.ParentShortID, ChildCounts: iss.ChildCounts}
 	}
-	require.NotNil(t, byNumber[parent].ChildCounts)
-	assert.Equal(t, 1, byNumber[parent].ChildCounts.Open)
-	assert.Equal(t, 1, byNumber[parent].ChildCounts.Total)
-	require.NotNil(t, byNumber[child].ParentNumber)
-	assert.Equal(t, parent, *byNumber[child].ParentNumber)
+	require.NotNil(t, byShort[parentShort].ChildCounts)
+	assert.Equal(t, 1, byShort[parentShort].ChildCounts.Open)
+	assert.Equal(t, 1, byShort[parentShort].ChildCounts.Total)
+	require.NotNil(t, byShort[childShort].ParentShortID)
+	assert.Equal(t, parentShort, *byShort[childShort].ParentShortID)
 }
 
 func TestListIssues_IncludesBlockerMetadata(t *testing.T) {
@@ -1547,20 +1642,23 @@ func TestListIssues_IncludesBlockerMetadata(t *testing.T) {
 	blocker := createIssueViaHTTP(t, env, pid, "blocker")
 	blocked := createIssueViaHTTP(t, env, pid, "blocked")
 	postLink(t, env, pid, blocker, "blocks", blocked)
+	blockerShort := refForIssue(t, env, blocker)
+	blockedShort := refForIssue(t, env, blocked)
 
 	var out struct {
 		Issues []struct {
-			Number int64   `json:"number"`
-			Blocks []int64 `json:"blocks,omitempty"`
+			ShortID string         `json:"short_id"`
+			Blocks  []linkPeerTest `json:"blocks,omitempty"`
 		} `json:"issues"`
 	}
 	envGetJSON(t, env, projectPath(pid)+"/issues", &out)
-	byNumber := map[int64][]int64{}
+	byShort := map[string][]linkPeerTest{}
 	for _, iss := range out.Issues {
-		byNumber[iss.Number] = iss.Blocks
+		byShort[iss.ShortID] = iss.Blocks
 	}
-	assert.Equal(t, []int64{blocked}, byNumber[blocker])
-	assert.Empty(t, byNumber[blocked])
+	require.Len(t, byShort[blockerShort], 1)
+	assert.Equal(t, blockedShort, byShort[blockerShort][0].ShortID)
+	assert.Empty(t, byShort[blockedShort])
 }
 
 // TestListAllIssues_AcrossProjects pins #22's wire contract: GET /api/v1/issues
@@ -1631,24 +1729,26 @@ func TestListAllIssues_HydratesLabelsAcrossProjects(t *testing.T) {
 	b1 := createIssueViaHTTP(t, env, pidB, "beta-1")
 	postLabel(t, env, pidA, a1, "bug")
 	postLabel(t, env, pidB, b1, "enhancement")
+	a1Short := refForIssue(t, env, a1)
+	b1Short := refForIssue(t, env, b1)
 
 	var out struct {
 		Issues []struct {
 			ProjectID int64    `json:"project_id"`
-			Number    int64    `json:"number"`
+			ShortID   string   `json:"short_id"`
 			Labels    []string `json:"labels"`
 		} `json:"issues"`
 	}
 	envGetJSON(t, env, "/api/v1/issues", &out)
 	labelsByKey := map[string][]string{}
 	for _, iss := range out.Issues {
-		key := strconv.FormatInt(iss.ProjectID, 10) + "/" + strconv.FormatInt(iss.Number, 10)
+		key := strconv.FormatInt(iss.ProjectID, 10) + "/" + iss.ShortID
 		labelsByKey[key] = iss.Labels
 	}
 	assert.Equal(t, []string{"bug"},
-		labelsByKey[strconv.FormatInt(pidA, 10)+"/"+strconv.FormatInt(a1, 10)])
+		labelsByKey[strconv.FormatInt(pidA, 10)+"/"+a1Short])
 	assert.Equal(t, []string{"enhancement"},
-		labelsByKey[strconv.FormatInt(pidB, 10)+"/"+strconv.FormatInt(b1, 10)])
+		labelsByKey[strconv.FormatInt(pidB, 10)+"/"+b1Short])
 }
 
 func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
@@ -1656,12 +1756,14 @@ func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	pid, parent, child := setupTwoIssues(t, env)
 	postLabel(t, env, pid, child, "bug")
 	postLink(t, env, pid, child, "parent", parent)
+	parentShort := refForIssue(t, env, parent)
+	childShort := refForIssue(t, env, child)
 
 	var out struct {
 		Links []struct {
-			Type       string `json:"type"`
-			FromNumber int64  `json:"from_number"`
-			ToNumber   int64  `json:"to_number"`
+			Type string       `json:"type"`
+			From linkPeerTest `json:"from"`
+			To   linkPeerTest `json:"to"`
 		} `json:"links"`
 		Labels []struct {
 			Label string `json:"label"`
@@ -1670,8 +1772,8 @@ func TestShowIssue_IncludesLinksAndLabels(t *testing.T) {
 	envGetJSON(t, env, issuePath(pid, child, ""), &out)
 	require.Len(t, out.Links, 1)
 	assert.Equal(t, "parent", out.Links[0].Type)
-	assert.Equal(t, child, out.Links[0].FromNumber)
-	assert.Equal(t, parent, out.Links[0].ToNumber)
+	assert.Equal(t, childShort, out.Links[0].From.ShortID)
+	assert.Equal(t, parentShort, out.Links[0].To.ShortID)
 	require.Len(t, out.Labels, 1)
 	assert.Equal(t, "bug", out.Labels[0].Label)
 }
@@ -1687,15 +1789,17 @@ func TestShowIssue_IncludesParentAndChildren(t *testing.T) {
 	postLink(t, env, pid, grandchild, "parent", child)
 	postLink(t, env, pid, greatGrandchild, "parent", grandchild)
 	postLabel(t, env, pid, grandchild, "bug")
+	parentShort := refForIssue(t, env, parent)
+	grandchildShort := refForIssue(t, env, grandchild)
 
 	var out struct {
 		Parent *struct {
-			Number int64  `json:"number"`
-			Title  string `json:"title"`
-			Status string `json:"status"`
+			ShortID string `json:"short_id"`
+			Title   string `json:"title"`
+			Status  string `json:"status"`
 		} `json:"parent"`
 		Children []struct {
-			Number      int64    `json:"number"`
+			ShortID     string   `json:"short_id"`
 			Labels      []string `json:"labels"`
 			ChildCounts *struct {
 				Open  int `json:"open"`
@@ -1705,11 +1809,11 @@ func TestShowIssue_IncludesParentAndChildren(t *testing.T) {
 	}
 	envGetJSON(t, env, issuePath(pid, child, ""), &out)
 	require.NotNil(t, out.Parent)
-	assert.Equal(t, parent, out.Parent.Number)
+	assert.Equal(t, parentShort, out.Parent.ShortID)
 	assert.Equal(t, "parent", out.Parent.Title)
 	assert.Equal(t, "open", out.Parent.Status)
 	require.Len(t, out.Children, 1)
-	assert.Equal(t, grandchild, out.Children[0].Number)
+	assert.Equal(t, grandchildShort, out.Children[0].ShortID)
 	assert.Equal(t, []string{"bug"}, out.Children[0].Labels)
 	require.NotNil(t, out.Children[0].ChildCounts)
 	assert.Equal(t, 1, out.Children[0].ChildCounts.Open)

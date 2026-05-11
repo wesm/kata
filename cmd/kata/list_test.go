@@ -1,11 +1,34 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestList_OutputsShortIDNotNumber pins the JSON wire shape: each issue
+// row carries short_id and qualified_id; the legacy `number` field is gone.
+func TestList_OutputsShortIDNotNumber(t *testing.T) {
+	f := newCLIFixture(t)
+	createIssueViaHTTP(t, f.env, f.dir, "first")
+
+	require.NoError(t, f.execute("--json", "list"))
+	var got struct {
+		Issues []map[string]any `json:"issues"`
+	}
+	require.NoError(t, json.Unmarshal(f.buf.Bytes(), &got))
+	require.NotEmpty(t, got.Issues)
+	first := got.Issues[0]
+	_, hasShort := first["short_id"]
+	_, hasQualified := first["qualified_id"]
+	_, hasNumber := first["number"]
+	assert.True(t, hasShort, "short_id missing from list row: %v", first)
+	assert.True(t, hasQualified, "qualified_id missing from list row: %v", first)
+	assert.False(t, hasNumber, "number still present in list row: %v", first)
+}
 
 func TestList_DefaultsToOpenIssuesInProject(t *testing.T) {
 	env, dir, pid := setupCLIWorkspace(t)

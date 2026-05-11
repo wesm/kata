@@ -117,6 +117,28 @@ func fillLinksDeltaParams(ctx context.Context, store *db.DB, projectID int64, d 
 		}
 		return ids, nil
 	}
+	// resolveSliceTolerant is the idempotent-remove variant: misses
+	// (issue_not_found) are silently dropped instead of surfacing 404.
+	// The desired end state — "no link from this issue to N" — already
+	// holds when there is no N at all, so the remove is a no-op.
+	resolveSliceTolerant := func(refs []string, include db.IncludeDeleted) ([]int64, error) {
+		if len(refs) == 0 {
+			return nil, nil
+		}
+		ids := make([]int64, 0, len(refs))
+		for _, r := range refs {
+			id, err := resolve(r, include)
+			if err != nil {
+				var ae *api.APIError
+				if errors.As(err, &ae) && ae.Status == 404 {
+					continue
+				}
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		return ids, nil
+	}
 	if d.SetParent != nil {
 		id, err := resolve(*d.SetParent, db.IncludeDeletedNo)
 		if err != nil {
@@ -143,13 +165,13 @@ func fillLinksDeltaParams(ctx context.Context, store *db.DB, projectID int64, d 
 	if params.AddRelated, err = resolveSlice(d.AddRelated, db.IncludeDeletedNo); err != nil {
 		return err
 	}
-	if params.RemoveBlocks, err = resolveSlice(d.RemoveBlocks, db.IncludeDeletedYes); err != nil {
+	if params.RemoveBlocks, err = resolveSliceTolerant(d.RemoveBlocks, db.IncludeDeletedYes); err != nil {
 		return err
 	}
-	if params.RemoveBlockedBy, err = resolveSlice(d.RemoveBlockedBy, db.IncludeDeletedYes); err != nil {
+	if params.RemoveBlockedBy, err = resolveSliceTolerant(d.RemoveBlockedBy, db.IncludeDeletedYes); err != nil {
 		return err
 	}
-	if params.RemoveRelated, err = resolveSlice(d.RemoveRelated, db.IncludeDeletedYes); err != nil {
+	if params.RemoveRelated, err = resolveSliceTolerant(d.RemoveRelated, db.IncludeDeletedYes); err != nil {
 		return err
 	}
 	return nil

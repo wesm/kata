@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,15 +11,41 @@ import (
 
 func TestDigest_HumanRender(t *testing.T) {
 	f := newCLIFixture(t)
-	createIssueViaHTTP(t, f.env, f.dir, "first")
-	createIssueViaHTTP(t, f.env, f.dir, "second")
+	first := createIssueViaHTTP(t, f.env, f.dir, "first")
+	second := createIssueViaHTTP(t, f.env, f.dir, "second")
 
 	require.NoError(t, f.execute("digest", "--since", "1h"))
 	out := f.buf.String()
 	assert.Contains(t, out, "digest ")
 	assert.Contains(t, out, "created=2")
-	assert.Contains(t, out, "#1")
+	// Each issue should appear by its short_id (not a numeric ref).
+	assert.Contains(t, out, first)
+	assert.Contains(t, out, second)
 	assert.Contains(t, out, "created")
+}
+
+// TestDigest_OutputShape pins the JSON wire shape: per-issue rows carry
+// issue_short_id and issue_uid; the legacy issue_number field is gone.
+func TestDigest_OutputShape(t *testing.T) {
+	f := newCLIFixture(t)
+	createIssueViaHTTP(t, f.env, f.dir, "alpha")
+
+	require.NoError(t, f.execute("--json", "digest", "--since", "1h"))
+	var got struct {
+		Actors []struct {
+			Issues []map[string]any `json:"issues"`
+		} `json:"actors"`
+	}
+	require.NoError(t, json.Unmarshal(f.buf.Bytes(), &got))
+	require.NotEmpty(t, got.Actors)
+	require.NotEmpty(t, got.Actors[0].Issues)
+	row := got.Actors[0].Issues[0]
+	_, hasShort := row["issue_short_id"]
+	_, hasUID := row["issue_uid"]
+	_, hasNumber := row["issue_number"]
+	assert.True(t, hasShort, "issue_short_id missing from digest row: %v", row)
+	assert.True(t, hasUID, "issue_uid missing from digest row: %v", row)
+	assert.False(t, hasNumber, "issue_number still present in digest row: %v", row)
 }
 
 func TestDigest_RejectsBadSince(t *testing.T) {

@@ -212,6 +212,17 @@ func createIssueAs(t *testing.T, env *testenv.Env, projectID int64, actor, title
 	return out.Issue.ID
 }
 
+// refForIssue returns an issue's short_id given its row id. Used in tests that
+// build raw POST/DELETE payloads where the daemon expects to_ref / from_ref to
+// carry a short_id (or qualified short_id / ULID).
+func refForIssue(t *testing.T, env *testenv.Env, issueID int64) string {
+	t.Helper()
+	iss, err := env.DB.IssueByID(context.Background(), issueID)
+	require.NoError(t, err)
+	require.NotEmpty(t, iss.ShortID, "issue %d has no short_id", issueID)
+	return iss.ShortID
+}
+
 // postCommentAs posts a comment attributed to actor.
 func postCommentAs(t *testing.T, env *testenv.Env, projectID, issueNumber int64, actor, body string) {
 	t.Helper()
@@ -229,7 +240,7 @@ func closeIssueAs(t *testing.T, env *testenv.Env, projectID, issueNumber int64, 
 // labelResp is the decoded shape of an AddLabelResponse body.
 type labelResp struct {
 	Issue struct {
-		Number int64 `json:"number"`
+		ShortID string `json:"short_id"`
 	} `json:"issue"`
 	Label struct {
 		Label string `json:"label"`
@@ -279,15 +290,19 @@ func deleteLabelAs(t *testing.T, env *testenv.Env, projectID, issueNumber int64,
 // other paths leave them nil.
 type linkResp struct {
 	Issue struct {
-		Number int64 `json:"number"`
+		ShortID string `json:"short_id"`
 	} `json:"issue"`
 	Link struct {
-		ID           int64  `json:"id"`
-		Type         string `json:"type"`
-		FromNumber   int64  `json:"from_number"`
-		FromIssueUID string `json:"from_issue_uid"`
-		ToNumber     int64  `json:"to_number"`
-		ToIssueUID   string `json:"to_issue_uid"`
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
+		From struct {
+			UID     string `json:"uid"`
+			ShortID string `json:"short_id"`
+		} `json:"from"`
+		To struct {
+			UID     string `json:"uid"`
+			ShortID string `json:"short_id"`
+		} `json:"to"`
 	} `json:"link"`
 	Event *struct {
 		Type            string  `json:"type"`

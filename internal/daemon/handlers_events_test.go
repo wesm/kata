@@ -590,13 +590,13 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 	env := testenv.New(t)
 	pid := mkProject(t, env, "github.com/test/a", "a")
-	mkIssue(t, env, pid, "first")  // #1, will be initial parent
-	mkIssue(t, env, pid, "second") // #2, will be replacement parent
-	mkIssue(t, env, pid, "child")  // #3, the issue we re-parent
+	first := mkIssue(t, env, pid, "first")   // initial parent
+	second := mkIssue(t, env, pid, "second") // replacement parent
+	child := mkIssue(t, env, pid, "child")
 
-	// Initial parent link 3 → 1.
-	envPostJSON(t, env, issuePath(pid, 3, "links"),
-		map[string]any{"actor": "tester", "type": "parent", "to_number": 1}, nil)
+	// Initial parent link child → first.
+	envPostJSON(t, env, issuePathRef(pid, child.ShortID, "links"),
+		map[string]any{"actor": "tester", "type": "parent", "to_ref": first.ShortID}, nil)
 
 	// Subscribe AFTER the initial link so we don't see its frame in the drain.
 	maxID, err := env.DB.MaxEventID(context.Background())
@@ -604,9 +604,9 @@ func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 	sseResp := openSSE(t, env, "after_id="+strconv.FormatInt(maxID, 10), nil)
 	defer func() { _ = sseResp.Body.Close() }()
 
-	// Re-parent 3 → 2 with replace.
-	envPostJSON(t, env, issuePath(pid, 3, "links"),
-		map[string]any{"actor": "tester", "type": "parent", "to_number": 2, "replace": true}, nil)
+	// Re-parent child → second with replace.
+	envPostJSON(t, env, issuePathRef(pid, child.ShortID, "links"),
+		map[string]any{"actor": "tester", "type": "parent", "to_ref": second.ShortID, "replace": true}, nil)
 
 	// Live phase delivers two frames in order: issue.unlinked then issue.linked.
 	frames := readSSEFramesUntilN(t, sseResp.Body, 2, 2*time.Second)

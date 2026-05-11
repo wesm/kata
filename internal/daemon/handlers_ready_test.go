@@ -11,7 +11,7 @@ import (
 // fields the tests assert on.
 type readyResp struct {
 	Issues []struct {
-		Number int64 `json:"number"`
+		ShortID string `json:"short_id"`
 	} `json:"issues"`
 }
 
@@ -29,15 +29,18 @@ func TestReady_FiltersBlocked(t *testing.T) {
 	pid, blocker, blocked := setupTwoIssues(t, env)
 	standalone := createIssueViaHTTP(t, env, pid, "standalone")
 	postLink(t, env, pid, blocker, "blocks", blocked)
+	blockerShort := refForIssue(t, env, blocker)
+	blockedShort := refForIssue(t, env, blocked)
+	standaloneShort := refForIssue(t, env, standalone)
 
 	out := getReady(t, env, pid, "")
-	got := map[int64]bool{}
+	got := map[string]bool{}
 	for _, i := range out.Issues {
-		got[i.Number] = true
+		got[i.ShortID] = true
 	}
-	assert.True(t, got[blocker], "blocker is ready")
-	assert.True(t, got[standalone], "standalone is ready")
-	assert.False(t, got[blocked], "blocked while blocker is open")
+	assert.True(t, got[blockerShort], "blocker is ready")
+	assert.True(t, got[standaloneShort], "standalone is ready")
+	assert.False(t, got[blockedShort], "blocked while blocker is open")
 }
 
 func TestReady_RespectsLimit(t *testing.T) {

@@ -94,6 +94,28 @@ func issueRefByID(t *testing.T, h *httptestServerHandle, issueID int64) string {
 	return issue.ShortID
 }
 
+// linkPeerTest mirrors api.LinkPeer for test JSON decoding. UID is the
+// canonical reference; ShortID is the rendered display value.
+type linkPeerTest struct {
+	UID     string `json:"uid"`
+	ShortID string `json:"short_id"`
+}
+
+// issueShortIDFromCreate decodes the short_id field from a /issues POST
+// response. Tests use this to capture the newly-minted short_id and feed it
+// back as a ref to subsequent links_delta / link API calls.
+func issueShortIDFromCreate(t *testing.T, bs []byte) string {
+	t.Helper()
+	var out struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	require.NotEmpty(t, out.Issue.ShortID, "create response missing short_id: %s", string(bs))
+	return out.Issue.ShortID
+}
+
 // bootstrapProject spins up a fresh server + git workspace and runs `kata
 // init` against it, returning the handle and the project rowid. Used as a
 // shared setup for every issue handler test. Optional serverOptions are

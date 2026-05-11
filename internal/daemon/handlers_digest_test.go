@@ -1,9 +1,9 @@
 package daemon_test
 
 import (
+	"context"
 	"net/http"
 	"net/url"
-	"strconv"
 	"testing"
 	"time"
 
@@ -26,8 +26,8 @@ type digestActor struct {
 		Unblocked int `json:"unblocked"`
 	} `json:"totals"`
 	Issues []struct {
-		IssueNumber int64    `json:"issue_number"`
-		Actions     []string `json:"actions"`
+		IssueShortID string   `json:"issue_short_id"`
+		Actions      []string `json:"actions"`
 	} `json:"issues"`
 }
 
@@ -53,19 +53,28 @@ type digestBody struct {
 }
 
 // actionsFor returns the action sequence the digest recorded for actor on
-// issueNumber, or nil when no entry exists for that pair.
-func (d *digestBody) actionsFor(actor string, issueNumber int64) []string {
+// issueShortID, or nil when no entry exists for that pair.
+func (d *digestBody) actionsFor(actor, issueShortID string) []string {
 	for _, a := range d.Actors {
 		if a.Actor != actor {
 			continue
 		}
 		for _, iss := range a.Issues {
-			if iss.IssueNumber == issueNumber {
+			if iss.IssueShortID == issueShortID {
 				return iss.Actions
 			}
 		}
 	}
 	return nil
+}
+
+// shortIDOf returns the short_id of an issue given its row id, used to
+// translate fixture-time row IDs into the short_id keyed digest output.
+func shortIDOf(t *testing.T, env *testenv.Env, issueID int64) string {
+	t.Helper()
+	iss, err := env.DB.IssueByID(context.Background(), issueID)
+	require.NoError(t, err)
+	return iss.ShortID
 }
 
 // projectDigestPath builds the per-project digest URL with optional
@@ -142,13 +151,13 @@ func TestDigest_AggregatesByActor(t *testing.T) {
 
 	// Alice's first issue should show created → commented:2 → closed:done in
 	// that canonical order.
-	aliceFirst := body.actionsFor("alice", a)
+	aliceFirst := body.actionsFor("alice", shortIDOf(t, env, a))
 	require.NotNil(t, aliceFirst)
 	assert.Equal(t, []string{"created", "commented:2", "closed:done"}, aliceFirst)
 
 	// Bob's actions on issue b should include the labeled token and the
 	// unblocks-credit referencing issue b.
-	bobOnB := body.actionsFor("bob", b)
+	bobOnB := body.actionsFor("bob", shortIDOf(t, env, b))
 	require.NotNil(t, bobOnB)
 	assert.Contains(t, bobOnB, "labeled:bug")
 }
@@ -178,11 +187,12 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 
 	// Seed a target issue alice's later issue can block.
 	target := createIssueAs(t, env, pid, "alice", "target")
+	targetShortID := shortIDOf(t, env, target)
 
 	// Alice creates a richer issue with a label, an owner, and a blocks link.
 	var created struct {
 		Issue struct {
-			Number int64 `json:"number"`
+			ShortID string `json:"short_id"`
 		} `json:"issue"`
 	}
 	envPostJSON(t, env, projectPath(pid)+"/issues", map[string]any{
@@ -191,10 +201,10 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 		"labels": []string{"bug"},
 		"owner":  "bob",
 		"links": []map[string]any{
-			{"type": "blocks", "to_number": target},
+			{"type": "blocks", "to_ref": targetShortID},
 		},
 	}, &created)
-	rich := created.Issue.Number
+	richShortID := created.Issue.ShortID
 
 	digest := fetchDigest(t, env, pid, rfc3339Offset(-time.Hour), rfc3339Offset(time.Hour))
 
@@ -211,45 +221,47 @@ func TestDigest_CountsCreateTimeLabelsOwnerLinks(t *testing.T) {
 	assert.Equal(t, 1, digest.Actors[0].Totals.Assigned)
 	assert.Equal(t, 1, digest.Actors[0].Totals.Linked)
 
-	actions := digest.actionsFor("alice", rich)
+	actions := digest.actionsFor("alice", richShortID)
 	require.NotNil(t, actions, "rich issue not present in alice's per-issue digest")
 	assert.Contains(t, actions, "created")
 	assert.Contains(t, actions, "labeled:bug")
 	assert.Contains(t, actions, "assigned:bob")
-	assert.Contains(t, actions, "blocks:#"+strconv.FormatInt(target, 10))
+	assert.Contains(t, actions, "blocks:"+targetShortID)
 }
 
 // TestDigest_CreateTimeBlockedByEmitsBlockedByAction pins the digest's
 // translation of a `--blocked-by N` create-time link. Per kata#1, this
 // is stored as type="blocks" with incoming=true; the digest must flip
-// the per-issue action token to `blocked_by:#N` so the summary reads in
-// the issue's POV. Without the flip, agents see the dependency reversed.
+// the per-issue action token to `blocked_by:<short_id>` so the summary
+// reads in the issue's POV. Without the flip, agents see the dependency
+// reversed.
 func TestDigest_CreateTimeBlockedByEmitsBlockedByAction(t *testing.T) {
 	env := testenv.New(t)
 	pid := initWorkspaceViaHTTP(t, env, "https://github.com/wesm/kata.git")
 
 	blocker := createIssueAs(t, env, pid, "alice", "blocker")
+	blockerShortID := shortIDOf(t, env, blocker)
 
 	var created struct {
 		Issue struct {
-			Number int64 `json:"number"`
+			ShortID string `json:"short_id"`
 		} `json:"issue"`
 	}
 	envPostJSON(t, env, projectPath(pid)+"/issues", map[string]any{
 		"actor": "alice",
 		"title": "blocked-thing",
 		"links": []map[string]any{
-			{"type": "blocks", "to_number": blocker, "incoming": true},
+			{"type": "blocks", "to_ref": blockerShortID, "incoming": true},
 		},
 	}, &created)
-	child := created.Issue.Number
+	childShortID := created.Issue.ShortID
 
 	digest := fetchDigest(t, env, pid, rfc3339Offset(-time.Hour), rfc3339Offset(time.Hour))
-	actions := digest.actionsFor("alice", child)
+	actions := digest.actionsFor("alice", childShortID)
 	require.NotNil(t, actions, "child not present in alice's per-issue digest")
-	assert.Contains(t, actions, "blocked_by:#"+strconv.FormatInt(blocker, 10),
-		"create-time --blocked-by must emit blocked_by:#N, not blocks:#N")
-	assert.NotContains(t, actions, "blocks:#"+strconv.FormatInt(blocker, 10),
+	assert.Contains(t, actions, "blocked_by:"+blockerShortID,
+		"create-time --blocked-by must emit blocked_by:<short_id>, not blocks:<short_id>")
+	assert.NotContains(t, actions, "blocks:"+blockerShortID,
 		"outgoing-direction action must NOT appear for an incoming link")
 }
 
@@ -266,17 +278,18 @@ func TestDigest_BlockedByRemovedIsPlainUnlink(t *testing.T) {
 
 	blocker := createIssueAs(t, env, pid, "alice", "blocker")
 	child := createIssueAs(t, env, pid, "alice", "blocked")
+	blockerShortID := shortIDOf(t, env, blocker)
 
 	resp, bs := envDoRaw(t, env, http.MethodPatch, issuePath(pid, child, ""),
 		map[string]any{
 			"actor":       "alice",
-			"links_delta": map[string]any{"add_blocked_by": []int64{blocker}},
+			"links_delta": map[string]any{"add_blocked_by": []string{blockerShortID}},
 		}, nil)
 	require.Equalf(t, 200, resp.StatusCode, "add: %s", string(bs))
 	resp, bs = envDoRaw(t, env, http.MethodPatch, issuePath(pid, child, ""),
 		map[string]any{
 			"actor":       "alice",
-			"links_delta": map[string]any{"remove_blocked_by": []int64{blocker}},
+			"links_delta": map[string]any{"remove_blocked_by": []string{blockerShortID}},
 		}, nil)
 	require.Equalf(t, 200, resp.StatusCode, "remove: %s", string(bs))
 
@@ -306,7 +319,7 @@ func TestDigest_PriorityEvents(t *testing.T) {
 	assert.Equal(t, 1, body.Totals.PrioritySet, "priority_set total")
 	assert.Equal(t, 1, body.Totals.PriorityCleared, "priority_cleared total")
 
-	actions := body.actionsFor("alice", n)
+	actions := body.actionsFor("alice", shortIDOf(t, env, n))
 	require.NotNil(t, actions)
 	assert.Contains(t, actions, "priority:0", "set token surfaces the new priority")
 	assert.Contains(t, actions, "priority_cleared", "clear token is plain")

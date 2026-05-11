@@ -136,7 +136,7 @@ func TestEvents_TailFailsFastOn4xx(t *testing.T) {
 func TestEvents_TailFollowsResetRequired(t *testing.T) {
 	env := testenv.New(t)
 	dir := initBoundWorkspace(t, env.URL, "https://github.com/wesm/kata.git")
-	createIssueViaHTTP(t, env, dir, "doomed")
+	short := createIssueViaHTTP(t, env, dir, "doomed")
 
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
@@ -145,11 +145,13 @@ func TestEvents_TailFollowsResetRequired(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	purgeURL := env.URL + "/api/v1/projects/" + itoa(pid) + "/issues/1/actions/purge"
+	project, err := env.DB.ProjectByID(t.Context(), pid)
+	require.NoError(t, err)
+	purgeURL := env.URL + "/api/v1/projects/" + itoa(pid) + "/issues/" + short + "/actions/purge"
 	body := strings.NewReader(`{"actor":"tester"}`)
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, purgeURL, body)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Kata-Confirm", "PURGE #1")
+	req.Header.Set("X-Kata-Confirm", "PURGE "+project.Name+"#"+short)
 	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
 	require.NoError(t, err)
 	_ = resp.Body.Close()
@@ -193,4 +195,26 @@ func TestEvents_OneShotRejectsNonPositiveLimit(t *testing.T) {
 		_, err := runCmdOutput(t, nil, "events", "--limit", lim)
 		_ = requireCLIError(t, err, ExitValidation)
 	}
+}
+
+// TestEvents_PayloadShape pins the JSON wire shape: each event row carries
+// issue_short_id (display) and issue_uid (canonical); the legacy
+// issue_number field is gone.
+func TestEvents_PayloadShape(t *testing.T) {
+	f := newCLIFixture(t)
+	createIssueViaHTTP(t, f.env, f.dir, "first")
+
+	require.NoError(t, f.execute("--json", "events"))
+	var got struct {
+		Events []map[string]any `json:"events"`
+	}
+	require.NoError(t, json.Unmarshal(f.buf.Bytes(), &got))
+	require.NotEmpty(t, got.Events)
+	ev := got.Events[0]
+	_, hasShort := ev["issue_short_id"]
+	_, hasUID := ev["issue_uid"]
+	_, hasNumber := ev["issue_number"]
+	assert.True(t, hasShort, "issue_short_id missing from event row: %v", ev)
+	assert.True(t, hasUID, "issue_uid missing from event row: %v", ev)
+	assert.False(t, hasNumber, "issue_number still present in event row: %v", ev)
 }

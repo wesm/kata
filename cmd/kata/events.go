@@ -152,12 +152,12 @@ func printEventsHuman(cmd *cobra.Command, bs []byte) error {
 		ResetRequired bool  `json:"reset_required"`
 		ResetAfterID  int64 `json:"reset_after_id"`
 		Events        []struct {
-			EventID     int64  `json:"event_id"`
-			Type        string `json:"type"`
-			ProjectID   int64  `json:"project_id"`
-			IssueNumber *int64 `json:"issue_number"`
-			Actor       string `json:"actor"`
-			CreatedAt   string `json:"created_at"`
+			EventID      int64   `json:"event_id"`
+			Type         string  `json:"type"`
+			ProjectID    int64   `json:"project_id"`
+			IssueShortID *string `json:"issue_short_id"`
+			Actor        string  `json:"actor"`
+			CreatedAt    string  `json:"created_at"`
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
@@ -171,11 +171,11 @@ func printEventsHuman(cmd *cobra.Command, bs []byte) error {
 	}
 	for _, e := range b.Events {
 		issueStr := "-"
-		if e.IssueNumber != nil {
-			issueStr = "#" + strconv.FormatInt(*e.IssueNumber, 10)
+		if e.IssueShortID != nil && *e.IssueShortID != "" {
+			issueStr = *e.IssueShortID
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(),
-			"%-6d  %-22s  proj=%-3d  %-6s  by %s  %s\n",
+			"%-6d  %-22s  proj=%-3d  %-8s  by %s  %s\n",
 			e.EventID, e.Type, e.ProjectID, issueStr, e.Actor, e.CreatedAt); err != nil {
 			return err
 		}

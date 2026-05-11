@@ -1,10 +1,34 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestSearch_OutputsShortIDNotNumber pins the JSON wire shape: each search
+// result's nested issue carries short_id; the legacy `number` field is gone.
+func TestSearch_OutputsShortIDNotNumber(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	createIssue(t, env, pid, "matchable title")
+
+	out, err := runCmdOutput(t, env, "--workspace", dir, "--json", "search", "matchable")
+	require.NoError(t, err)
+	var got struct {
+		Results []struct {
+			Issue map[string]any `json:"issue"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	require.NotEmpty(t, got.Results)
+	issue := got.Results[0].Issue
+	_, hasShort := issue["short_id"]
+	_, hasNumber := issue["number"]
+	assert.True(t, hasShort, "short_id missing from search hit: %v", issue)
+	assert.False(t, hasNumber, "number still present in search hit: %v", issue)
+}
 
 func TestSearch_ReturnsMatchedIssues(t *testing.T) {
 	env, dir, pid := setupCLIWorkspace(t)
