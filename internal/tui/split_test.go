@@ -99,6 +99,70 @@ func TestSplit_DebounceCoalescesBursts(t *testing.T) {
 	}
 }
 
+// TestSplit_InitialFetchBootstrapsDetailPane pins the launch fix:
+// when the boot initialFetchMsg lands in split layout with no detail
+// issue pinned, the highlighted (cursor=0) row must auto-load into
+// the detail pane. Pre-fix the detail pane stayed empty until the
+// user pressed j/k because scheduleDetailFollow only fires from
+// dispatchListKey on cursor motion.
+func TestSplit_InitialFetchBootstrapsDetailPane(t *testing.T) {
+	t.Setenv("KATA_COLOR_MODE", "none")
+	t.Setenv("NO_COLOR", "")
+	applyDefaultColorMode(io.Discard)
+	defer applyDefaultColorMode(io.Discard)
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7, projectName: "kata"}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if m.layout != layoutSplit {
+		t.Fatalf("setup: layout=%v want layoutSplit", m.layout)
+	}
+	if m.detail.issue != nil {
+		t.Fatalf("setup: detail.issue=%+v want nil before fetch", m.detail.issue)
+	}
+	issues := snapListFixture()
+	nm, cmd := updateModel(m, initialFetchMsg{
+		dispatchKey: cacheKey{projectID: 7, limit: queueFetchLimit},
+		issues:      issues,
+	})
+	if nm.detail.issue == nil {
+		t.Fatal("detail.issue stayed nil after initial fetch in split layout")
+	}
+	if nm.detail.issue.ShortID != issues[0].ShortID {
+		t.Errorf("detail.issue.ShortID = %q, want %q (first row)",
+			nm.detail.issue.ShortID, issues[0].ShortID)
+	}
+	if cmd == nil {
+		t.Error("expected a debounce tick cmd for the bootstrap detail fetch")
+	}
+}
+
+// TestSplit_InitialFetchSkipsBootstrapInStacked: the auto-load is
+// scoped to split layout. In stacked mode the user never sees the
+// detail pane until they explicitly open an issue, so loading detail
+// state on the initial fetch would waste an HTTP round-trip.
+func TestSplit_InitialFetchSkipsBootstrapInStacked(t *testing.T) {
+	t.Setenv("KATA_COLOR_MODE", "none")
+	t.Setenv("NO_COLOR", "")
+	applyDefaultColorMode(io.Discard)
+	defer applyDefaultColorMode(io.Discard)
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7, projectName: "kata"}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	if m.layout != layoutStacked {
+		t.Fatalf("setup: layout=%v want layoutStacked", m.layout)
+	}
+	nm, _ := updateModel(m, initialFetchMsg{
+		dispatchKey: cacheKey{projectID: 7, limit: queueFetchLimit},
+		issues:      snapListFixture(),
+	})
+	if nm.detail.issue != nil {
+		t.Errorf("detail.issue=%+v after initial fetch in stacked, want nil",
+			nm.detail.issue)
+	}
+}
+
 // TestSplit_TabMovesFocusToDetail: tab in split mode while focusList
 // flips focus to focusDetail (and the list pane border switches to
 // the inactive style on render).
