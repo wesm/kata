@@ -64,3 +64,21 @@ func TestShow_LegacyNumberFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "legacy issue number")
 }
+
+// TestShow_BareRefHonorsProjectFlagOutsideWorkspace pins that --project
+// is consulted by ResolveRef as the fallback project name for bare
+// refs when the workspace has no .kata.toml binding. Earlier the code
+// passed only workspaceProjectName(start) so --project was ignored and
+// the user got "no project bound to this workspace" even though they
+// had explicitly named one.
+func TestShow_BareRefHonorsProjectFlagOutsideWorkspace(t *testing.T) {
+	env, dir, _ := setupCLIWorkspace(t)
+	created := createIssueViaHTTPFull(t, env, dir, "ref outside workspace")
+
+	// Use a fresh temp dir with no .kata.toml so workspaceProjectName
+	// returns "". The --project flag must supply the project binding
+	// ResolveRef needs to resolve the bare short_id.
+	outside := t.TempDir()
+	out := runCLI(t, env, outside, "--project", "kata", "show", created.ShortID)
+	assert.Contains(t, out, "ref outside workspace")
+}

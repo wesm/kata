@@ -37,8 +37,16 @@ func resolveIssueRefForCommandWithOptions(cmd *cobra.Command, ref string, _ bool
 	if err != nil {
 		return nil, "", 0, resolvedIssueRef{}, err
 	}
-	workspaceProject := workspaceProjectName(start)
-	parsed, err := ResolveRef(ref, workspaceProject)
+	// Fallback chain for bare refs: --project flag → workspace binding → "".
+	// An explicit --project must override the workspace binding so users
+	// can target a different project from outside (or inside) a workspace
+	// without needing to qualify every ref. ResolveRef errors when both
+	// sources are empty — the caller hears "no project bound".
+	bareProject := strings.TrimSpace(flags.Project)
+	if bareProject == "" {
+		bareProject = workspaceProjectName(start)
+	}
+	parsed, err := ResolveRef(ref, bareProject)
 	if err != nil {
 		return nil, "", 0, resolvedIssueRef{}, &cliError{
 			Message:  err.Error(),
