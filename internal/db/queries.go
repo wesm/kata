@@ -712,12 +712,19 @@ func (d *DB) IssueByUID(ctx context.Context, issueUID string, include IncludeDel
 }
 
 // IssueUIDPrefixMatch returns issues whose UID starts with prefix, ordered by
-// UID for deterministic ambiguity reporting.
-func (d *DB) IssueUIDPrefixMatch(ctx context.Context, prefix string, limit int) ([]Issue, error) {
+// UID for deterministic ambiguity reporting. Soft-deleted rows are returned
+// only when include == IncludeDeletedYes (spec §6 carveout, matching
+// IssueByUID).
+func (d *DB) IssueUIDPrefixMatch(ctx context.Context, prefix string, limit int, include IncludeDeleted) ([]Issue, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := d.QueryContext(ctx, issueSelect+` WHERE i.uid LIKE ? || '%' ORDER BY i.uid ASC LIMIT ?`, prefix, limit)
+	q := issueSelect + ` WHERE i.uid LIKE ? || '%'`
+	if include == IncludeDeletedNo {
+		q += ` AND i.deleted_at IS NULL`
+	}
+	q += ` ORDER BY i.uid ASC LIMIT ?`
+	rows, err := d.QueryContext(ctx, q, prefix, limit)
 	if err != nil {
 		return nil, fmt.Errorf("issue uid prefix match: %w", err)
 	}

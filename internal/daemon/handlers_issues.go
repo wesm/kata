@@ -471,7 +471,7 @@ func resolveIssueByUIDOrPrefix(ctx context.Context, store *db.DB, ref string, in
 			fmt.Sprintf("%q is not a valid ULID prefix (Crockford base32: 0-9, A-Z excluding I/L/O/U; first char 0-7)", ref),
 			"", nil)
 	}
-	matches, err := store.IssueUIDPrefixMatch(ctx, normalized, 20)
+	matches, err := store.IssueUIDPrefixMatch(ctx, normalized, 20, include)
 	if err != nil {
 		return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
 	}
