@@ -372,15 +372,25 @@ func resolveByAliasInput(ctx context.Context, store *db.DB, in *api.AliasInput, 
 	alias, err := store.AliasByIdentity(ctx, info.Identity)
 	switch {
 	case err == nil:
+		// Fetch the project before touching the alias so an alias
+		// pointing at an archived row (theoretically possible via
+		// import or direct DB edits — RemoveProject normally hard-
+		// deletes aliases atomically) doesn't bump last_seen_at on the
+		// stale binding.
+		project, err := store.ProjectByID(ctx, alias.ProjectID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if project.DeletedAt != nil {
+			return nil, api.NewError(404, "project_not_initialized",
+				"alias "+info.Identity+" points at an archived project",
+				`run "kata init" to bind this workspace to an active project`, nil)
+		}
 		if err := store.TouchAlias(ctx, alias.ID, info.RootPath); err != nil && !errors.Is(err, db.ErrNotFound) {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		if refreshed, err := store.AliasByIdentity(ctx, info.Identity); err == nil {
 			alias = refreshed
-		}
-		project, err := store.ProjectByID(ctx, alias.ProjectID)
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
 		return &api.ProjectResolveBody{
 			Project:       dbProjectToOut(project),

@@ -264,6 +264,52 @@ func TestResolve_AliasHitReturnsCanonicalName(t *testing.T) {
 	assert.Contains(t, string(bs), `"name":"new-name"`)
 }
 
+// TestResolve_ByAliasInput_RejectsArchivedProject guards the
+// archived-but-aliased state: RemoveProject hard-deletes aliases
+// atomically, so this is only reachable via direct DB edits or an
+// import path that doesn't go through the API — but resolve is a
+// surface handler, and archived projects must look gone here.
+// resolveByName and the active-project helper already enforce this;
+// the alias path must too.
+func TestResolve_ByAliasInput_RejectsArchivedProject(t *testing.T) {
+	ts, h := startDefaultTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"name": "kata",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	var initBody struct {
+		Project struct {
+			ID int64 `json:"id"`
+		} `json:"project"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &initBody))
+
+	// Manually flip deleted_at on the project row, leaving the alias
+	// intact. The API-level RemoveProject would also drop the alias,
+	// so this construction tests the defensive 404 in the alias path
+	// rather than the cleanup path.
+	_, err := h.db.ExecContext(t.Context(),
+		`UPDATE projects SET deleted_at = '2026-05-11T00:00:00.000Z' WHERE id = ?`,
+		initBody.Project.ID)
+	require.NoError(t, err)
+
+	resp2, bs2 := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	assertAPIError(t, resp2.StatusCode, bs2, http.StatusNotFound, "project_not_initialized")
+	assert.Contains(t, string(bs2), "archived")
+}
+
 // TestResolve_AliasInput_RejectsInvalidKind enforces the same alias
 // validation init applies, so callers see a uniform 400 instead of an
 // opaque downstream failure.
