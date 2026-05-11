@@ -230,11 +230,38 @@ func postCommentAs(t *testing.T, env *testenv.Env, projectID, issueNumber int64,
 		map[string]string{"actor": actor, "body": body}, nil)
 }
 
-// closeIssueAs closes an issue attributed to actor.
+// closeIssueAs closes an issue attributed to actor. Provides a substantive
+// message and per-reason evidence sized to satisfy the daemon's close
+// validation (spec §3.4 + §3.5) so digest/event helper tests don't have to
+// hand-roll close payloads.
+//
+// duplicate and superseded are intentionally not supported: their evidence
+// items require a target issue number that the helper cannot manufacture
+// safely. Callers that need those reasons should call envPostJSON directly
+// with an explicit evidence array referencing a real target.
 func closeIssueAs(t *testing.T, env *testenv.Env, projectID, issueNumber int64, actor, reason string) {
 	t.Helper()
-	envPostJSON(t, env, issuePath(projectID, issueNumber, "actions/close"),
-		map[string]string{"actor": actor, "reason": reason}, nil)
+	body := map[string]any{"actor": actor, "reason": reason}
+	switch reason {
+	case "done", "audit-no-change":
+		body["message"] = "Closed after verifying the fix end to end across the affected code paths."
+	case "wontfix":
+		body["message"] = "Decided not to fix this; out of scope for this milestone and not aligned with roadmap."
+	case "duplicate", "superseded":
+		t.Fatalf("closeIssueAs: reason %q requires an explicit target issue; call envPostJSON directly", reason)
+		return
+	default:
+		body["message"] = "Closed after verifying the fix end to end across the affected code paths."
+	}
+	switch reason {
+	case "done":
+		body["evidence"] = []map[string]any{{"type": "commit", "sha": "abc1234"}}
+	case "audit-no-change":
+		body["evidence"] = []map[string]any{
+			{"type": "no-change-audit", "rationale": "metadata-only review"},
+		}
+	}
+	envPostJSON(t, env, issuePath(projectID, issueNumber, "actions/close"), body, nil)
 }
 
 // labelResp is the decoded shape of an AddLabelResponse body.

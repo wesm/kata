@@ -141,6 +141,25 @@ type IdempotencyMatch struct {
 	Event        Event
 }
 
+// Evidence is the typed-union element persisted on issue.closed event
+// payloads (anti-agent-justification spec §3.3). It mirrors api.Evidence
+// field-for-field; the daemon handler does a 1:1 conversion at the
+// boundary so the db package stays free of the api dependency that
+// would create an import cycle (internal/api already imports
+// internal/db). Per-reason validation lives in the daemon, not here —
+// the db layer treats this as opaque payload data and simply persists
+// the marshaled JSON onto the event row.
+type Evidence struct {
+	Type string `json:"type"`
+
+	SHA       string   `json:"sha,omitempty"`       // commit
+	URL       string   `json:"url,omitempty"`       // pr
+	Command   string   `json:"command,omitempty"`   // test
+	Paths     []string `json:"paths,omitempty"`     // reviewed-paths
+	Rationale string   `json:"rationale,omitempty"` // no-change-audit
+	IssueRef  string   `json:"issue_ref,omitempty"` // duplicate-of, superseded-by
+}
+
 // PurgeLog mirrors a row in purge_log. Snapshots the issue identity at purge
 // time so audits survive any future project rename. EventsDeletedMinID/MaxID
 // and PurgeResetAfterEventID are nullable: NULL when no events were attached

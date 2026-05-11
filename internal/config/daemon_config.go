@@ -24,6 +24,8 @@ type DaemonConfig struct {
 	// daemon overrides, these are user preferences and belong in
 	// <KATA_HOME>/config.toml.
 	TUI TUIConfig `toml:"tui"`
+	// Close carries daemon-wide close-flow policy knobs.
+	Close CloseConfig `toml:"close"`
 }
 
 // TUIConfig holds TUI user preferences from <KATA_HOME>/config.toml.
@@ -31,6 +33,32 @@ type TUIConfig struct {
 	// Mouse enables Bubble Tea mouse cell-motion capture and additive
 	// click/wheel navigation. Default false preserves native selection.
 	Mouse bool `toml:"mouse"`
+}
+
+// CloseConfig is the [close] block of <KATA_HOME>/config.toml.
+type CloseConfig struct {
+	Throttle CloseThrottleConfig `toml:"throttle"`
+}
+
+// CloseThrottleConfig toggles the sibling-burst and repeated-message
+// guards. Enabled is a *bool so an absent key defaults to enabled —
+// disabling is opt-in. Projects that rely on bulk-subagent close
+// patterns can set `enabled = false` to skip the guards entirely.
+//
+// The on/off behavior is daemon-wide: every project served by this
+// daemon picks up the same policy. Per-project knobs would need a
+// project_settings table and are out of scope for v1.
+type CloseThrottleConfig struct {
+	Enabled *bool `toml:"enabled"`
+}
+
+// ThrottleEnabled returns the resolved policy: true when the key is
+// absent or explicitly set to true, false only when explicitly disabled.
+func (c CloseThrottleConfig) ThrottleEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // ReadDaemonConfig parses <KATA_HOME>/config.toml. Returns a zero-value

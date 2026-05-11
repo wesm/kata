@@ -32,8 +32,9 @@ func newEventsCmd() *cobra.Command {
 		Long: `kata events lists recent events. With --tail, it streams them live over SSE.
 
 Without --tail, prints up to --limit events ordered by id ASC and exits.
-With --tail, opens an SSE connection and emits one NDJSON envelope per line
-until SIGINT/SIGTERM. Reconnects with exponential backoff on disconnect.`,
+With --tail, opens an SSE connection and emits one NDJSON envelope per
+line. The stream reconnects with exponential backoff on disconnect and
+runs until SIGINT/SIGTERM.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if allProjects && projectIDArg != 0 {
 				return &cliError{Message: "--all-projects and --project-id are mutually exclusive", Kind: kindUsage, ExitCode: ExitUsage}
@@ -314,7 +315,9 @@ func (f *frameState) empty() bool {
 
 // flush writes the frame to out and returns the typed result. Callers
 // must call reset() afterward (deferred by the caller, not here, so the
-// return path is single-purpose).
+// return path is single-purpose). Output is always NDJSON: one envelope
+// per line, plus a synthetic reset envelope on sync.reset_required so
+// consumers can match on reset_required.
 func (f *frameState) flush(out io.Writer) (streamResult, error) {
 	if f.event == "sync.reset_required" {
 		var r struct {

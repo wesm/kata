@@ -112,8 +112,59 @@ func (d *DB) ParentOf(ctx context.Context, childIssueID int64) (Link, error) {
 
 const relationshipChunkSize = labelsByIssuesChunkSize
 
-// ParentNumbersByIssues returns child issue ID -> parent issue number for
-// parent links inside projectID.
+// ParentShortIDsByIssues returns child issue ID -> parent short_id for
+// parent links inside projectID. Used by the audit handler to render and
+// filter close rows by parent ref.
+func (d *DB) ParentShortIDsByIssues(
+	ctx context.Context, projectID int64, issueIDs []int64,
+) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(issueIDs) == 0 {
+		return out, nil
+	}
+	for i := 0; i < len(issueIDs); i += relationshipChunkSize {
+		end := i + relationshipChunkSize
+		if end > len(issueIDs) {
+			end = len(issueIDs)
+		}
+		placeholders, args := relationshipChunkPlaceholders(projectID, issueIDs[i:end])
+		query := `SELECT l.from_issue_id, parent.short_id
+		          FROM links l
+		          JOIN issues child  ON child.id  = l.from_issue_id
+		          JOIN issues parent ON parent.id = l.to_issue_id
+		          WHERE l.project_id = ?
+		            AND child.project_id = ?
+		            AND parent.project_id = ?
+		            AND l.type = 'parent'
+		            AND l.from_issue_id IN (` + placeholders + `)`
+		rows, err := d.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("parent short ids by issues: %w", err)
+		}
+		if err := scanParentShortIDs(rows, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func scanParentShortIDs(rows *sql.Rows, out map[int64]string) error {
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var childID int64
+		var parentShortID string
+		if err := rows.Scan(&childID, &parentShortID); err != nil {
+			return fmt.Errorf("scan parent short id: %w", err)
+		}
+		out[childID] = parentShortID
+	}
+	return rows.Err()
+}
+
+// ParentNumbersByIssues returns child issue ID -> parent issue id for
+// parent links inside projectID. Despite the name (transitional), the map
+// value is the parent's rowid, not a user-facing number; downstream code
+// resolves it to a LinkPeer.
 func (d *DB) ParentNumbersByIssues(
 	ctx context.Context, projectID int64, issueIDs []int64,
 ) (map[int64]int64, error) {
@@ -367,6 +418,82 @@ func (d *DB) ChildCountsByParents(
 		}
 	}
 	return out, nil
+}
+
+// txHasOpenChildren reports whether parentIssueID has any non-deleted,
+// non-closed children when run inside the close transaction. The daemon
+// handler runs the user-friendly OpenChildrenOf-backed check first; this
+// closes the race between that read and the close write by re-checking
+// inside the same write transaction.
+func txHasOpenChildren(ctx context.Context, tx *sql.Tx, projectID, parentIssueID int64) (bool, error) {
+	var total int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*)
+		 FROM links l
+		 JOIN issues child ON child.id = l.from_issue_id
+		 WHERE l.project_id = ?
+		   AND child.project_id = ?
+		   AND l.type = 'parent'
+		   AND l.to_issue_id = ?
+		   AND child.status = 'open'
+		   AND child.deleted_at IS NULL`,
+		projectID, projectID, parentIssueID).Scan(&total); err != nil {
+		return false, fmt.Errorf("open children check: %w", err)
+	}
+	return total > 0, nil
+}
+
+// OpenChildrenOf returns up to limit non-deleted, non-closed children of
+// parentIssueID, plus the total open-children count. Used by the parent-
+// close completeness check: the truncated slice feeds the error listing,
+// and the full count drives the "(N more)" suffix.
+func (d *DB) OpenChildrenOf(
+	ctx context.Context, projectID, parentIssueID int64, limit int,
+) ([]Issue, int, error) {
+	var total int
+	if err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*)
+		 FROM links l
+		 JOIN issues child ON child.id = l.from_issue_id
+		 WHERE l.project_id = ?
+		   AND child.project_id = ?
+		   AND l.type = 'parent'
+		   AND l.to_issue_id = ?
+		   AND child.status = 'open'
+		   AND child.deleted_at IS NULL`,
+		projectID, projectID, parentIssueID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("open children count: %w", err)
+	}
+	if total == 0 {
+		return nil, 0, nil
+	}
+	rows, err := d.QueryContext(ctx, issueSelect+`
+		JOIN links l ON l.from_issue_id = i.id
+		WHERE l.project_id = ?
+		  AND i.project_id = ?
+		  AND l.type = 'parent'
+		  AND l.to_issue_id = ?
+		  AND i.status = 'open'
+		  AND i.deleted_at IS NULL
+		ORDER BY i.created_at ASC
+		LIMIT ?`,
+		projectID, projectID, parentIssueID, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open children: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Issue
+	for rows.Next() {
+		issue, err := scanIssue(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate open children: %w", err)
+	}
+	return out, total, nil
 }
 
 // ChildrenOfIssue returns direct, non-deleted children for parentIssueID in

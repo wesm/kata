@@ -11,24 +11,50 @@ const agentQuickstartText = `# kata agent quickstart
 
 Use kata as the shared issue ledger for this workspace.
 
-1. Run from the project workspace, or pass --workspace <path>.
-   To work on another project from any directory, pass --project <name>.
-2. Author defaults to $KATA_AUTHOR > $USER > git user.name; set KATA_AUTHOR
-   only when you need an actor different from your login.
-3. Prefer --json for reads and writes when parsing output.
-4. If the workspace is not initialized, report that kata init is needed.
-5. Issue refs use short_ids derived from each issue's ULID. In a workspace
-   bound to a project, the bare form is enough (e.g. abc4). Cross-project
-   references qualify with the project name (e.g. kata#abc4). Full 26-char
-   ULIDs also resolve. Legacy numeric refs (12, kata#12) no longer work.
-   The examples below use abc4 and d4ex as placeholders for short_ids you
-   will read out of "kata create --json" / "kata search --json" responses.
-6. Search before creating:
+1. Run from the workspace (--workspace overrides; --project picks
+   another). Author = $KATA_AUTHOR > $USER > git user.name. --json for
+   parsing. If uninitialized, report that kata init is needed.
+   Issue refs are short_ids derived from each issue's ULID (e.g. abc4).
+   Cross-project: kata#abc4. Full 26-char ULIDs also resolve. Legacy
+   numeric refs (12, kata#12) no longer work.
+
+2. Closing an issue asserts that the work is complete. If the work is
+   not done, DO NOT close. Instead:
+
+      kata edit <ref> --label needs-review
+      kata comment <ref> --body "what was attempted, what remains"
+
+   When done, close with substantive prose and typed --evidence:
+
+      kata close abc4 --done \
+        --message "Fixed Safari callback double-submit; verified tests pass." \
+        --commit <sha>
+
+   Close each issue as soon as its work is verified, not in a single
+   "close everything" pass at the end. The daemon throttles >3 sibling
+   closes by one actor under one parent in 5 minutes; close eagerly
+   and you will not see the throttle. Operators can disable it via
+   [close.throttle] enabled = false in <KATA_HOME>/config.toml.
+
+   Other close forms:
+
+      kata close abc4 --duplicate-of d4ex  --message "Same Safari race condition."
+      kata close abc4 --superseded-by d4ex --message "Replaced by broader scope."
+      kata close abc4 --wontfix --message "<>=60 chars of rationale>"
+      kata close abc4 --audit-no-change \
+                      --message "Reviewed schema and queries; no change needed." \
+                      --reviewed internal/db/schema.sql
+
+   The daemon refuses parent-close while open children remain. Reviewers
+   can replay activity with kata audit closes and undo a specific lazy
+   close with kata reopen <ref>.
+
+3. Search before creating:
 
    kata search "login race" --json
    kata search --project foo "login race" --json
 
-7. If no existing issue fits, create with an idempotency key:
+4. If no existing issue fits, create with an idempotency key:
 
    kata create "fix login race" \
      --body "Observed double-submit in Safari callback." \
@@ -40,7 +66,7 @@ Use kata as the shared issue ledger for this workspace.
      --idempotency-key "foo-login-race-2026-05-02" \
      --json
 
-8. Prefer updating existing issues over creating duplicates:
+5. Prefer updating existing issues over creating duplicates:
 
    kata show abc4 --json
    kata show --project foo abc4 --json
@@ -48,7 +74,7 @@ Use kata as the shared issue ledger for this workspace.
    kata label add abc4 safari --json
    kata edit abc4 --blocks d4ex --json
 
-9. Use relationships deliberately. They live as flags on create + edit and
+6. Use relationships deliberately. They live as flags on create + edit and
    are framed from the operating issue's POV — no argument-order traps:
 
    parent      = this issue is a sub-task of a larger issue
@@ -63,12 +89,8 @@ Use kata as the shared issue ledger for this workspace.
    fail loudly. Read parent before asserting a removal. The other
    --remove-* flags are idempotent (no-op when the link is already gone).
 
-10. Close only when the work is actually complete:
-
-    kata close abc4 --reason done --json
-
-11. Do not run delete or purge unless the user explicitly asks for that exact
-    destructive action and issue ref.
+7. Do not run delete or purge unless the user explicitly asks for that exact
+   destructive action and issue ref.
 
 For long-running agents, poll events:
 

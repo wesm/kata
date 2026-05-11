@@ -3,8 +3,10 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // MaxEventID returns the highest events.id, or 0 when the table is empty. The
@@ -144,6 +146,113 @@ func (d *DB) EventsInWindow(ctx context.Context, p EventsInWindowParams) ([]Even
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// RecentSiblingCloses returns issue.closed events emitted by actor on direct
+// children of parentIssueID in projectID since the given timestamp. Ordered by
+// created_at DESC so callers can render the most recent closures first.
+//
+// Used by the sibling-close throttle (spec §3.9): the daemon counts how many
+// rows come back to decide whether the next close is part of a burst by the
+// same actor under the same parent.
+//
+// The same scoped projection used by EventsInWindow is sufficient here — the
+// throttle only needs id, issue_number, actor, and created_at; the wider
+// uid/related columns stay zero-valued.
+func (d *DB) RecentSiblingCloses(
+	ctx context.Context,
+	projectID, parentIssueID int64,
+	actor string,
+	since time.Time,
+) ([]Event, error) {
+	const q = `SELECT e.id, e.project_id, e.project_name, e.issue_id,
+	                  i.short_id,
+	                  e.type, e.actor, e.payload, e.created_at
+	           FROM events e
+	           JOIN links l ON l.from_issue_id = e.issue_id
+	           JOIN issues i ON i.id = e.issue_id
+	           WHERE e.project_id = ?
+	             AND e.type = 'issue.closed'
+	             AND e.actor = ?
+	             AND e.created_at >= ?
+	             AND l.type = 'parent'
+	             AND l.to_issue_id = ?
+	             AND l.project_id = ?
+	           ORDER BY e.created_at DESC`
+	rows, err := d.QueryContext(ctx, q,
+		projectID, actor, since.UTC().Format(sqliteTimeFormat),
+		parentIssueID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("recent sibling closes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ProjectName, &e.IssueID,
+			&e.IssueShortID, &e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan recent sibling close: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// RecentSameMessageClose returns the most recent issue.closed event from
+// RecentSiblingCloses whose payload's normalized message equals
+// normalizedMessage and whose reason is "done" or "audit-no-change".
+// Used by the repeated-message guard (§3.10) to refuse a second sibling
+// close that reuses the same prose under the same parent within a short
+// window. Returns (nil, nil) when no match exists.
+//
+// The reason filter mirrors the spec: wontfix, duplicate, and superseded
+// closes can legitimately reuse boilerplate (e.g. "out of scope"), so
+// they are exempt; only the open-ended done / audit-no-change reasons
+// are policed.
+//
+// Callers (the daemon) are expected to pre-normalize normalizedMessage
+// using the same rules as normalizeMessageDB below — both sides apply
+// the same trim/lowercase/punctuation rules so a literal copy-paste
+// matches even when the surrounding whitespace differs.
+func (d *DB) RecentSameMessageClose(
+	ctx context.Context,
+	projectID, parentIssueID int64,
+	actor, normalizedMessage string,
+	since time.Time,
+) (*Event, error) {
+	siblings, err := d.RecentSiblingCloses(ctx, projectID, parentIssueID, actor, since)
+	if err != nil {
+		return nil, err
+	}
+	for i := range siblings {
+		var p struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(siblings[i].Payload), &p); err != nil {
+			continue
+		}
+		if p.Reason != "done" && p.Reason != "audit-no-change" {
+			continue
+		}
+		if normalizeMessageDB(p.Message) == normalizedMessage {
+			return &siblings[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// normalizeMessageDB is the db-side mirror of the daemon's NormalizeMessage
+// (close_validation.go). It is intentionally duplicated rather than imported:
+// internal/api already imports internal/db, so the db package cannot reach
+// daemon without creating an import cycle. Keep these two implementations
+// in lockstep — if one changes, update the other.
+func normalizeMessageDB(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Join(strings.Fields(s), " ")
+	s = strings.ToLower(s)
+	s = strings.TrimRight(s, ".?!")
+	return s
 }
 
 // PurgeResetCheck returns the maximum purge_reset_after_event_id strictly

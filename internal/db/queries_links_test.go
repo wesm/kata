@@ -234,7 +234,7 @@ func TestChildCountsByParents_ReturnsOpenAndTotalDirectChildren(t *testing.T) {
 	for _, child := range []db.Issue{child1, child2, child3} {
 		makeLink(ctx, t, d, p.ID, child.ID, parent.ID, "parent")
 	}
-	_, _, _, err := d.CloseIssue(ctx, child2.ID, "done", "tester")
+	_, _, _, err := d.CloseIssue(ctx, child2.ID, "done", "tester", "", nil)
 	require.NoError(t, err)
 
 	got, err := d.ChildCountsByParents(ctx, p.ID, []int64{parent.ID})

@@ -27,6 +27,20 @@ type ServerConfig struct {
 	Endpoint    DaemonEndpoint
 	Broadcaster *EventBroadcaster
 	Hooks       hooks.Sink
+	// CloseThrottle controls whether the sibling-burst and repeated-
+	// message guards run on close. Zero-value (Enabled=false) is taken
+	// as "guards on" so handler tests and existing test harness setups
+	// keep the v1 default behavior without plumbing the policy through;
+	// the daemon entry point sets ThrottleDisabled=true only when the
+	// operator opts out via [close.throttle] in config.toml.
+	CloseThrottle CloseThrottlePolicy
+}
+
+// CloseThrottlePolicy is the runtime form of [close.throttle] in
+// <KATA_HOME>/config.toml. Using ThrottleDisabled (rather than Enabled)
+// makes the zero value match the v1 default: guards on.
+type CloseThrottlePolicy struct {
+	ThrottleDisabled bool
 }
 
 // Server bundles the http handler and lifecycle.
@@ -166,6 +180,7 @@ func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerDestructive(humaAPI, cfg)
 	registerEventsHandlers(humaAPI, mux, cfg)
 	registerDigestHandlers(humaAPI, cfg)
+	registerAuditHandlers(humaAPI, cfg)
 }
 
 // registerHealth registers /api/v1/ping and /api/v1/health.

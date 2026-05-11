@@ -21,7 +21,11 @@ func TestActionsClose_ReopenRoundtrip(t *testing.T) {
 	_, ts, pid, num := bootstrapProjectWithIssue(t)
 
 	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/close"),
-		map[string]any{"actor": "agent", "reason": "wontfix"})
+		map[string]any{
+			"actor":   "agent",
+			"reason":  "wontfix",
+			"message": "Decided not to fix this; out of scope for this milestone and not aligned with roadmap.",
+		})
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"status":"closed"`)
 	assert.Contains(t, string(bs), `"closed_reason":"wontfix"`)
@@ -42,11 +46,14 @@ func TestActionsClose_RejectsUnsupportedReason(t *testing.T) {
 
 func TestActionsClose_AlreadyClosedIsNoOpEnvelope(t *testing.T) {
 	_, ts, pid, num := bootstrapProjectWithIssue(t)
-	_, _ = postJSON(t, ts, issueURL(pid, num, "actions/close"),
-		map[string]any{"actor": "agent"})
+	body := map[string]any{
+		"actor":   "agent",
+		"reason":  "wontfix",
+		"message": "Decided not to fix this; out of scope for this milestone and not aligned with roadmap.",
+	}
+	_, _ = postJSON(t, ts, issueURL(pid, num, "actions/close"), body)
 
-	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/close"),
-		map[string]any{"actor": "agent"})
+	resp, bs := postJSON(t, ts, issueURL(pid, num, "actions/close"), body)
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"changed":false`)
 	assert.Contains(t, string(bs), `"event":null`)

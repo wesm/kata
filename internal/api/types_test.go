@@ -1,11 +1,13 @@
 package api_test
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/api"
 )
 
@@ -261,4 +263,23 @@ func requireFieldHasJSONTag(t *testing.T, typ reflect.Type, name, jsonTag string
 	if got != jsonTag {
 		t.Fatalf("%s.%s json tag = %q; want %q", typ.Name(), name, got, jsonTag)
 	}
+}
+
+// TestActionRequest_RoundTripWithEvidence pins the close-action wire shape
+// (anti-agent-justification): message, evidence, and dry_run fields land on
+// Body, and Evidence decodes via its UnmarshalJSON union check.
+func TestActionRequest_RoundTripWithEvidence(t *testing.T) {
+	in := `{
+      "actor": "wesm",
+      "reason": "done",
+      "message": "Fixed Safari callback double-submit.",
+      "evidence": [{"type":"commit","sha":"abc1234"}],
+      "dry_run": false
+    }`
+	var req api.ActionRequest
+	require.NoError(t, json.Unmarshal([]byte(in), &req.Body))
+	assert.Equal(t, "done", req.Body.Reason)
+	assert.Equal(t, "Fixed Safari callback double-submit.", req.Body.Message)
+	require.Len(t, req.Body.Evidence, 1)
+	assert.Equal(t, api.EvidenceCommit, req.Body.Evidence[0].Type)
 }

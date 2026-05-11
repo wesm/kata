@@ -35,7 +35,7 @@ CREATE TABLE issues (
   title         TEXT NOT NULL,
   body          TEXT NOT NULL DEFAULT '',
   status        TEXT NOT NULL CHECK(status IN ('open','closed')) DEFAULT 'open',
-  closed_reason TEXT CHECK(closed_reason IN ('done','wontfix','duplicate')),
+  closed_reason TEXT CHECK(closed_reason IN ('done','wontfix','duplicate','superseded','audit-no-change')),
   owner         TEXT,
   priority      INTEGER,                       -- 0 = highest, 4 = lowest; NULL = unset
   author        TEXT NOT NULL,

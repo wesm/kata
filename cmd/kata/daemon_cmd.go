@@ -180,11 +180,11 @@ func runDaemon(ctx context.Context) error {
 // unless <KATA_HOME>/config.toml has a `listen = "..."` entry — in which
 // case the config value is used. CLI flag always wins over config.
 func runDaemonWithListen(ctx context.Context, listen string) error {
+	dcfg, err := config.ReadDaemonConfig()
+	if err != nil {
+		return err
+	}
 	if listen == "" {
-		dcfg, err := config.ReadDaemonConfig()
-		if err != nil {
-			return err
-		}
 		listen = dcfg.Listen
 	}
 	ns, err := daemon.NewNamespace()
@@ -230,6 +230,9 @@ func runDaemonWithListen(ctx context.Context, listen string) error {
 		StartedAt: time.Now().UTC(),
 		Endpoint:  endpoint,
 		Hooks:     disp,
+		CloseThrottle: daemon.CloseThrottlePolicy{
+			ThrottleDisabled: !dcfg.Close.Throttle.ThrottleEnabled(),
+		},
 	})
 	defer func() { _ = srv.Close() }()
 

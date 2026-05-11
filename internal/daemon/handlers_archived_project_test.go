@@ -121,7 +121,12 @@ func TestArchivedProject_IssueScopedHandlersReturn404(t *testing.T) {
 			map[string]any{"actor": "tester", "body": "hi"}, nil},
 		{"closeIssue", http.MethodPost,
 			"/api/v1/projects/" + pid + "/issues/" + num + "/actions/close",
-			map[string]any{"actor": "tester", "reason": "done"}, nil},
+			map[string]any{
+				"actor":    "tester",
+				"reason":   "done",
+				"message":  "Closed after fixing the regression and verifying the full test matrix passes.",
+				"evidence": []map[string]any{{"type": "commit", "sha": "abc1234"}},
+			}, nil},
 		{"reopenIssue", http.MethodPost,
 			"/api/v1/projects/" + pid + "/issues/" + num + "/actions/reopen",
 			map[string]any{"actor": "tester"}, nil},

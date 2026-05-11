@@ -26,9 +26,23 @@ type Env struct {
 	Broadcaster *daemon.EventBroadcaster
 }
 
+// Option configures the test daemon. Applied to a ServerConfig before
+// daemon.NewServer; tests use options to opt into non-default policy
+// (e.g. throttle disabled) without forking the constructor.
+type Option func(*daemon.ServerConfig)
+
+// WithCloseThrottleDisabled tells the test daemon to skip the close
+// throttle / repeated-message guards, mirroring [close.throttle]
+// enabled=false in <KATA_HOME>/config.toml.
+func WithCloseThrottleDisabled() Option {
+	return func(cfg *daemon.ServerConfig) {
+		cfg.CloseThrottle.ThrottleDisabled = true
+	}
+}
+
 // New launches a daemon listening on a free loopback port. The DB lives under
 // a temp KATA_HOME. Cleanup is wired via t.Cleanup.
-func New(t *testing.T) *Env {
+func New(t *testing.T, opts ...Option) *Env {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("KATA_HOME", home)
@@ -38,7 +52,7 @@ func New(t *testing.T) *Env {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 
-	url, client, bcast := serveDaemon(t, d)
+	url, client, bcast := serveDaemon(t, d, opts...)
 	return &Env{URL: url, HTTP: client, DB: d, Home: home, Broadcaster: bcast}
 }
 
@@ -80,7 +94,7 @@ func (e *Env) RequireOK(t *testing.T, path string) []byte {
 // shutdown wait) is wired via t.Cleanup. Callers are responsible for closing d
 // in a separately registered cleanup so LIFO ordering closes the DB after
 // Serve returns.
-func serveDaemon(t *testing.T, d *db.DB) (string, *http.Client, *daemon.EventBroadcaster) {
+func serveDaemon(t *testing.T, d *db.DB, opts ...Option) (string, *http.Client, *daemon.EventBroadcaster) {
 	t.Helper()
 	// Bind the listener once and hand it directly to Server.Serve so no other
 	// process can grab the port between bind and serve (the close-then-reopen
@@ -90,11 +104,15 @@ func serveDaemon(t *testing.T, d *db.DB) (string, *http.Client, *daemon.EventBro
 	addr := l.Addr().(*net.TCPAddr).String() //nolint:forcetypeassert // net.Listen("tcp",...) always returns *net.TCPAddr
 
 	bcast := daemon.NewEventBroadcaster()
-	srv := daemon.NewServer(daemon.ServerConfig{
+	cfg := daemon.ServerConfig{
 		DB:          d,
 		StartedAt:   time.Now().UTC(),
 		Broadcaster: bcast,
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	srv := daemon.NewServer(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

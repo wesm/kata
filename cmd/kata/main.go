@@ -79,6 +79,7 @@ func newRootCmd() *cobra.Command {
 		newExportCmd(),
 		newImportCmd(),
 		newDigestCmd(),
+		newAuditCmd(),
 		newQuickstartCmd(),
 		newWhoamiCmd(),
 		newHealthCmd(),

@@ -49,7 +49,9 @@ func TestIssueRefCommandsAcceptUIDsAndShortIDs(t *testing.T) {
 	require.Contains(t, out, "edited through uid")
 
 	closeReopen := issue("close by uid")
-	out = run("close", closeReopen.UID, "--reason", "wontfix")
+	out = run("close", closeReopen.UID,
+		"--reason", "wontfix",
+		"--message", "Decided not to pursue this; it doesn't match the current product direction.")
 	require.Contains(t, out, "closed")
 	out = run("reopen", closeReopen.ShortID)
 	require.Contains(t, out, "open")

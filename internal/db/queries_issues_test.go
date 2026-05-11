@@ -264,7 +264,7 @@ func TestListAllIssues_StatusFilterApplies(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	open1, _ := createTesterIssue(ctx, t, d, p.ID, "open")
 	closed1, _ := createTesterIssue(ctx, t, d, p.ID, "to-close")
-	_, _, _, err := d.CloseIssue(ctx, closed1.ID, "done", "x")
+	_, _, _, err := d.CloseIssue(ctx, closed1.ID, "done", "x", "", nil)
 	require.NoError(t, err)
 
 	got, err := d.ListAllIssues(ctx, db.ListAllIssuesParams{Status: "open"})
@@ -315,7 +315,7 @@ func TestCreateComment_EmitsEvent(t *testing.T) {
 func TestCloseIssue_SetsStatusAndEmitsEvent(t *testing.T) {
 	d, ctx, _, issue := setupTestIssue(t)
 
-	updated, evt, changed, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	updated, evt, changed, err := d.CloseIssue(ctx, issue.ID, "done", "agent", "", nil)
 	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Equal(t, "closed", updated.Status)
@@ -327,10 +327,10 @@ func TestCloseIssue_SetsStatusAndEmitsEvent(t *testing.T) {
 
 func TestCloseIssue_OnAlreadyClosedIsNoOp(t *testing.T) {
 	d, ctx, _, issue := setupTestIssue(t)
-	_, _, _, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	_, _, _, err := d.CloseIssue(ctx, issue.ID, "done", "agent", "", nil)
 	require.NoError(t, err)
 
-	_, evt, changed, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	_, evt, changed, err := d.CloseIssue(ctx, issue.ID, "done", "agent", "", nil)
 	require.NoError(t, err)
 	assert.False(t, changed)
 	assert.Nil(t, evt)
@@ -338,7 +338,7 @@ func TestCloseIssue_OnAlreadyClosedIsNoOp(t *testing.T) {
 
 func TestReopenIssue_ClearsStatusAndEmitsEvent(t *testing.T) {
 	d, ctx, _, issue := setupTestIssue(t)
-	_, _, _, err := d.CloseIssue(ctx, issue.ID, "done", "agent")
+	_, _, _, err := d.CloseIssue(ctx, issue.ID, "done", "agent", "", nil)
 	require.NoError(t, err)
 
 	updated, evt, changed, err := d.ReopenIssue(ctx, issue.ID, "agent")
@@ -369,4 +369,70 @@ func TestEditIssue_NoFieldsIsValidationError(t *testing.T) {
 
 	_, _, _, err := d.EditIssue(ctx, db.EditIssueParams{IssueID: issue.ID, Actor: "agent"})
 	assert.ErrorIs(t, err, db.ErrNoFields)
+}
+
+// TestCloseIssue_EmptyReasonRejected pins that db.CloseIssue refuses an
+// empty reason rather than silently coercing it to "done". The handler
+// owns reason defaulting (for the TUI bypass path) so the db layer's
+// surprise default is gone; this regression test catches any reintroduction.
+func TestCloseIssue_EmptyReasonRejected(t *testing.T) {
+	d, ctx, _, issue := setupTestIssue(t)
+
+	_, _, _, err := d.CloseIssue(ctx, issue.ID, "", "wesm", "", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "reason is required")
+}
+
+func TestCloseIssue_SupersededReasonAccepted(t *testing.T) {
+	d, ctx, _, issue := setupTestIssue(t)
+
+	_, _, _, err := d.CloseIssue(ctx, issue.ID, "superseded", "wesm", "", nil)
+	require.NoError(t, err)
+}
+
+func TestCloseIssue_AuditNoChangeReasonAccepted(t *testing.T) {
+	d, ctx, _, issue := setupTestIssue(t)
+
+	_, _, _, err := d.CloseIssue(ctx, issue.ID, "audit-no-change", "wesm", "", nil)
+	require.NoError(t, err)
+}
+
+func TestCloseIssue_RefusesParentWithOpenChildren(t *testing.T) {
+	// The in-transaction guard mirrors CheckParentCloseCompleteness in the
+	// daemon handler so a child link inserted between the read-side check
+	// and the close write still aborts the close at commit time.
+	d, ctx, p, parent := setupTestIssue(t)
+	child, _ := createTesterIssue(ctx, t, d, p.ID, "child")
+	makeLink(ctx, t, d, p.ID, child.ID, parent.ID, "parent")
+
+	_, _, _, err := d.CloseIssue(ctx, parent.ID, "done", "agent", "", nil)
+	require.ErrorIs(t, err, db.ErrOpenChildren)
+}
+
+func TestCloseIssue_AllowsParentWithOnlyClosedChildren(t *testing.T) {
+	d, ctx, p, parent := setupTestIssue(t)
+	child, _ := createTesterIssue(ctx, t, d, p.ID, "child")
+	makeLink(ctx, t, d, p.ID, child.ID, parent.ID, "parent")
+	_, _, _, err := d.CloseIssue(ctx, child.ID, "done", "agent", "", nil)
+	require.NoError(t, err)
+
+	_, _, _, err = d.CloseIssue(ctx, parent.ID, "done", "agent", "", nil)
+	require.NoError(t, err)
+}
+
+func TestCloseIssue_PersistsMessageAndEvidence(t *testing.T) {
+	d, ctx, _, issue := setupTestIssue(t)
+
+	evidence := []db.Evidence{{Type: "commit", SHA: "abc1234"}}
+	_, evt, _, err := d.CloseIssue(ctx, issue.ID, "done", "wesm",
+		"Fixed the bug and ran tests.", evidence)
+	require.NoError(t, err)
+	require.NotNil(t, evt)
+
+	// Payload should contain reason, message, and evidence.
+	assert.Contains(t, evt.Payload, `"reason":"done"`)
+	assert.Contains(t, evt.Payload, `"message":"Fixed the bug and ran tests."`)
+	assert.Contains(t, evt.Payload, `"evidence":[`)
+	assert.Contains(t, evt.Payload, `"type":"commit"`)
+	assert.Contains(t, evt.Payload, `"sha":"abc1234"`)
 }

@@ -48,7 +48,12 @@ func TestSmoke_FullLifecycle(t *testing.T) {
 	// A 200 from the action endpoint is necessary but not sufficient; a buggy
 	// handler could no-op while still answering 200.
 	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/"+first.ShortID+"/actions/close",
-		map[string]any{"actor": "agent", "reason": "done"}))
+		map[string]any{
+			"actor":    "agent",
+			"reason":   "done",
+			"message":  "Closed after verifying the fix end to end across the affected code paths.",
+			"evidence": []map[string]any{{"type": "commit", "sha": "abc1234"}},
+		}))
 	closedBody := getBody(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/"+first.ShortID)
 	assert.Contains(t, closedBody, `"status":"closed"`, "issue must be closed before reopen")
 

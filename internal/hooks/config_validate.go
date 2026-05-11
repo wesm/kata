@@ -20,6 +20,10 @@ var knownEventTypes = map[string]struct{}{
 	"issue.priority_set": {}, "issue.priority_cleared": {},
 	"issue.soft_deleted": {}, "issue.restored": {},
 	"issue.links_changed": {},
+	// close.throttled lives outside the issue.* namespace because the
+	// audit signal is about a refused mutation, not the issue itself.
+	// Wildcard `*` hooks see it; `issue.*` does not.
+	"close.throttled": {},
 }
 
 // compileEventMatcher returns the canonical string and a precompiled

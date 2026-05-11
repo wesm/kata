@@ -227,7 +227,7 @@ func validateImportBatch(p ImportBatchParams) error {
 			return fmt.Errorf("%w: closed issues require closed_at", ErrImportValidation)
 		}
 		if item.ClosedReason != nil && !validImportClosedReason(*item.ClosedReason) {
-			return fmt.Errorf("%w: closed_reason must be done, wontfix, or duplicate", ErrImportValidation)
+			return fmt.Errorf("%w: closed_reason must be one of done, wontfix, duplicate, superseded, audit-no-change", ErrImportValidation)
 		}
 		if item.Priority != nil && (*item.Priority < 0 || *item.Priority > 4) {
 			return fmt.Errorf("%w: priority must be between 0 and 4", ErrImportValidation)
@@ -651,7 +651,7 @@ func importEventPayload(source, externalID string) (string, error) {
 
 func validImportClosedReason(reason string) bool {
 	switch reason {
-	case "done", "wontfix", "duplicate":
+	case "done", "wontfix", "duplicate", "superseded", "audit-no-change":
 		return true
 	default:
 		return false

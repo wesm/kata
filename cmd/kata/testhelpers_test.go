@@ -302,6 +302,15 @@ func runCLI(t *testing.T, env *testenv.Env, dir string, args ...string) string {
 	return strings.TrimSpace(buf.String())
 }
 
+// runCLIAs is runCLI with an explicit actor. It threads `--as <actor>`
+// through so each invocation records the named actor rather than the
+// test process's resolved default. Use when a test needs distinct
+// actors on otherwise identical commands (e.g. audit filter-by-actor).
+func runCLIAs(t *testing.T, env *testenv.Env, dir, actor string, args ...string) string {
+	t.Helper()
+	return runCLI(t, env, dir, append([]string{"--as", actor}, args...)...)
+}
+
 // runCLICapture is the error-tolerant sibling of runCLI: it runs a fresh root
 // command bound to dir under env's daemon URL and returns combined
 // stdout+stderr plus the Execute error. Use when a test needs to assert on a
@@ -316,6 +325,25 @@ func runCLICapture(t *testing.T, env *testenv.Env, dir string, args ...string) (
 	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
 	err := cmd.Execute()
 	return buf.String(), err
+}
+
+// runCLIWithErr is runCLICapture with stdout and stderr captured separately.
+// On Execute failure the error message is also written to the stderr buffer
+// (mirroring main.go's emitError for the human path) so tests can assert on
+// stderr as the user would see it.
+func runCLIWithErr(t *testing.T, env *testenv.Env, dir string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	cmd := newRootCmd()
+	var so, se bytes.Buffer
+	cmd.SetOut(&so)
+	cmd.SetErr(&se)
+	cmd.SetArgs(append([]string{"--workspace", dir}, args...))
+	cmd.SetContext(contextWithBaseURL(context.Background(), env.URL))
+	err = cmd.Execute()
+	if err != nil {
+		emitError(&se, err, false, true)
+	}
+	return so.String(), se.String(), err
 }
 
 // setupWorkspaceWithIssue initializes a test environment and workspace with

@@ -379,6 +379,34 @@ func TestImportBatch_ValidationErrors(t *testing.T) {
 	assert.ErrorIs(t, err, db.ErrImportValidation)
 }
 
+func TestImportBatch_AcceptsAllSchemaClosedReasons(t *testing.T) {
+	// Schema v8 accepts done, wontfix, duplicate, superseded, and
+	// audit-no-change. The import validator must agree with the schema
+	// or callers cannot replay closed issues that used the newer reasons.
+	ts := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	for _, reason := range []string{"done", "wontfix", "duplicate", "superseded", "audit-no-change"} {
+		t.Run(reason, func(t *testing.T) {
+			d, ctx, p := setupTestProject(t)
+			_, _, err := d.ImportBatch(ctx, db.ImportBatchParams{
+				ProjectID: p.ID,
+				Source:    "beads",
+				Actor:     "importer",
+				Items: []db.ImportItem{{
+					ExternalID:   "a",
+					Title:        "Title",
+					Author:       "alice",
+					Status:       "closed",
+					ClosedReason: strPtr(reason),
+					CreatedAt:    ts,
+					UpdatedAt:    ts,
+					ClosedAt:     &ts,
+				}},
+			})
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestImportBatch_TimestampValidationErrors(t *testing.T) {
 	t.Run("updated before created", func(t *testing.T) {
 		d, ctx, p := setupTestProject(t)

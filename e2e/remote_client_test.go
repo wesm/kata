@@ -100,7 +100,10 @@ func TestRemoteClient_DaemonOnTCPClientViaKATA_SERVER(t *testing.T) {
 	require.NotEmpty(t, listed.Issues[0].ShortID)
 
 	// close it by short_id.
-	runRemoteCmd(t, bin, clientWS, clientEnv, "close", listed.Issues[0].ShortID, "--reason", "done")
+	runRemoteCmd(t, bin, clientWS, clientEnv, "close", listed.Issues[0].ShortID,
+		"--reason", "done",
+		"--message", "Implemented the remote close round-trip and confirmed it ran.",
+		"--evidence", "commit:abc1234")
 
 	// Critical assertion: the client KATA_HOME has no runtime files.
 	// If a local daemon had been auto-started on the client side,

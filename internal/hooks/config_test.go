@@ -401,3 +401,34 @@ func TestMatch_LinksChangedRecognized(t *testing.T) {
 		t.Fatal("* must match issue.links_changed")
 	}
 }
+
+// TestMatch_CloseThrottledRecognized pins that close.throttled audit
+// events are in knownEventTypes: explicit subscription must validate,
+// and the `*` wildcard must match. close.throttled deliberately lives
+// outside the issue.* namespace (it's about a refused mutation, not the
+// issue lifecycle), so issue.* must NOT match it.
+func TestMatch_CloseThrottledRecognized(t *testing.T) {
+	_, exact, err := compileEventMatcher("close.throttled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exact("close.throttled") {
+		t.Fatal("explicit close.throttled matcher must match the event")
+	}
+
+	_, allStar, err := compileEventMatcher("*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allStar("close.throttled") {
+		t.Fatal("* must match close.throttled")
+	}
+
+	_, issueStar, err := compileEventMatcher("issue.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issueStar("close.throttled") {
+		t.Fatal("issue.* must not match close.throttled (out of namespace)")
+	}
+}

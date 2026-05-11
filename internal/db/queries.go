@@ -15,6 +15,13 @@ import (
 // ErrNotFound is returned when a single-row lookup matches zero rows.
 var ErrNotFound = errors.New("not found")
 
+// ErrOpenChildren is returned by CloseIssue when the issue still has open
+// children at commit time. Callers map this to a 409 with the same
+// parent_has_open_children code the pre-transaction guard uses; the
+// in-transaction re-check closes the small race where a child link is
+// inserted between the guard's read and the close write.
+var ErrOpenChildren = errors.New("issue has open children")
+
 // CreateProject inserts a new projects row.
 func (d *DB) CreateProject(ctx context.Context, name string) (Project, error) {
 	projectUID, err := katauid.New()
@@ -907,10 +914,23 @@ func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment,
 	return c, evt, nil
 }
 
-// CloseIssue sets status=closed unless already closed.
-func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string) (Issue, *Event, bool, error) {
+// CloseIssue sets status=closed unless already closed. The message and
+// evidence are persisted on the issue.closed event payload (spec §3.3
+// storage scope), not on the issue row.
+//
+// Returns ErrOpenChildren if the issue has open children at commit time.
+// Daemon handlers run the user-friendly completeness check first for a
+// good error message; this in-transaction re-check exists to close the
+// race where a child link is inserted between the read-side guard and the
+// close write.
+func (d *DB) CloseIssue(
+	ctx context.Context,
+	issueID int64,
+	reason, actor, message string,
+	evidence []Evidence,
+) (Issue, *Event, bool, error) {
 	if reason == "" {
-		reason = "done"
+		return Issue{}, nil, false, fmt.Errorf("close: reason is required")
 	}
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -925,6 +945,11 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 	if issue.Status == "closed" {
 		return issue, nil, false, tx.Commit()
 	}
+	if hasOpen, err := txHasOpenChildren(ctx, tx, issue.ProjectID, issueID); err != nil {
+		return Issue{}, nil, false, err
+	} else if hasOpen {
+		return Issue{}, nil, false, ErrOpenChildren
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE issues
 		 SET status        = 'closed',
@@ -934,14 +959,23 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 		 WHERE id = ?`, reason, issueID); err != nil {
 		return Issue{}, nil, false, fmt.Errorf("close: %w", err)
 	}
-	payload := fmt.Sprintf(`{"reason":%q}`, reason)
+
+	payloadBytes, err := json.Marshal(struct {
+		Reason   string     `json:"reason"`
+		Message  string     `json:"message,omitempty"`
+		Evidence []Evidence `json:"evidence,omitempty"`
+	}{Reason: reason, Message: message, Evidence: evidence})
+	if err != nil {
+		return Issue{}, nil, false, fmt.Errorf("close payload: %w", err)
+	}
+
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
 		Type:        "issue.closed",
 		Actor:       actor,
-		Payload:     payload,
+		Payload:     string(payloadBytes),
 	})
 	if err != nil {
 		return Issue{}, nil, false, err
@@ -956,8 +990,75 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 	return updated, &evt, true, nil
 }
 
-// ReopenIssue clears status=closed unless already open.
-func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issue, *Event, bool, error) {
+// CloseThrottleReason values for CloseThrottledPayload.Reason. Sibling-burst
+// fires when an actor closes too many siblings under one parent in a short
+// window; duplicate-message fires when an actor reuses identical close prose
+// across sibling issues.
+const (
+	CloseThrottleReasonSiblingBurst     = "sibling-burst"
+	CloseThrottleReasonDuplicateMessage = "duplicate-message"
+)
+
+// CloseThrottledPayload is the JSON wire shape persisted on close.throttled
+// events. Parent is the user-facing issue number of the shared parent and is
+// always populated when a throttle fires (the guards never refuse on an
+// unparented issue). Cohort lists the recent sibling closes that triggered
+// the burst guard; Prior is the prior matching close for the duplicate-
+// message guard. Cohort and Prior are omitted when not relevant to the path
+// that fired.
+type CloseThrottledPayload struct {
+	Reason string   `json:"reason"`
+	Parent string   `json:"parent"`
+	Cohort []string `json:"cohort,omitempty"`
+	Prior  *string  `json:"prior,omitempty"`
+}
+
+// InsertCloseThrottledEvent records a close.throttled audit event for the
+// refused close. The event is attached to the refused issue (issueID) so
+// audit/replay tools can render it inline with that issue's other events.
+// Returns the inserted event on success.
+func (d *DB) InsertCloseThrottledEvent(
+	ctx context.Context, issueID int64, actor string, payload CloseThrottledPayload,
+) (Event, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return Event{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	issue, projectName, err := lookupIssueForEvent(ctx, tx, issueID)
+	if err != nil {
+		return Event{}, err
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return Event{}, fmt.Errorf("marshal close.throttled payload: %w", err)
+	}
+
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{
+		ProjectID:   issue.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &issue.ID,
+		Type:        "close.throttled",
+		Actor:       actor,
+		Payload:     string(payloadBytes),
+	})
+	if err != nil {
+		return Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Event{}, err
+	}
+	return evt, nil
+}
+
+// ReopenIssue clears status=closed unless already open. The
+// issue.reopened event payload is always `{}`; bulk-reopen audit
+// metadata was removed when bulk mode was dropped.
+func (d *DB) ReopenIssue(
+	ctx context.Context, issueID int64, actor string,
+) (Issue, *Event, bool, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return Issue{}, nil, false, err

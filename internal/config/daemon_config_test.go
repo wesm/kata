@@ -51,6 +51,36 @@ func TestReadDaemonConfig_ReadsTUIMouse(t *testing.T) {
 	assert.True(t, cfg.TUI.Mouse)
 }
 
+func TestReadDaemonConfig_ThrottleDefaultsEnabled(t *testing.T) {
+	t.Setenv("KATA_HOME", t.TempDir())
+	cfg, err := config.ReadDaemonConfig()
+	require.NoError(t, err)
+	assert.True(t, cfg.Close.Throttle.ThrottleEnabled(),
+		"absent [close.throttle] must default to enabled")
+}
+
+func TestReadDaemonConfig_ThrottleDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"),
+		[]byte("[close.throttle]\nenabled = false\n"), 0o600))
+
+	cfg, err := config.ReadDaemonConfig()
+	require.NoError(t, err)
+	assert.False(t, cfg.Close.Throttle.ThrottleEnabled())
+}
+
+func TestReadDaemonConfig_ThrottleExplicitlyEnabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"),
+		[]byte("[close.throttle]\nenabled = true\n"), 0o600))
+
+	cfg, err := config.ReadDaemonConfig()
+	require.NoError(t, err)
+	assert.True(t, cfg.Close.Throttle.ThrottleEnabled())
+}
+
 func TestReadDaemonConfig_RejectsMalformed(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KATA_HOME", home)

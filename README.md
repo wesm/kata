@@ -204,6 +204,41 @@ a full 26-char ULID. The relationship flags on `create`/`edit` are
 documented in detail in "Relationships ride on `kata create` and `kata edit`"
 below.
 
+Closing issues:
+
+```sh
+kata close 12 --done --message "<what changed and how it was verified>" \
+              --commit <sha>
+kata close 12 --duplicate-of 7  --message "<short pointer>"
+kata close 12 --superseded-by 18 --message "<short pointer>"
+kata close 12 --wontfix --message "<>=60 chars of rationale>"
+kata close 12 --audit-no-change \
+              --message "<scope + verification of no-change conclusion>" \
+              --reviewed <path/to/file>
+```
+
+Closing an issue asserts that the work is complete. Close each issue
+as soon as its work is verified — not at the end of a batch. Use the
+`needs-review` label and a comment when the work is incomplete instead.
+The daemon refuses these structurally dangerous patterns:
+
+- closing a parent while its children remain open
+- closing >3 siblings under the same parent within 5 minutes
+- closing two siblings of the same parent with the same close message
+  (within 30 minutes, for `done`/`audit-no-change`)
+
+The sibling-burst and repeated-message throttles can be disabled
+daemon-wide via `[close.throttle] enabled = false` in
+`<KATA_HOME>/config.toml`; the parent-completeness refusal and the
+substance/evidence checks on `--message`/`--evidence` always run.
+
+The TUI close path (`x` in `kata tui`) bypasses the substance and
+evidence checks — interactive humans close with a single keystroke.
+Structural guards still apply.
+
+`kata audit closes` lists close events with filters; specific lazy
+closes can be undone individually with `kata reopen <ref>`.
+
 Labels, ownership, and relationships:
 
 ```sh

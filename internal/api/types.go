@@ -428,12 +428,26 @@ type CommentResponse struct {
 // ActionRequest is POST /api/v1/projects/{id}/issues/{ref}/actions/close|reopen.
 // Reason is enforced to the schema's CHECK list so unsupported values surface
 // as 400 validation rather than a SQLite constraint failure (500 internal).
+// Message, Evidence, and DryRun are close-only inputs (anti-agent-justification);
+// reopen ignores them.
 type ActionRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
 	Ref       string `path:"ref" required:"true"`
 	Body      struct {
-		Actor  string `json:"actor" required:"true"`
-		Reason string `json:"reason,omitempty" enum:"done,wontfix,duplicate,"` // close only
+		Actor   string `json:"actor" required:"true"`
+		Reason  string `json:"reason,omitempty" enum:"done,wontfix,duplicate,superseded,audit-no-change,"`
+		Message string `json:"message,omitempty"`
+		// Source signals the caller's UI surface. "tui" relaxes the
+		// substance / evidence validation so an interactive human close
+		// is one keystroke. Structural guards (parent-close, sibling
+		// throttle) still apply. Empty string means "agent / CLI" and
+		// gets the full validation. Lying about Source is possible and
+		// considered acceptable: agents who'd forge this could also
+		// forge the evidence payload, so adding a hard signal here would
+		// only inconvenience honest callers.
+		Source   string     `json:"source,omitempty" enum:"tui,"`
+		Evidence []Evidence `json:"evidence,omitempty"`
+		DryRun   bool       `json:"dry_run,omitempty"`
 	}
 }
 
@@ -765,7 +779,7 @@ type ImportIssueInput struct {
 	Owner        *string              `json:"owner,omitempty"`
 	Priority     *int64               `json:"priority,omitempty"`
 	Status       string               `json:"status" enum:"open,closed"`
-	ClosedReason *string              `json:"closed_reason,omitempty" enum:"done,wontfix,duplicate,"`
+	ClosedReason *string              `json:"closed_reason,omitempty" enum:"done,wontfix,duplicate,superseded,audit-no-change,"`
 	CreatedAt    time.Time            `json:"created_at" required:"true"`
 	UpdatedAt    time.Time            `json:"updated_at" required:"true"`
 	ClosedAt     *time.Time           `json:"closed_at,omitempty"`
@@ -792,4 +806,43 @@ type ImportLinkInput struct {
 // ImportResponse returns db.ImportBatchResult at the response body top level.
 type ImportResponse struct {
 	Body db.ImportBatchResult
+}
+
+// AuditClosesRequest is GET /api/v1/audit/closes. The window defaults to
+// (zero, now). Filters compose via AND; all are optional. NoEvidence
+// narrows to closes whose `Flags` includes "no-evidence".
+type AuditClosesRequest struct {
+	ProjectID  int64  `query:"project_id" required:"true"`
+	Since      string `query:"since,omitempty" doc:"RFC3339 timestamp (default: zero time)"`
+	Until      string `query:"until,omitempty" doc:"RFC3339 timestamp (default: now)"`
+	Actor      string `query:"actor,omitempty"`
+	Parent     string `query:"parent,omitempty" doc:"filter to closes of children of parent <ref>"`
+	Reason     string `query:"reason,omitempty"`
+	NoEvidence bool   `query:"no_evidence,omitempty"`
+}
+
+// AuditCloseRow is one row in AuditClosesResponse. Flags includes
+// computed markers — "no-evidence" when an evidence-required close
+// carried no items, "throttled" when this actor previously tripped a
+// throttle on this issue (sibling-burst or duplicate-message) before
+// the close eventually succeeded. EvidenceTypes lists the typed
+// evidence items from the close event payload (e.g. "commit", "pr").
+// Message is the close message verbatim.
+type AuditCloseRow struct {
+	Time          string   `json:"time"`
+	Actor         string   `json:"actor"`
+	Issue         string   `json:"issue"`
+	Parent        string   `json:"parent,omitempty"`
+	Reason        string   `json:"reason"`
+	EvidenceTypes []string `json:"evidence_types,omitempty"`
+	Flags         []string `json:"flags,omitempty"`
+	Message       string   `json:"message,omitempty"`
+}
+
+// AuditClosesResponse wraps the AuditCloseRow list. Rows is never nil
+// in JSON output (handler emits an empty slice when no rows match).
+type AuditClosesResponse struct {
+	Body struct {
+		Rows []AuditCloseRow `json:"rows"`
+	}
 }

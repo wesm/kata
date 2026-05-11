@@ -13,7 +13,7 @@ func TestReadyIssues_FiltersOutClosed(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	open := makeIssue(t, ctx, d, p.ID, "open", "tester")
 	closed := makeIssue(t, ctx, d, p.ID, "closed", "tester")
-	_, _, _, err := d.CloseIssue(ctx, closed.ID, "done", "tester")
+	_, _, _, err := d.CloseIssue(ctx, closed.ID, "done", "tester", "", nil)
 	require.NoError(t, err)
 
 	got := readyNumbers(t, ctx, d, p.ID)
@@ -39,7 +39,7 @@ func TestReadyIssues_ClosedBlockerUnblocksDownstream(t *testing.T) {
 	blocker := makeIssue(t, ctx, d, p.ID, "blocker", "tester")
 	blocked := makeIssue(t, ctx, d, p.ID, "blocked", "tester")
 	makeLink(ctx, t, d, p.ID, blocker.ID, blocked.ID, "blocks")
-	_, _, _, err := d.CloseIssue(ctx, blocker.ID, "done", "tester")
+	_, _, _, err := d.CloseIssue(ctx, blocker.ID, "done", "tester", "", nil)
 	require.NoError(t, err)
 
 	got := readyNumbers(t, ctx, d, p.ID)

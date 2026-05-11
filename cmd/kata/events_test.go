@@ -81,7 +81,7 @@ func TestEvents_TailEmitsNDJSON(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
-	a := startAsyncCLI(t, ctx, "--workspace", dir, "events", "--tail")
+	a := startAsyncCLI(t, ctx, "--workspace", dir, "events", "--tail", "--json")
 	defer a.stop()
 
 	time.Sleep(200 * time.Millisecond)
@@ -140,7 +140,9 @@ func TestEvents_TailFollowsResetRequired(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(contextWithBaseURL(context.Background(), env.URL), 5*time.Second)
 	defer cancel()
-	a := startAsyncCLI(t, ctx, "--workspace", dir, "events", "--tail")
+	// --json so the reset envelope is emitted as JSON for the assertion;
+	// text mode would surface a reset line in a different shape.
+	a := startAsyncCLI(t, ctx, "--workspace", dir, "events", "--tail", "--json")
 	defer a.stop()
 
 	time.Sleep(300 * time.Millisecond)
