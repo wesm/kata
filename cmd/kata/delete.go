@@ -53,7 +53,7 @@ func newDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runDestructive(cmd, baseURL, pid, issue.RefForAPI, issue.ShortID, "delete", confirm, nil)
+			return runDestructive(cmd, baseURL, pid, issue.RefForAPI, issue.QualifiedID, "delete", confirm, nil)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "required to perform the soft delete")
@@ -110,8 +110,10 @@ func resolveConfirm(cmd *cobra.Command, flagVal, expected, prompt string,
 
 // runDestructive POSTs to /actions/{verb} with the X-Kata-Confirm header.
 // pathRef is the literal {ref} URL path component; displayRef is the
-// short_id rendered in human-mode success lines (may differ from pathRef
-// when the user passed a ULID).
+// qualified "<project>#<short_id>" rendered in human-mode success lines
+// so a cross-workspace `kata delete other#abc4` prints an undo hint
+// (`kata restore other#abc4`) that resolves against the right project
+// regardless of the caller's workspace binding.
 //
 // pid and baseURL come from the caller's resolveIssueRefForCommand chain so
 // a qualified ref (`other#abc4` from a workspace bound to a different
