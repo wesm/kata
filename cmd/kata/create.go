@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -271,26 +272,27 @@ func resolveProjectID(ctx context.Context, baseURL, startPath string) (int64, er
 // name. Used by ref-consuming commands that need the project name to format
 // qualified IDs ("<project>#<short_id>") for display or for the destructive
 // confirmation header.
+//
+// Wire shape is chosen client-side so the daemon never has to stat the
+// client's filesystem (issue #35). Priority order:
+//
+//  1. --project X → {name: X}. Explicit target — alias-first repair
+//     would risk redirecting to a different project.
+//  2. .kata.toml readable → {name, alias?}. Daemon does alias-first
+//     repair; on rename the client rewrites .kata.toml to the
+//     canonical name returned in the response.
+//  3. Git workspace, no .kata.toml → {alias}. Daemon does strict
+//     alias lookup; unknown alias is 404 (init owns create-by-
+//     convention from git remotes — resolve never creates).
+//  4. Neither → {start_path}. Legacy local-only fallback.
 func resolveProjectIDAndName(ctx context.Context, baseURL, startPath string) (int64, string, error) {
-	client, err := httpClientFor(ctx, baseURL)
+	body, repair, err := buildResolveRequest(startPath)
 	if err != nil {
 		return 0, "", err
 	}
-	body := map[string]any{}
-	if project := strings.TrimSpace(flags.Project); project != "" {
-		body["name"] = project
-	} else {
-		_, _, err := config.FindProjectConfig(startPath)
-		switch {
-		case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
-			body["start_path"] = startPath
-		default:
-			return 0, "", &cliError{
-				Message:  "read .kata.toml: " + err.Error(),
-				Kind:     kindValidation,
-				ExitCode: ExitValidation,
-			}
-		}
+	client, err := httpClientFor(ctx, baseURL)
+	if err != nil {
+		return 0, "", err
 	}
 	status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
 		baseURL+"/api/v1/projects/resolve", body)
@@ -309,7 +311,112 @@ func resolveProjectIDAndName(ctx context.Context, baseURL, startPath string) (in
 	if err := json.Unmarshal(bs, &b); err != nil {
 		return 0, "", err
 	}
+	if repair != nil {
+		if err := repair(b.Project.Name); err != nil {
+			return 0, "", err
+		}
+	}
 	return b.Project.ID, b.Project.Name, nil
+}
+
+// buildResolveRequest selects the wire shape for a resolve and returns
+// an optional callback for client-side .kata.toml repair on rename.
+func buildResolveRequest(startPath string) (map[string]any, func(string) error, error) {
+	body := map[string]any{}
+
+	if project := strings.TrimSpace(flags.Project); project != "" {
+		body["name"] = project
+		return body, nil, nil
+	}
+
+	disc, err := config.DiscoverPaths(startPath)
+	if err != nil {
+		// Tolerate "not exist" so a typo in --workspace still surfaces
+		// as a uniform daemon-side error instead of a divergent
+		// client-side stat error. Other stat failures (permission,
+		// etc.) propagate.
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]any{"start_path": startPath}, nil, nil
+		}
+		return nil, nil, &cliError{
+			Message:  err.Error(),
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
+
+	var tomlCfg *config.ProjectConfig
+	if disc.WorkspaceRoot != "" {
+		cfg, err := config.ReadProjectConfig(disc.WorkspaceRoot)
+		switch {
+		case err == nil:
+			tomlCfg = cfg
+		case errors.Is(err, config.ErrProjectConfigMissing):
+			// no .kata.toml here
+		default:
+			return nil, nil, &cliError{
+				Message:  "read .kata.toml: " + err.Error(),
+				Kind:     kindValidation,
+				ExitCode: ExitValidation,
+			}
+		}
+	}
+
+	// Alias derivation is best-effort: a broken git config shouldn't
+	// block resolve when .kata.toml supplies a name. Without a name to
+	// fall back to, the derivation error must surface so the user can
+	// fix it instead of seeing an opaque daemon stat error.
+	var alias *config.AliasInfo
+	if disc.GitRoot != "" || disc.WorkspaceRoot != "" {
+		info, derr := config.ComputeAliasIdentity(disc)
+		switch {
+		case derr == nil:
+			alias = &info
+		case tomlCfg == nil:
+			return nil, nil, &cliError{
+				Message:  derr.Error(),
+				Kind:     kindValidation,
+				ExitCode: ExitValidation,
+			}
+		}
+	}
+
+	if tomlCfg != nil && tomlCfg.Project.Name != "" {
+		body["name"] = tomlCfg.Project.Name
+		if alias != nil {
+			body["alias"] = aliasInputBody(*alias)
+		}
+		workspaceRoot := disc.WorkspaceRoot
+		current := tomlCfg.Project.Name
+		repair := func(canonical string) error {
+			if canonical == "" || canonical == current {
+				return nil
+			}
+			if err := config.WriteProjectConfig(workspaceRoot, canonical); err != nil {
+				return fmt.Errorf("rewrite .kata.toml: %w", err)
+			}
+			return nil
+		}
+		return body, repair, nil
+	}
+
+	if alias != nil {
+		body["alias"] = aliasInputBody(*alias)
+		return body, nil, nil
+	}
+
+	body["start_path"] = startPath
+	return body, nil, nil
+}
+
+// aliasInputBody marshals an AliasInfo into the wire shape the daemon
+// expects (mirrors api.AliasInput).
+func aliasInputBody(info config.AliasInfo) map[string]any {
+	return map[string]any{
+		"identity":  info.Identity,
+		"kind":      info.Kind,
+		"root_path": info.RootPath,
+	}
 }
 
 // printMutation formats a mutation response (issue create/edit/close/reopen)

@@ -60,13 +60,24 @@ type ProjectOut struct {
 	Stats *ProjectStatsOut `json:"stats,omitempty"`
 }
 
-// ResolveProjectRequest is POST /api/v1/projects/resolve. Name performs a
-// path-free strict project-name lookup; StartPath resolves from workspace
-// metadata.
+// ResolveProjectRequest is POST /api/v1/projects/resolve.
+//
+// Inputs are tried in priority order:
+//
+//  1. Alias: path-free alias-first lookup. The daemon resolves by
+//     alias.identity; on miss it falls back to Name (if supplied) and
+//     attaches the alias on first-seen. Resolve is strict — the daemon
+//     never creates a project on alias miss, so a git-only client whose
+//     alias is unregistered gets a 404 (run "kata init").
+//  2. Name (without Alias): strict path-free name lookup.
+//  3. StartPath: legacy local-daemon flow that walks the daemon's
+//     filesystem from the client-supplied path. Only useful when the
+//     client and daemon share a filesystem.
 type ResolveProjectRequest struct {
 	Body struct {
-		Name      string `json:"name,omitempty" doc:"project name; preferred over start_path"`
-		StartPath string `json:"start_path,omitempty" doc:"absolute path to resolve from (daemon-side filesystem)"`
+		Name      string      `json:"name,omitempty" doc:"project name; required for first-seen alias attach"`
+		Alias     *AliasInput `json:"alias,omitempty" doc:"client-derived alias metadata; daemon resolves alias first, then falls back to name"`
+		StartPath string      `json:"start_path,omitempty" doc:"absolute path to resolve from (daemon-side filesystem); legacy local-only fallback"`
 	}
 }
 

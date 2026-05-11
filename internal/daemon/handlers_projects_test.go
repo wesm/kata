@@ -135,6 +135,152 @@ func TestResolve_NeitherFieldSet(t *testing.T) {
 	assert.Contains(t, string(bs), "start_path")
 }
 
+// TestResolve_ByAliasInput_PathFree verifies remote clients can
+// resolve a registered project by sending alias metadata alone — no
+// start_path on the wire. This is the remote-mode counterpart of init's
+// path-free flow: a daemon on host A serves a client on host B without
+// stat'ing host B's workspace.
+func TestResolve_ByAliasInput_PathFree(t *testing.T) {
+	ts := newTestServer(t)
+
+	// Register via path-free init with alias metadata, mimicking what
+	// the new client would do.
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"name": "kata",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+
+	// Resolve by alias only — no name, no start_path.
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"name":"kata"`)
+}
+
+// TestResolve_ByAliasInput_NotRegistered returns 404 when neither
+// the alias nor a name match. The daemon must not derive a project
+// name from the alias and create-by-convention — resolve is strict.
+func TestResolve_ByAliasInput_NotRegistered(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/never-seen",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_initialized")
+}
+
+// TestResolve_AliasMissNameHit_FirstSeenAttach handles the case
+// where a client has a .kata.toml (so it sends a name) and a git
+// workspace whose alias is not yet attached on this daemon (e.g. first
+// resolve from a new host). The daemon falls back to name lookup, then
+// attaches the alias on first-seen so subsequent resolves go through
+// the alias path.
+func TestResolve_AliasMissNameHit_FirstSeenAttach(t *testing.T) {
+	ts := newTestServer(t)
+
+	// Register a project by name only (no alias attached).
+	_, _ = postJSON(t, ts, "/api/v1/projects", map[string]any{"name": "kata"})
+
+	// Client has both name (from .kata.toml) and alias (from git remote)
+	// but the alias is not yet attached on the daemon.
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"name": "kata",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"name":"kata"`)
+	assert.Contains(t, string(bs), `"alias_identity":"github.com/wesm/kata"`,
+		"alias must be attached on first-seen so subsequent resolves hit the alias path")
+
+	// Second resolve, alias-only, must succeed against the attached alias.
+	resp2, bs2 := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	require.Equal(t, 200, resp2.StatusCode, string(bs2))
+	assert.Contains(t, string(bs2), `"name":"kata"`)
+}
+
+// TestResolve_AliasHitReturnsCanonicalName covers the rename-repair
+// case: a project was renamed daemon-side, but the client's .kata.toml
+// still carries the old name. Alias-first lookup must return the
+// canonical name so the client can rewrite .kata.toml.
+func TestResolve_AliasHitReturnsCanonicalName(t *testing.T) {
+	ts := newTestServer(t)
+
+	// Register and capture project id.
+	_, bs := postJSON(t, ts, "/api/v1/projects", map[string]any{
+		"name": "old-name",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	var initBody struct {
+		Project struct {
+			ID int64 `json:"id"`
+		} `json:"project"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &initBody))
+
+	// Rename project daemon-side.
+	rresp, rbs := patchJSON(t, ts, "/api/v1/projects/"+strconv.FormatInt(initBody.Project.ID, 10),
+		map[string]any{"name": "new-name"})
+	require.Equal(t, 200, rresp.StatusCode, string(rbs))
+
+	// Client still claims the old name but its alias is attached to the
+	// renamed project. Alias must win and response must carry the
+	// canonical (new) name.
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"name": "old-name",
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "git",
+			"root_path": "/client/workspace",
+		},
+	})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), `"name":"new-name"`)
+}
+
+// TestResolve_AliasInput_RejectsInvalidKind enforces the same alias
+// validation init applies, so callers see a uniform 400 instead of an
+// opaque downstream failure.
+func TestResolve_AliasInput_RejectsInvalidKind(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, bs := postJSON(t, ts, "/api/v1/projects/resolve", map[string]any{
+		"alias": map[string]any{
+			"identity":  "github.com/wesm/kata",
+			"kind":      "bogus",
+			"root_path": "/work",
+		},
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(bs))
+	assert.Contains(t, string(bs), "kind")
+}
+
 // TestResolve_NameWinsOverStartPath verifies precedence: when both
 // name and start_path are supplied, name takes priority and the daemon
 // never touches the (potentially nonexistent) path.

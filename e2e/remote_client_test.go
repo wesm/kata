@@ -190,6 +190,89 @@ func TestRemoteInit_PathFreeWireShape(t *testing.T) {
 	assert.FileExists(t, filepath.Join(clientWS, ".kata.toml"))
 }
 
+// TestRemoteResolve_PathFreeWireShape is the regression e2e for issue
+// #35. After kata init binds a workspace, every subsequent project-
+// scoped command (list, show, create, …) goes through
+// POST /api/v1/projects/resolve. The wire shape must stay path-free
+// — {name, alias?} when .kata.toml is committed — so a client on host
+// B can resolve against a daemon on host A without the daemon stat'ing
+// a path that doesn't exist on its filesystem.
+func TestRemoteResolve_PathFreeWireShape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e")
+	}
+	bin := buildKataBinary(t)
+
+	port := freeTCPPort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	serverHome := t.TempDir()
+	daemonStderr := &safeBuffer{}
+	daemon := exec.Command(bin, "daemon", "start", "--listen", addr) //nolint:gosec
+	daemon.Env = append(os.Environ(),
+		"KATA_HOME="+serverHome,
+		"KATA_DB="+filepath.Join(serverHome, "kata.db"),
+	)
+	daemon.Stdout = io.Discard
+	daemon.Stderr = daemonStderr
+	daemon.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, daemon.Start())
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon stderr:\n%s", daemonStderr.String())
+		}
+	})
+	t.Cleanup(func() { stopDaemon(daemon) })
+	waitForPing(t, "http://"+addr, 5*time.Second)
+
+	target, err := url.Parse("http://" + addr)
+	require.NoError(t, err)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var (
+		mu            sync.Mutex
+		resolveBodies []string
+	)
+	recorder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/projects/resolve" && r.Method == http.MethodPost {
+			bs, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			resolveBodies = append(resolveBodies, string(bs))
+			mu.Unlock()
+			r.Body = io.NopCloser(bytes.NewReader(bs))
+			r.ContentLength = int64(len(bs))
+		}
+		proxy.ServeHTTP(w, r) //nolint:gosec // G704: forwards to a fixed-test loopback daemon
+	}))
+	t.Cleanup(recorder.Close)
+
+	clientHome := t.TempDir()
+	clientWS := initRepo(t, "https://github.com/wesm/system.git")
+	clientEnv := append(os.Environ(),
+		"KATA_HOME="+clientHome,
+		"KATA_DB="+filepath.Join(clientHome, "kata.db"),
+		"KATA_SERVER="+recorder.URL,
+		"KATA_AUTHOR=e2e-bot",
+	)
+
+	// Bind the workspace first; init writes .kata.toml.
+	runRemoteCmd(t, bin, clientWS, clientEnv, "init")
+	require.FileExists(t, filepath.Join(clientWS, ".kata.toml"))
+
+	// list goes through resolve. With .kata.toml present, the request
+	// must carry {name, alias} and never start_path.
+	runRemoteCmd(t, bin, clientWS, clientEnv, "list")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, resolveBodies, "kata list must issue POST /api/v1/projects/resolve")
+	body := resolveBodies[0]
+	assert.Contains(t, body, `"name":"system"`,
+		"client must send the locally-derived project name")
+	assert.Contains(t, body, `"alias"`,
+		"client must send alias metadata so the daemon can do alias-first repair")
+	assert.NotContains(t, body, "start_path",
+		"remote resolve must not leak the client filesystem path to the daemon (issue #35)")
+}
+
 // freeTCPPort binds 127.0.0.1:0, captures the bound port, and closes.
 // There is a small race window before the caller binds again; accept it.
 func freeTCPPort(t *testing.T) int {

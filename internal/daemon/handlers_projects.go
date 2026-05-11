@@ -68,7 +68,7 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "POST",
 		Path:        "/api/v1/projects/resolve",
 	}, func(ctx context.Context, in *api.ResolveProjectRequest) (*api.ResolveProjectResponse, error) {
-		out, err := resolveProject(ctx, cfg.DB, in.Body.Name, in.Body.StartPath)
+		out, err := resolveProject(ctx, cfg.DB, in.Body.Alias, in.Body.Name, in.Body.StartPath)
 		if err != nil {
 			return nil, err
 		}
@@ -311,14 +311,21 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	})
 }
 
-// resolveProject implements project resolution.
-func resolveProject(ctx context.Context, store *db.DB, name, startPath string) (*api.ProjectResolveBody, error) {
+// resolveProject implements project resolution. Inputs are tried in
+// priority order: alias (path-free, with optional name fallback +
+// first-seen attach), then bare name (strict path-free lookup), then
+// start_path (legacy local-daemon walk). Resolve never creates
+// projects: alias misses without a name match return 404.
+func resolveProject(ctx context.Context, store *db.DB, alias *api.AliasInput, name, startPath string) (*api.ProjectResolveBody, error) {
+	if alias != nil {
+		return resolveByAliasInput(ctx, store, alias, name)
+	}
 	if name != "" {
 		return resolveByName(ctx, store, name)
 	}
 	if startPath == "" {
 		return nil, api.NewError(400, "validation",
-			"either name or start_path is required", "", nil)
+			"one of alias, name, or start_path is required", "", nil)
 	}
 	abs, err := filepath.Abs(startPath)
 	if err != nil {
@@ -342,6 +349,82 @@ func resolveProject(ctx context.Context, store *db.DB, name, startPath string) (
 	return nil, api.NewError(404, "project_not_initialized",
 		"no .kata.toml ancestor and no git ancestor",
 		`run "kata init" inside a workspace`, nil)
+}
+
+// resolveByAliasInput handles the alias-aware path-free resolve flow.
+// The daemon never touches the client filesystem: alias.identity is the
+// canonical key; alias.root_path is stored as opaque metadata. When the
+// alias is unknown but a name is supplied, the daemon falls back to
+// name lookup and attaches the alias on first-seen — so a remote client
+// resolving against a daemon that was previously only reachable from a
+// different host upgrades to the alias-first path on the next call.
+// Resolve never creates projects: an unknown alias with an unknown (or
+// absent) name returns 404.
+func resolveByAliasInput(ctx context.Context, store *db.DB, in *api.AliasInput, name string) (*api.ProjectResolveBody, error) {
+	info := config.AliasInfo{
+		Identity: in.Identity,
+		Kind:     in.Kind,
+		RootPath: in.RootPath,
+	}
+	if err := config.ValidateAliasInfo(info); err != nil {
+		return nil, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	alias, err := store.AliasByIdentity(ctx, info.Identity)
+	switch {
+	case err == nil:
+		if err := store.TouchAlias(ctx, alias.ID, info.RootPath); err != nil && !errors.Is(err, db.ErrNotFound) {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if refreshed, err := store.AliasByIdentity(ctx, info.Identity); err == nil {
+			alias = refreshed
+		}
+		project, err := store.ProjectByID(ctx, alias.ProjectID)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		return &api.ProjectResolveBody{
+			Project:       dbProjectToOut(project),
+			Alias:         alias,
+			WorkspaceRoot: info.RootPath,
+		}, nil
+	case !errors.Is(err, db.ErrNotFound):
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+
+	// Alias unknown. Fall back to name lookup if supplied so a fresh
+	// client (new host or fresh checkout) can still resolve when the
+	// project was registered without this alias.
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, api.NewError(404, "project_not_initialized",
+			"alias "+info.Identity+" is not registered",
+			`run "kata init" in this workspace`, nil)
+	}
+	if err := config.ValidateProjectName(name); err != nil {
+		return nil, api.NewError(400, "validation", err.Error(), "", nil)
+	}
+	project, err := store.ProjectByName(ctx, name)
+	if errors.Is(err, db.ErrNotFound) {
+		return nil, api.NewError(404, "project_not_initialized",
+			"project "+name+" is not registered",
+			`run "kata init" in this workspace`, nil)
+	}
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	// First-seen attach: bind the supplied alias to the matched project
+	// so subsequent resolves hit the alias path. Reassign=false matches
+	// resolve's strict-lookup contract; an existing alias bound
+	// elsewhere surfaces as 409 rather than silently moving.
+	attached, err := attachAlias(ctx, store, project.ID, info, false)
+	if err != nil {
+		return nil, err
+	}
+	return &api.ProjectResolveBody{
+		Project:       dbProjectToOut(project),
+		Alias:         attached,
+		WorkspaceRoot: info.RootPath,
+	}, nil
 }
 
 func resolveByName(ctx context.Context, store *db.DB, name string) (*api.ProjectResolveBody, error) {

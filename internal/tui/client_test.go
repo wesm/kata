@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/config"
+	"github.com/wesm/kata/internal/testfix"
 )
 
 // newTestClient stands up an httptest server with handler, registers
@@ -713,23 +714,83 @@ func TestClient_ResolveProject_FallsBackOnMissingConfig(t *testing.T) {
 	assert.False(t, hasName)
 }
 
-func TestClient_ResolveProject_UsesStartPathForWorkspaceConfig(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, config.WriteProjectConfig(dir, "stale-name"))
+// TestClient_ResolveProject_SendsNameAndAliasForWorkspaceConfig is
+// regression coverage for issue #35: when .kata.toml is readable, the
+// TUI must send {name, alias} so a daemon on another host can resolve
+// without stat'ing the client's filesystem.
+func TestClient_ResolveProject_SendsNameAndAliasForWorkspaceConfig(t *testing.T) {
+	dir := testfix.InitGitRepo(t)
+	require.NoError(t, config.WriteProjectConfig(dir, "project-name"))
 
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bs, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(bs, &got)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"project":{"id":42}}`))
+		_, _ = w.Write([]byte(`{"project":{"id":42,"name":"project-name"}}`))
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, srv.Client())
 
 	_, err := c.ResolveProject(t.Context(), dir)
 	require.NoError(t, err)
-	assert.Equal(t, dir, got["start_path"])
+	assert.Equal(t, "project-name", got["name"])
+	alias, ok := got["alias"].(map[string]any)
+	require.True(t, ok, "alias must be sent alongside name so daemon can do alias-first repair")
+	assert.NotEmpty(t, alias["identity"])
+	_, hasStartPath := got["start_path"]
+	assert.False(t, hasStartPath, "request must be path-free")
+}
+
+// TestClient_ResolveProject_SendsAliasOnlyForGitWorkspaceWithoutKataToml
+// covers a git workspace without .kata.toml: client sends alias alone.
+// Resolve must not derive a project name from the git remote (init
+// owns by-convention).
+func TestClient_ResolveProject_SendsAliasOnlyForGitWorkspaceWithoutKataToml(t *testing.T) {
+	dir := testfix.InitGitRepo(t)
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bs, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bs, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project":{"id":42,"name":"x"}}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	_, err := c.ResolveProject(t.Context(), dir)
+	require.NoError(t, err)
+	alias, ok := got["alias"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEmpty(t, alias["identity"])
 	_, hasName := got["name"]
-	assert.False(t, hasName, "ordinary workspace resolution must let daemon alias repair run")
+	assert.False(t, hasName)
+	_, hasStartPath := got["start_path"]
+	assert.False(t, hasStartPath)
+}
+
+// TestClient_ResolveProject_RewritesStaleKataToml verifies the
+// rename-repair handoff to the client: when the daemon returns a
+// canonical name that differs from the local .kata.toml, the TUI
+// rewrites the file. Mirrors the CLI behavior so both clients keep
+// .kata.toml fresh.
+func TestClient_ResolveProject_RewritesStaleKataToml(t *testing.T) {
+	dir := testfix.InitGitRepo(t)
+	require.NoError(t, config.WriteProjectConfig(dir, "stale-name"))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project":{"id":42,"name":"canonical-name"}}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, srv.Client())
+
+	_, err := c.ResolveProject(t.Context(), dir)
+	require.NoError(t, err)
+
+	cfg, _, err := config.FindProjectConfig(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "canonical-name", cfg.Project.Name,
+		"stale .kata.toml must be rewritten to the daemon's canonical name")
 }

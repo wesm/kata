@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 
 	"github.com/wesm/kata/internal/config"
@@ -185,26 +186,110 @@ func (c *Client) EditBody(
 
 // ResolveProject runs the §4.2 resolution flow against startPath.
 //
-// start_path lets the daemon resolve by alias first and repair stale
-// .kata.toml bindings after project rename/merge. A readable local .kata.toml
-// is still parsed first so malformed config fails with a direct fix-it error.
+// Wire shape is chosen client-side so the daemon never has to stat the
+// client's filesystem (issue #35): {name, alias?} when .kata.toml is
+// readable, {alias} for a git workspace without .kata.toml, and
+// {start_path} as a legacy local-only fallback. When the daemon
+// returns a canonical name that differs from the local .kata.toml, the
+// client rewrites the file in place.
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
-	var resp ResolveResp
-	req := map[string]string{}
-	_, _, err := config.FindProjectConfig(startPath)
-	switch {
-	case err == nil, errors.Is(err, config.ErrProjectConfigMissing):
-		req["start_path"] = startPath
-	default:
-		// Found a .kata.toml but couldn't parse it. Propagate so the
-		// user sees the broken-config error instead of a confusing
-		// daemon-side stat failure under remote-client mode.
-		return nil, fmt.Errorf("read .kata.toml: %w", err)
+	req, repair, err := buildResolveRequest(startPath)
+	if err != nil {
+		return nil, err
 	}
+	var resp ResolveResp
 	if err := c.do(ctx, http.MethodPost, "/api/v1/projects/resolve", req, &resp); err != nil {
 		return nil, err
 	}
+	if repair != nil {
+		if err := repair(resp.Project.Name); err != nil {
+			return nil, err
+		}
+	}
 	return &resp, nil
+}
+
+// buildResolveRequest selects the resolve wire shape and returns an
+// optional callback that rewrites .kata.toml when the daemon's
+// canonical name differs from the local binding.
+func buildResolveRequest(startPath string) (map[string]any, func(string) error, error) {
+	disc, err := config.DiscoverPaths(startPath)
+	if err != nil {
+		// Path doesn't exist locally — pass through to start_path so
+		// the daemon's not-initialized error surfaces uniformly, same
+		// as the pre-12ced3a behavior. Permission and other stat
+		// errors still propagate (they indicate a real problem the
+		// user needs to know about).
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]any{"start_path": startPath}, nil, nil
+		}
+		return nil, nil, err
+	}
+	var tomlCfg *config.ProjectConfig
+	if disc.WorkspaceRoot != "" {
+		cfg, err := config.ReadProjectConfig(disc.WorkspaceRoot)
+		switch {
+		case err == nil:
+			tomlCfg = cfg
+		case errors.Is(err, config.ErrProjectConfigMissing):
+			// no .kata.toml
+		default:
+			// Surface the parse error directly so the user sees the
+			// fix-it message instead of a confusing daemon-side stat
+			// failure under remote-client mode.
+			return nil, nil, fmt.Errorf("read .kata.toml: %w", err)
+		}
+	}
+
+	var alias *config.AliasInfo
+	if disc.GitRoot != "" || disc.WorkspaceRoot != "" {
+		info, derr := config.ComputeAliasIdentity(disc)
+		switch {
+		case derr == nil:
+			alias = &info
+		case tomlCfg == nil:
+			return nil, nil, derr
+		}
+	}
+
+	body := map[string]any{}
+	if tomlCfg != nil && tomlCfg.Project.Name != "" {
+		body["name"] = tomlCfg.Project.Name
+		if alias != nil {
+			body["alias"] = aliasInputBody(*alias)
+		}
+		workspaceRoot := disc.WorkspaceRoot
+		current := tomlCfg.Project.Name
+		repair := func(canonical string) error {
+			if canonical == "" || canonical == current {
+				return nil
+			}
+			if err := config.WriteProjectConfig(workspaceRoot, canonical); err != nil {
+				return fmt.Errorf("rewrite .kata.toml: %w", err)
+			}
+			return nil
+		}
+		return body, repair, nil
+	}
+
+	if alias != nil {
+		body["alias"] = aliasInputBody(*alias)
+		return body, nil, nil
+	}
+
+	body["start_path"] = startPath
+	return body, nil, nil
+}
+
+// aliasInputBody marshals a config.AliasInfo into the api.AliasInput
+// wire shape (untyped map to keep the daemon-facing JSON local to
+// this file).
+func aliasInputBody(info config.AliasInfo) map[string]any {
+	return map[string]any{
+		"identity":  info.Identity,
+		"kind":      info.Kind,
+		"root_path": info.RootPath,
+	}
 }
 
 // ListLabels returns the per-label aggregate counts for projectID. The
