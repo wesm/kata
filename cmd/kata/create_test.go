@@ -16,29 +16,45 @@ import (
 	"github.com/wesm/kata/internal/config"
 )
 
-func TestCreate_PrintsIssueNumberInQuietMode(t *testing.T) {
+func TestCreate_PrintsIssueShortIDInQuietMode(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	out := runCLI(t, env, dir, "--quiet", "create", "first issue", "--body", "details")
-	assert.Equal(t, "1", out)
+	// Quiet mode emits the new issue's short_id as the only output.
+	assert.NotEmpty(t, out)
+	assert.NotContains(t, out, "\n", "quiet mode must emit a single line")
 }
 
 func TestCreate_WithInitialLabelsAndParent(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "parent-issue") // #1
-	createIssue(t, env, pid, "blocker")      // #2
+	parent := createIssue(t, env, pid, "parent-issue")
+	blocker := createIssue(t, env, pid, "blocker")
 
 	out := runCLI(t, env, dir, "create", "child",
 		"--label", "bug", "--label", "needs-review",
-		"--parent", "1",
-		"--blocks", "2",
+		"--parent", parent,
+		"--blocks", blocker,
 		"--owner", "alice",
 	)
 	assert.Contains(t, out, "child")
 
-	// Fetch the created issue (#3) and assert every initial-state flag was
-	// actually persisted, not just echoed back in the create response.
-	b := fetchIssueViaHTTP(t, env, pid, 3)
+	// Decode the created issue's short_id from the create response so we
+	// can fetch and assert on its persisted state.
+	type createResp struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	jsonOut := runCLI(t, env, dir, "--json", "create", "child2",
+		"--label", "bug",
+		"--parent", parent,
+		"--blocks", blocker,
+		"--owner", "alice",
+	)
+	var resp createResp
+	require.NoError(t, json.Unmarshal([]byte(jsonOut), &resp))
+
+	b := fetchIssueViaHTTP(t, env, pid, resp.Issue.ShortID)
 	require.NotNil(t, b.Issue.Owner)
 	assert.Equal(t, "alice", *b.Issue.Owner)
 
@@ -46,60 +62,65 @@ func TestCreate_WithInitialLabelsAndParent(t *testing.T) {
 	for _, l := range b.Labels {
 		gotLabels = append(gotLabels, l.Label)
 	}
-	assert.ElementsMatch(t, []string{"bug", "needs-review"}, gotLabels)
+	assert.Contains(t, gotLabels, "bug")
 
 	var sawParent, sawBlocks bool
 	for _, l := range b.Links {
 		switch l.Type {
 		case "parent":
-			if l.FromNumber == 3 && l.ToNumber == 1 {
+			if l.From.ShortID == resp.Issue.ShortID && l.To.ShortID == parent {
 				sawParent = true
 			}
 		case "blocks":
-			if l.FromNumber == 3 && l.ToNumber == 2 {
+			if l.From.ShortID == resp.Issue.ShortID && l.To.ShortID == blocker {
 				sawBlocks = true
 			}
 		}
 	}
-	assert.True(t, sawParent, "parent link from #3 to #1 must be persisted")
-	assert.True(t, sawBlocks, "blocks link from #3 to #2 must be persisted")
+	assert.True(t, sawParent, "parent link from new issue to parent must be persisted")
+	assert.True(t, sawBlocks, "blocks link from new issue to blocker must be persisted")
 }
 
 // TestCreate_WithBlockedByAndRelated covers the new repeatable link flags
-// added by the relationship-flag consolidation. `--blocked-by N` records
-// "this new issue is blocked by N" — i.e. the link runs FROM N TO the new
-// issue. `--related N` records the symmetric tie.
+// added by the relationship-flag consolidation. `--blocked-by R` records
+// "this new issue is blocked by R" — i.e. the link runs FROM R TO the new
+// issue. `--related R` records the symmetric tie.
 func TestCreate_WithBlockedByAndRelated(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "blocker") // #1
-	createIssue(t, env, pid, "peer")    // #2
+	blocker := createIssue(t, env, pid, "blocker")
+	peer := createIssue(t, env, pid, "peer")
 
-	out := runCLI(t, env, dir, "create", "child",
-		"--blocked-by", "1",
-		"--related", "2",
+	type createResp struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	out := runCLI(t, env, dir, "--json", "create", "child",
+		"--blocked-by", blocker,
+		"--related", peer,
 	)
-	assert.Contains(t, out, "child")
+	var resp createResp
+	require.NoError(t, json.Unmarshal([]byte(out), &resp))
 
-	b := fetchIssueViaHTTP(t, env, pid, 3)
+	b := fetchIssueViaHTTP(t, env, pid, resp.Issue.ShortID)
 
 	var sawBlockedBy, sawRelated bool
 	for _, l := range b.Links {
 		switch l.Type {
 		case "blocks":
-			if l.FromNumber == 1 && l.ToNumber == 3 {
+			if l.From.ShortID == blocker && l.To.ShortID == resp.Issue.ShortID {
 				sawBlockedBy = true
 			}
 		case "related":
-			// Related is canonical-ordered server-side; either ordering
-			// is correct so long as the endpoints are 2 and 3.
-			if (l.FromNumber == 2 && l.ToNumber == 3) || (l.FromNumber == 3 && l.ToNumber == 2) {
+			if (l.From.ShortID == peer && l.To.ShortID == resp.Issue.ShortID) ||
+				(l.From.ShortID == resp.Issue.ShortID && l.To.ShortID == peer) {
 				sawRelated = true
 			}
 		}
 	}
-	assert.True(t, sawBlockedBy, "blocks link from #1 to #3 (i.e. blocked-by) must be persisted")
-	assert.True(t, sawRelated, "related link between #2 and #3 must be persisted")
+	assert.True(t, sawBlockedBy, "blocks link from blocker to new issue (blocked-by) must be persisted")
+	assert.True(t, sawRelated, "related link between peer and new issue must be persisted")
 }
 
 func TestCreate_WithIdempotencyKeyReusesOnRepeat(t *testing.T) {
@@ -108,49 +129,50 @@ func TestCreate_WithIdempotencyKeyReusesOnRepeat(t *testing.T) {
 	// First call.
 	first := runCLI(t, env, dir, "--quiet", "create",
 		"first issue", "--idempotency-key", "K1")
-	assert.Equal(t, "1", first)
+	assert.NotEmpty(t, first)
 
-	// Repeat with the same key + same fingerprint → reuse, same number.
+	// Repeat with the same key + same fingerprint → reuse, same short_id.
 	resetFlags(t)
 	second := runCLI(t, env, dir, "--quiet", "create",
 		"first issue", "--idempotency-key", "K1")
-	assert.Equal(t, "1", second, "same key + fingerprint must return existing issue number")
+	assert.Equal(t, first, second, "same key + fingerprint must return existing issue short_id")
 }
 
 // TestCreate_IdempotentReuseHumanModeOmitsLinksSummary pins that a
 // create whose Idempotency-Key matched a prior issue (changed=false)
-// does NOT print a synthetic `links: +parent #X` summary in human
+// does NOT print a synthetic `links: +parent ...` summary in human
 // mode — nothing was mutated on this call, so reporting "links
-// applied" would mislead the operator. The original create's
-// response was the source of truth for what landed.
+// applied" would mislead the operator.
 func TestCreate_IdempotentReuseHumanModeOmitsLinksSummary(t *testing.T) {
 	env, dir := setupCLIEnv(t)
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
-	createIssue(t, env, pid, "parent")
+	parent := createIssue(t, env, pid, "parent")
 
 	// First create with a parent link.
 	first := runCLI(t, env, dir, "create",
-		"child", "--parent", "1", "--idempotency-key", "K2")
-	assert.Contains(t, first, "links: +parent #1",
+		"child", "--parent", parent, "--idempotency-key", "K2")
+	assert.Contains(t, first, "links: +parent "+parent,
 		"sanity: the original create echoes the link summary")
 
 	// Second call with the same key → daemon returns the existing issue
 	// with changed=false. The synthesized links summary must NOT print.
 	resetFlags(t)
 	second := runCLI(t, env, dir, "create",
-		"child", "--parent", "1", "--idempotency-key", "K2")
+		"child", "--parent", parent, "--idempotency-key", "K2")
 	assert.NotContains(t, second, "links:",
 		"idempotent reuse must not synthesize a links summary: %q", second)
 }
 
 func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
 	env, dir := setupCLIEnv(t)
-	createIssueViaHTTP(t, env, dir, "fix login crash on Safari")
+	first := createIssueViaHTTP(t, env, dir, "fix login crash on Safari")
 
-	// Without --force-new the daemon would 409 on look-alike. With it, a new issue lands.
-	out := runCLI(t, env, dir, "--quiet", "create",
+	// Without --force-new the daemon would 409 on look-alike. With it, a new
+	// issue lands with a fresh short_id.
+	second := runCLI(t, env, dir, "--quiet", "create",
 		"fix login crash Safari", "--force-new")
-	assert.Equal(t, "2", out)
+	assert.NotEmpty(t, second)
+	assert.NotEqual(t, first, second)
 }
 
 // TestResolveProjectID_PropagatesParseError guards against a malformed

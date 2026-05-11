@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -17,9 +18,9 @@ import (
 // newDeleteCmd returns the cobra.Command for `kata delete`.
 //
 // Spec §3.5 / §4.4: deletion is gated by --force and an X-Kata-Confirm header
-// whose value is the exact string "DELETE #N". The CLI accepts the header
-// value via --confirm (noninteractive) or builds it from a TTY prompt where
-// the user types just the issue number.
+// whose value is the exact string "DELETE <qualified>". The CLI accepts the
+// header value via --confirm (noninteractive) or builds it from a TTY prompt
+// where the user types the short_id.
 func newDeleteCmd() *cobra.Command {
 	var force bool
 	var confirm string
@@ -35,39 +36,39 @@ func newDeleteCmd() *cobra.Command {
 					Kind:    kindValidation, ExitCode: ExitValidation,
 				}
 			}
-			_, _, _, issue, err := resolveIssueRefForCommand(cmd, args[0])
+			ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, args[0])
 			if err != nil {
 				return err
 			}
-			expected := fmt.Sprintf("DELETE #%d", issue.Number)
+			// Resolve the issue's display short_id so the X-Kata-Confirm
+			// header carries the daemon-expected "<project>#<short_id>"
+			// form even when the user passed a ULID.
+			issue, err = hydrateRefWithQualified(ctx, baseURL, pid, issue, false)
+			if err != nil {
+				return err
+			}
+			expected := fmt.Sprintf("DELETE %s", issue.QualifiedID)
 			confirm, err = resolveConfirm(cmd, confirm, expected,
-				"Type the issue number to confirm: ", confirmPromptNumber)
+				fmt.Sprintf("Type %q to confirm: ", expected), confirmPromptFull)
 			if err != nil {
 				return err
 			}
-			return runDestructive(cmd, issue.Number, "delete", confirm, nil)
+			return runDestructive(cmd, baseURL, pid, issue.RefForAPI, issue.QualifiedID, "delete", confirm, nil)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "required to perform the soft delete")
-	cmd.Flags().StringVar(&confirm, "confirm", "", `exact confirmation string ("DELETE #N")`)
+	cmd.Flags().StringVar(&confirm, "confirm", "", `exact confirmation string ("DELETE <short_id>")`)
 	return cmd
 }
 
 // confirmMatcher decides whether the user's TTY input satisfies the prompt.
-// Two implementations exist: confirmPromptNumber (delete: just the bare
-// number) and confirmPromptFull (purge: the full "VERB #N" string). The
-// asymmetry is intentional per spec §3.5.
+// Both delete and purge now use confirmPromptFull (the full
+// "VERB <project>#<short_id>" string) so the X-Kata-Confirm header — which
+// must match that exact form — works whether the user typed in interactively
+// or passed it noninteractively via --confirm.
 type confirmMatcher func(line, expected string) bool
 
-// confirmPromptNumber accepts input matching just the issue number portion
-// of expected — used by `kata delete` per §3.5's lower-friction prompt.
-func confirmPromptNumber(line, expected string) bool {
-	_, num, _ := strings.Cut(expected, "#")
-	return line == num
-}
-
-// confirmPromptFull accepts only the exact expected string — used by
-// `kata purge` per §3.5's higher-friction prompt for the irreversible verb.
+// confirmPromptFull accepts only the exact expected string.
 func confirmPromptFull(line, expected string) bool {
 	return line == expected
 }
@@ -107,24 +108,20 @@ func resolveConfirm(cmd *cobra.Command, flagVal, expected, prompt string,
 	return expected, nil
 }
 
-// runDestructive POSTs to /actions/{verb} with the X-Kata-Confirm header. Used
-// by both delete and purge (Task 13). Verb-specific success printing is
-// handled here so the caller doesn't repeat scaffolding.
-func runDestructive(cmd *cobra.Command, number int64, verb, confirm string,
+// runDestructive POSTs to /actions/{verb} with the X-Kata-Confirm header.
+// pathRef is the literal {ref} URL path component; displayRef is the
+// qualified "<project>#<short_id>" rendered in human-mode success lines
+// so a cross-workspace `kata delete other#abc4` prints an undo hint
+// (`kata restore other#abc4`) that resolves against the right project
+// regardless of the caller's workspace binding.
+//
+// pid and baseURL come from the caller's resolveIssueRefForCommand chain so
+// a qualified ref (`other#abc4` from a workspace bound to a different
+// project) targets the project the ref names rather than the workspace's
+// project.
+func runDestructive(cmd *cobra.Command, baseURL string, pid int64, pathRef, displayRef, verb, confirm string,
 	extraBody map[string]any) error {
 	ctx := cmd.Context()
-	start, err := resolveStartPath(flags.Workspace)
-	if err != nil {
-		return err
-	}
-	baseURL, err := ensureDaemon(ctx)
-	if err != nil {
-		return err
-	}
-	pid, err := resolveProjectID(ctx, baseURL, start)
-	if err != nil {
-		return err
-	}
 	actor, _ := resolveActor(flags.As, nil)
 	// Build body from extraBody first so a future caller can't overwrite the
 	// resolved actor with a stray map key.
@@ -137,8 +134,8 @@ func runDestructive(cmd *cobra.Command, number int64, verb, confirm string,
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/%s", baseURL, pid, number, verb)
-	status, bs, err := httpDoJSONWithHeader(ctx, client, http.MethodPost, url,
+	postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/%s", baseURL, pid, url.PathEscape(pathRef), verb)
+	status, bs, err := httpDoJSONWithHeader(ctx, client, http.MethodPost, postURL,
 		map[string]string{"X-Kata-Confirm": confirm}, body)
 	if err != nil {
 		return err
@@ -146,12 +143,12 @@ func runDestructive(cmd *cobra.Command, number int64, verb, confirm string,
 	if status >= 400 {
 		return apiErrFromBody(status, bs)
 	}
-	return printDestructive(cmd, number, verb, bs)
+	return printDestructive(cmd, displayRef, verb, bs)
 }
 
 // printDestructive renders the destructive-action response in the active
 // output mode (JSON envelope, quiet, or one-line human).
-func printDestructive(cmd *cobra.Command, number int64, verb string, bs []byte) error {
+func printDestructive(cmd *cobra.Command, ref, verb string, bs []byte) error {
 	if flags.JSON {
 		var buf bytes.Buffer
 		if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
@@ -166,10 +163,10 @@ func printDestructive(cmd *cobra.Command, number int64, verb string, bs []byte) 
 	switch verb {
 	case "delete":
 		_, err := fmt.Fprintf(cmd.OutOrStdout(),
-			"#%d deleted (use `kata restore %d` to undo)\n", number, number)
+			"%s deleted (use `kata restore %s` to undo)\n", ref, ref)
 		return err
 	case "purge":
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d purged (irreversible)\n", number)
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s purged (irreversible)\n", ref)
 		return err
 	}
 	return nil

@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -14,29 +13,6 @@ import (
 	"github.com/wesm/kata/internal/config"
 	"github.com/wesm/kata/internal/db"
 )
-
-// activeIssueByNumber resolves an issue by (project_id, number) for surface
-// API handlers, gating on the parent project's archive state first. Returns
-// project_not_found 404 when the project is archived (mirroring every other
-// project-scoped handler) and issue_not_found 404 when the issue does not
-// exist. Errors are pre-wrapped api.NewError envelopes so call sites can
-// `return nil, err`.
-//
-// Internal callers that need to operate on issues whose parent project is
-// archived (merge / restore plumbing) must use store.IssueByNumber directly.
-func activeIssueByNumber(ctx context.Context, store *db.DB, projectID, number int64) (db.Issue, error) {
-	if _, err := activeProjectByID(ctx, store, projectID); err != nil {
-		return db.Issue{}, err
-	}
-	issue, err := store.IssueByNumber(ctx, projectID, number)
-	if errors.Is(err, db.ErrNotFound) {
-		return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
-	}
-	if err != nil {
-		return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
-	}
-	return issue, nil
-}
 
 // activeProjectByID resolves a project by rowid for surface API handlers
 // that should treat archived projects as not-found. Returns the api.NewError
@@ -63,12 +39,11 @@ func activeProjectByID(ctx context.Context, store *db.DB, id int64) (db.Project,
 // list-projects handler when ?include=stats is set (Task 3).
 func dbProjectToOut(p db.Project) api.ProjectOut {
 	return api.ProjectOut{
-		ID:              p.ID,
-		UID:             p.UID,
-		Name:            p.Name,
-		CreatedAt:       p.CreatedAt,
-		NextIssueNumber: p.NextIssueNumber,
-		DeletedAt:       p.DeletedAt,
+		ID:        p.ID,
+		UID:       p.UID,
+		Name:      p.Name,
+		CreatedAt: p.CreatedAt,
+		DeletedAt: p.DeletedAt,
 	}
 }
 
@@ -150,43 +125,8 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		return out, nil
 	})
 
-	huma.Register(humaAPI, huma.Operation{
-		OperationID: "resetIssueCounter",
-		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/reset-counter",
-	}, func(ctx context.Context, in *api.ResetCounterRequest) (*api.ResetCounterResponse, error) {
-		if in.Body.To < 1 {
-			return nil, api.NewError(400, "validation", "to must be >= 1", "", nil)
-		}
-		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
-			return nil, err
-		}
-		err := cfg.DB.ResetIssueCounter(ctx, in.ProjectID, in.Body.To)
-		if errors.Is(err, db.ErrInvalidCounterValue) {
-			return nil, api.NewError(400, "validation", "to must be >= 1", "", nil)
-		}
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "project_not_found", "project not found", "", nil)
-		}
-		var hasIssues *db.ProjectHasIssuesError
-		if errors.As(err, &hasIssues) {
-			return nil, api.NewError(http.StatusConflict, "project_has_issues",
-				fmt.Sprintf("cannot reset: project has %d issues; only counter resets on an empty project are allowed", hasIssues.Count),
-				"purge all issues before resetting the counter", map[string]any{
-					"issue_count": hasIssues.Count,
-				})
-		}
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		p, err := cfg.DB.ProjectByID(ctx, in.ProjectID)
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		out := &api.ResetCounterResponse{}
-		out.Body.Project = dbProjectToOut(p)
-		return out, nil
-	})
+	// /reset-counter endpoint removed: spec §9.5 drops the per-project
+	// issue counter, so there is no value to reset.
 
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "showProject",
@@ -230,12 +170,8 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if errors.Is(err, db.ErrProjectMergeSameProject) {
 			return nil, api.NewError(400, "validation", "cannot merge a project into itself", "", nil)
 		}
-		var collision *db.ProjectMergeCollisionError
-		if errors.As(err, &collision) {
-			return nil, api.NewError(409, "project_merge_issue_number_collision",
-				"source and target have overlapping issue numbers",
-				"resolve collisions before merging", map[string]any{"numbers": collision.Numbers})
-		}
+		// project_merge_issue_number_collision is gone — short_id collisions
+		// auto-extend in the db layer (spec §9.4).
 		var mappingCollision *db.ProjectMergeImportMappingCollisionError
 		if errors.As(err, &mappingCollision) {
 			return nil, api.NewError(409, "project_merge_import_mapping_collision",
@@ -256,13 +192,22 @@ func registerProjectsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
+		extensions := make([]api.MergeShortIDExtension, 0, len(merged.ShortIDExtensions))
+		for _, ext := range merged.ShortIDExtensions {
+			extensions = append(extensions, api.MergeShortIDExtension{
+				UID:              ext.UID,
+				PreMergeShortID:  ext.PreMergeShortID,
+				PostMergeShortID: ext.PostMergeShortID,
+			})
+		}
 		return &api.MergeProjectResponse{Body: api.MergeProjectResultOut{
-			Source:         dbProjectToOut(merged.Source),
-			Target:         dbProjectToOut(merged.Target),
-			IssuesMoved:    merged.IssuesMoved,
-			AliasesMoved:   merged.AliasesMoved,
-			EventsMoved:    merged.EventsMoved,
-			PurgeLogsMoved: merged.PurgeLogsMoved,
+			Source:            dbProjectToOut(merged.Source),
+			Target:            dbProjectToOut(merged.Target),
+			IssuesMoved:       merged.IssuesMoved,
+			AliasesMoved:      merged.AliasesMoved,
+			EventsMoved:       merged.EventsMoved,
+			PurgeLogsMoved:    merged.PurgeLogsMoved,
+			ShortIDExtensions: extensions,
 		}}, nil
 	})
 

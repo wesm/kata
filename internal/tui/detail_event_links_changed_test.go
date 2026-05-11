@@ -19,47 +19,47 @@ func TestLinksChangedDesc(t *testing.T) {
 		{
 			name: "parent_set_only",
 			payload: map[string]any{
-				"parent_set": float64(10),
+				"parent_set": "aa10",
 			},
-			want: "links: +parent #10",
+			want: "links: +parent #aa10",
 		},
 		{
 			name: "parent_removed_only",
 			payload: map[string]any{
-				"parent_removed": float64(7),
+				"parent_removed": "bb07",
 			},
-			want: "links: -parent #7",
+			want: "links: -parent #bb07",
 		},
 		{
 			name: "parent_replace",
 			payload: map[string]any{
-				"parent_set":     float64(10),
-				"parent_removed": float64(7),
+				"parent_set":     "aa10",
+				"parent_removed": "bb07",
 			},
-			want: "links: parent #7→#10",
+			want: "links: parent #bb07→#aa10",
 		},
 		{
 			name: "blocks_added",
 			payload: map[string]any{
-				"blocks_added": []any{float64(50), float64(51)},
+				"blocks_added": []any{"x050", "x051"},
 			},
-			want: "links: +blocks #50, +blocks #51",
+			want: "links: +blocks #x050, +blocks #x051",
 		},
 		{
 			name: "blocked_by_removed",
 			payload: map[string]any{
-				"blocked_by_removed": []any{float64(15)},
+				"blocked_by_removed": []any{"y015"},
 			},
-			want: "links: -blocked_by #15",
+			want: "links: -blocked_by #y015",
 		},
 		{
 			name: "mixed",
 			payload: map[string]any{
-				"parent_set":      float64(2),
-				"blocks_added":    []any{float64(50)},
-				"related_removed": []any{float64(9)},
+				"parent_set":      "p002",
+				"blocks_added":    []any{"x050"},
+				"related_removed": []any{"r009"},
 			},
-			want: "links: +parent #2, +blocks #50, -related #9",
+			want: "links: +parent #p002, +blocks #x050, -related #r009",
 		},
 		{
 			name:    "empty",

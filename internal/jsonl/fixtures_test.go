@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,8 +195,11 @@ func buildRichJSONLFixture(t *testing.T) richJSONLFixture {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: blocker.ID, EventIssueNumber: blocker.Number,
-		FromNumber: blocker.Number, ToNumber: login.Number, Actor: "tester",
+		EventType:    "issue.linked",
+		EventIssueID: blocker.ID,
+		FromShortID:  blocker.ShortID, FromUID: blocker.UID,
+		ToShortID: login.ShortID, ToUID: login.UID,
+		Actor: "tester",
 	})
 	require.NoError(t, err)
 	_, _, _, err = d.SoftDeleteIssue(ctx, softDeleted.ID, "tester")
@@ -206,4 +210,80 @@ func buildRichJSONLFixture(t *testing.T) richJSONLFixture {
 	require.NotNil(t, pl.PurgeResetAfterEventID)
 
 	return richJSONLFixture{DB: d, Project: p1}
+}
+
+// v7Issue is a minimal issue fixture for buildV7Fixture. The fixture emits a
+// v7-schema JSONL stream (export_version=7) where issue envelopes carry
+// `number` and lack `short_id` — the shape that exercises the v7→v8 cutover.
+type v7Issue struct {
+	ProjectID   int64
+	ProjectName string
+	UID         string
+	Number      int64
+	Title       string
+}
+
+// v7Event lets cutover tests bundle one or more event envelopes into a
+// v7 fixture without duplicating the envelope scaffolding per test. ID
+// is the event's row id; ProjectID matches an issue. Type, IssueID,
+// IssueUID, and Payload set the event body. PayloadJSON is the raw v7-
+// shaped payload object the cutover should rewrite.
+type v7Event struct {
+	ID          int64
+	ProjectID   int64
+	ProjectName string
+	Type        string
+	IssueID     int64
+	IssueUID    string
+	PayloadJSON string
+}
+
+// buildV7Fixture returns a JSONL string at export_version=7 containing project
+// envelopes (one per distinct ProjectID/ProjectName pair, in first-seen order)
+// followed by issue envelopes in the given order. The output is intended for
+// jsonl.Import, which detects export_version<8 and runs the v7→v8 cutover
+// (derives short_ids in ULID-ascending order per project).
+func buildV7Fixture(t *testing.T, issues []v7Issue) string {
+	return buildV7FixtureWith(t, issues, nil)
+}
+
+// buildV7FixtureWith is the events-aware sibling of buildV7Fixture.
+func buildV7FixtureWith(t *testing.T, issues []v7Issue, events []v7Event) string {
+	t.Helper()
+	var lines []string
+	lines = append(lines, `{"kind":"meta","data":{"key":"export_version","value":"7"}}`)
+	seenProject := map[int64]bool{}
+	for _, iss := range issues {
+		if seenProject[iss.ProjectID] {
+			continue
+		}
+		seenProject[iss.ProjectID] = true
+		// Use a fixed ULID base for projects so the fixture is deterministic;
+		// the high byte tracks the project ID so distinct projects get
+		// distinct UIDs.
+		projectUID := "01HZZZZZZZZZZZZZZZZZZZZZZZ"
+		switch iss.ProjectID {
+		case 2:
+			projectUID = "01HZZZZZZZZZZZZZZZZZZZZZ02"
+		case 3:
+			projectUID = "01HZZZZZZZZZZZZZZZZZZZZZ03"
+		}
+		lines = append(lines, fmt.Sprintf(
+			`{"kind":"project","data":{"id":%d,"uid":%q,"name":%q,"created_at":"2026-05-03T00:00:00.000Z","next_issue_number":%d}}`,
+			iss.ProjectID, projectUID, iss.ProjectName, len(issues)+1))
+	}
+	for _, iss := range issues {
+		lines = append(lines, fmt.Sprintf(
+			`{"kind":"issue","data":{"id":%d,"uid":%q,"project_id":%d,"number":%d,"title":%q,"body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
+			iss.Number, iss.UID, iss.ProjectID, iss.Number, iss.Title))
+	}
+	for _, ev := range events {
+		// origin_instance_uid is a fixed test value; events.uid is per-ID so
+		// multiple events in one fixture don't collide on the UNIQUE.
+		eventUID := fmt.Sprintf("01HZZZZZZZZZZZZZZZZZZZZE%02d", ev.ID%100)
+		lines = append(lines, fmt.Sprintf(
+			`{"kind":"event","data":{"id":%d,"project_id":%d,"project_name":%q,"issue_id":%d,"issue_uid":%q,"related_issue_id":null,"related_issue_uid":null,"type":%q,"actor":"tester","payload":%s,"created_at":"2026-05-03T00:00:03.000Z","uid":%q,"origin_instance_uid":"01HZZZZZZZZZZZZZZZZZZZZZ00"}}`,
+			ev.ID, ev.ProjectID, ev.ProjectName, ev.IssueID, ev.IssueUID, ev.Type, ev.PayloadJSON, eventUID))
+	}
+	return buildJSONL(lines...)
 }

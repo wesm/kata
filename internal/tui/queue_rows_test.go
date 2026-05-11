@@ -4,13 +4,13 @@ import "testing"
 
 func TestBuildQueueRows_CollapsedShowsTopLevelOnly(t *testing.T) {
 	issues := []Issue{
-		testIssue(1, withCounts(1, 1)),
-		testIssue(2, withParent(1)),
-		testIssue(3),
+		testIssue("aaa1", withCounts(1, 1)),
+		testIssue("bbb2", withParent("aaa1")),
+		testIssue("ccc3"),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{}, nil)
-	assertQueueNumbers(t, rows, []int64{1, 3})
+	assertQueueShortIDs(t, rows, []string{"aaa1", "ccc3"})
 	if !rows[0].hasChildren {
 		t.Fatal("parent row should report children")
 	}
@@ -18,23 +18,23 @@ func TestBuildQueueRows_CollapsedShowsTopLevelOnly(t *testing.T) {
 
 func TestBuildQueueRows_ExpandedShowsDirectChildren(t *testing.T) {
 	issues := []Issue{
-		testIssue(1, withCounts(2, 2)),
-		testIssue(2, withParent(1), withCounts(1, 1)),
-		testIssue(3, withParent(1)),
-		testIssue(4, withParent(2)),
+		testIssue("aaa1", withCounts(2, 2)),
+		testIssue("bbb2", withParent("aaa1"), withCounts(1, 1)),
+		testIssue("ccc3", withParent("aaa1")),
+		testIssue("ddd4", withParent("bbb2")),
 	}
 
-	rows := buildQueueRows(issues, ListFilter{}, expansionSet{{projectID: 7, number: 1}: true})
-	assertQueueNumbers(t, rows, []int64{1, 2, 3})
+	rows := buildQueueRows(issues, ListFilter{}, expansionSet{{projectID: 7, shortID: "aaa1"}: true})
+	assertQueueShortIDs(t, rows, []string{"aaa1", "bbb2", "ccc3"})
 	if rows[1].depth != 1 || rows[2].depth != 1 {
 		t.Fatalf("children depths = %d/%d, want 1/1", rows[1].depth, rows[2].depth)
 	}
 
 	rows = buildQueueRows(issues, ListFilter{}, expansionSet{
-		{projectID: 7, number: 1}: true,
-		{projectID: 7, number: 2}: true,
+		{projectID: 7, shortID: "aaa1"}: true,
+		{projectID: 7, shortID: "bbb2"}: true,
 	})
-	assertQueueNumbers(t, rows, []int64{1, 2, 4, 3})
+	assertQueueShortIDs(t, rows, []string{"aaa1", "bbb2", "ddd4", "ccc3"})
 	if rows[2].depth != 2 {
 		t.Fatalf("grandchild depth = %d, want 2", rows[2].depth)
 	}
@@ -42,42 +42,42 @@ func TestBuildQueueRows_ExpandedShowsDirectChildren(t *testing.T) {
 
 func TestBuildQueueRows_DefaultsExpandedChildrenToTopologicalOrder(t *testing.T) {
 	issues := []Issue{
-		testIssue(1, withCounts(3, 3)),
-		testIssue(2, withParent(1)),
-		testIssue(3, withParent(1), withBlocks(2)),
-		testIssue(4, withParent(1)),
+		testIssue("aaa1", withCounts(3, 3)),
+		testIssue("bbb2", withParent("aaa1")),
+		testIssue("ccc3", withParent("aaa1"), withBlocks("bbb2")),
+		testIssue("ddd4", withParent("aaa1")),
 	}
 
-	rows := buildQueueRows(issues, ListFilter{}, expansionSet{{projectID: 7, number: 1}: true})
-	assertQueueNumbers(t, rows, []int64{1, 3, 2, 4})
+	rows := buildQueueRows(issues, ListFilter{}, expansionSet{{projectID: 7, shortID: "aaa1"}: true})
+	assertQueueShortIDs(t, rows, []string{"aaa1", "ccc3", "bbb2", "ddd4"})
 }
 
 func TestBuildQueueRows_TemporalChildSortPreservesFetchOrder(t *testing.T) {
 	issues := []Issue{
-		testIssue(1, withCounts(3, 3)),
-		testIssue(2, withParent(1)),
-		testIssue(3, withParent(1), withBlocks(2)),
-		testIssue(4, withParent(1)),
+		testIssue("aaa1", withCounts(3, 3)),
+		testIssue("bbb2", withParent("aaa1")),
+		testIssue("ccc3", withParent("aaa1"), withBlocks("bbb2")),
+		testIssue("ddd4", withParent("aaa1")),
 	}
 
 	rows := buildQueueRowsWithSort(
 		issues,
 		ListFilter{},
-		expansionSet{{projectID: 7, number: 1}: true},
+		expansionSet{{projectID: 7, shortID: "aaa1"}: true},
 		childSortTemporal,
 	)
-	assertQueueNumbers(t, rows, []int64{1, 2, 3, 4})
+	assertQueueShortIDs(t, rows, []string{"aaa1", "bbb2", "ccc3", "ddd4"})
 }
 
 func TestBuildQueueRows_FilteredChildAutoShowsAncestorContext(t *testing.T) {
 	issues := []Issue{
-		testIssue(1),
-		testIssue(2, withTitle("detail hint bars incomplete"), withParent(1)),
-		testIssue(3),
+		testIssue("aaa1"),
+		testIssue("bbb2", withTitle("detail hint bars incomplete"), withParent("aaa1")),
+		testIssue("ccc3"),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{Search: "hint bars"}, nil)
-	assertQueueNumbers(t, rows, []int64{1, 2})
+	assertQueueShortIDs(t, rows, []string{"aaa1", "bbb2"})
 	if !rows[0].context {
 		t.Fatal("non-matching ancestor should be a context row")
 	}
@@ -91,32 +91,32 @@ func TestBuildQueueRows_FilteredChildAutoShowsAncestorContext(t *testing.T) {
 
 func TestBuildQueueRows_StatusFilterIsClientSide(t *testing.T) {
 	issues := []Issue{
-		testIssue(1, withStatus("open")),
-		testIssue(2, withStatus("closed")),
+		testIssue("aaa1", withStatus("open")),
+		testIssue("bbb2", withStatus("closed")),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{Status: "closed"}, nil)
-	assertQueueNumbers(t, rows, []int64{2})
+	assertQueueShortIDs(t, rows, []string{"bbb2"})
 }
 
 func TestBuildQueueRows_LabelsFilterAnyOf(t *testing.T) {
 	issues := []Issue{
-		testIssue(1, withLabels("bug", "ux")),
-		testIssue(2, withLabels("daemon")),
+		testIssue("aaa1", withLabels("bug", "ux")),
+		testIssue("bbb2", withLabels("daemon")),
 	}
 
 	rows := buildQueueRows(issues, ListFilter{Labels: []string{"ux", "docs"}}, nil)
-	assertQueueNumbers(t, rows, []int64{1})
+	assertQueueShortIDs(t, rows, []string{"aaa1"})
 }
 
-func assertQueueNumbers(t *testing.T, rows []queueRow, want []int64) {
+func assertQueueShortIDs(t *testing.T, rows []queueRow, want []string) {
 	t.Helper()
 	if len(rows) != len(want) {
 		t.Fatalf("rows len = %d, want %d: %+v", len(rows), len(want), rows)
 	}
-	for i, wantNumber := range want {
-		if rows[i].issue.Number != wantNumber {
-			t.Fatalf("row %d = #%d, want #%d (rows=%+v)", i, rows[i].issue.Number, wantNumber, rows)
+	for i, wantSID := range want {
+		if rows[i].issue.ShortID != wantSID {
+			t.Fatalf("row %d = #%s, want #%s (rows=%+v)", i, rows[i].issue.ShortID, wantSID, rows)
 		}
 	}
 }

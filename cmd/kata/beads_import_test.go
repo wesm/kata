@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wesm/kata/internal/shortid"
 	"github.com/wesm/kata/internal/testenv"
 )
 
@@ -47,14 +48,24 @@ func TestImportBeadsMissingProjectUnattended(t *testing.T) {
 }
 
 func TestImportBeadsFromLiveBD(t *testing.T) {
-	env, dir, _ := setupCLIWorkspace(t)
+	env, dir, pid := setupCLIWorkspace(t)
 	installFakeBD(t)
 
 	out, err := runCLICapture(t, env, dir, "import", "--format", "beads", "--as", "importer")
 	require.NoError(t, err)
 	assert.Contains(t, out, "imported beads: created 1, updated 0, unchanged 0, comments 1, links 0")
 
-	show := runCLI(t, env, dir, "show", "1")
+	// The importer created exactly one issue; look it up via the DB to get
+	// its short_id, then show it.
+	rows, err := env.DB.QueryContext(context.Background(),
+		"SELECT short_id FROM issues WHERE project_id = ? LIMIT 1", pid)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	require.True(t, rows.Next(), "imported issue not found")
+	var short string
+	require.NoError(t, rows.Scan(&short))
+
+	show := runCLI(t, env, dir, "show", short)
 	assert.Contains(t, show, "Imported from Beads")
 	assert.Contains(t, show, "beads_id: b1")
 	assert.Contains(t, show, "Comment body from beads")
@@ -84,6 +95,33 @@ func TestImportBeadsJSONSummaryFromLiveBD(t *testing.T) {
 	assert.Equal(t, 1, summary.Comments)
 	assert.Equal(t, 0, summary.Links)
 	assert.Empty(t, summary.Errors)
+}
+
+// TestBeadsImport_AssignsShortIDs pins that imported beads issues pick
+// up a valid kata short_id from the auto-extend path — the importer
+// creates fresh kata ULIDs and the short_id flows through unchanged in
+// the per-item JSON output.
+func TestBeadsImport_AssignsShortIDs(t *testing.T) {
+	env, dir, _ := setupCLIWorkspace(t)
+	installFakeBD(t)
+
+	out, err := runCLICapture(t, env, dir, "import", "--format", "beads", "--json", "--as", "importer")
+	require.NoError(t, err)
+
+	var result struct {
+		Items []struct {
+			ExternalID   string `json:"external_id"`
+			IssueShortID string `json:"issue_short_id"`
+			Status       string `json:"status"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &result), "json output: %s", out)
+	require.NotEmpty(t, result.Items, "import should report per-item results: %s", out)
+	for _, item := range result.Items {
+		assert.NotEmpty(t, item.ExternalID, "external_id must round-trip")
+		assert.True(t, shortid.Valid(item.IssueShortID),
+			"short_id %q for external_id %q must be valid", item.IssueShortID, item.ExternalID)
+	}
 }
 
 func TestImportBeadsPromptsInitAndRetries(t *testing.T) {

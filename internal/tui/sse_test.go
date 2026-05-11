@@ -99,7 +99,7 @@ func TestSSEParser_DecodeEventReceived(t *testing.T) {
 		"type":"issue.created",
 		"project_id":7,
 		"project_uid":"01JZ0000000000000000000002",
-		"issue_number":42,
+		"issue_short_id":"42aa",
 		"issue_uid":"01JZ0000000000000000000001"
 	}`)
 	got := decodeEventReceived(frame{kind: frameEvent, data: body})
@@ -109,8 +109,8 @@ func TestSSEParser_DecodeEventReceived(t *testing.T) {
 	if got.projectID != 7 {
 		t.Fatalf("projectID = %d, want 7", got.projectID)
 	}
-	if got.issueNumber != 42 {
-		t.Fatalf("issueNumber = %d, want 42", got.issueNumber)
+	if got.issueShortID != "42aa" {
+		t.Fatalf("issueShortID = %q, want 42aa", got.issueShortID)
 	}
 	if got.projectUID != "01JZ0000000000000000000002" {
 		t.Fatalf("projectUID = %q", got.projectUID)
@@ -120,13 +120,14 @@ func TestSSEParser_DecodeEventReceived(t *testing.T) {
 	}
 }
 
-// TestSSEParser_DecodeEventReceived_NilIssueNumber: an envelope without
-// issue_number falls through as 0 (no panic on a nil pointer).
-func TestSSEParser_DecodeEventReceived_NilIssueNumber(t *testing.T) {
+// TestSSEParser_DecodeEventReceived_MissingIssueShortID: an envelope
+// without issue_short_id falls through as empty (no panic on a nil
+// pointer).
+func TestSSEParser_DecodeEventReceived_MissingIssueShortID(t *testing.T) {
 	body := []byte(`{"type":"sync.reset_required","project_id":7}`)
 	got := decodeEventReceived(frame{kind: frameEvent, data: body})
-	if got.issueNumber != 0 {
-		t.Fatalf("issueNumber = %d, want 0 (missing)", got.issueNumber)
+	if got.issueShortID != "" {
+		t.Fatalf("issueShortID = %q, want empty (missing)", got.issueShortID)
 	}
 }
 
@@ -134,14 +135,14 @@ func TestSSEParser_LinkPayloadType(t *testing.T) {
 	body := []byte(`{
 		"type":"issue.linked",
 		"project_id":7,
-		"issue_number":43,
+		"issue_short_id":"43bb",
 		"related_issue_uid":"01JZ0000000000000000000004",
 		"payload":{
 			"type":"parent",
-			"from_number":43,
-			"to_number":42,
-			"from_issue_uid":"01JZ0000000000000000000001",
-			"to_issue_uid":"01JZ0000000000000000000004"
+			"from_short_id":"43bb",
+			"to_short_id":"42aa",
+			"from_uid":"01JZ0000000000000000000001",
+			"to_uid":"01JZ0000000000000000000004"
 		}
 	}`)
 	got := decodeEventReceived(frame{kind: frameEvent, data: body})
@@ -151,8 +152,8 @@ func TestSSEParser_LinkPayloadType(t *testing.T) {
 	if got.link == nil {
 		t.Fatal("link payload was not decoded")
 	}
-	if got.link.Type != "parent" || got.link.FromNumber != 43 || got.link.ToNumber != 42 {
-		t.Fatalf("link payload = %+v, want parent 43->42", got.link)
+	if got.link.Type != "parent" || got.link.FromShortID != "43bb" || got.link.ToShortID != "42aa" {
+		t.Fatalf("link payload = %+v, want parent 43bb->42aa", got.link)
 	}
 	if got.relatedIssueUID != "01JZ0000000000000000000004" {
 		t.Fatalf("relatedIssueUID = %q", got.relatedIssueUID)
@@ -160,6 +161,39 @@ func TestSSEParser_LinkPayloadType(t *testing.T) {
 	if got.link.FromIssueUID != "01JZ0000000000000000000001" ||
 		got.link.ToIssueUID != "01JZ0000000000000000000004" {
 		t.Fatalf("link payload UIDs = %+v", got.link)
+	}
+}
+
+// TestSSEParser_LinkPayloadDecodesDaemonWireShape pins that the TUI
+// linkPayload decoder reads the daemon's emitted UID field names
+// (`from_uid` / `to_uid` — see queries_links.go::CreateLinkAndEvent and
+// DeleteLinkAndEvent). Earlier the struct's JSON tags spelled
+// `from_issue_uid` / `to_issue_uid`, so both UIDs decoded as empty
+// strings and parentLinkEndpointUIDs lost the (from, to) pair the
+// detail-pane refetch logic needs to invalidate the OTHER endpoint of
+// a parent transition.
+func TestSSEParser_LinkPayloadDecodesDaemonWireShape(t *testing.T) {
+	body := []byte(`{
+		"type":"issue.unlinked",
+		"project_id":7,
+		"issue_short_id":"43bb",
+		"payload":{
+			"type":"blocks",
+			"from_short_id":"43bb",
+			"to_short_id":"42aa",
+			"from_uid":"01JZ0000000000000000000001",
+			"to_uid":"01JZ0000000000000000000002"
+		}
+	}`)
+	got := decodeEventReceived(frame{kind: frameEvent, data: body})
+	if got.link == nil {
+		t.Fatal("link payload was not decoded")
+	}
+	if got.link.FromIssueUID != "01JZ0000000000000000000001" {
+		t.Errorf("FromIssueUID = %q, want 01JZ0000000000000000000001 (decoded from from_uid)", got.link.FromIssueUID)
+	}
+	if got.link.ToIssueUID != "01JZ0000000000000000000002" {
+		t.Errorf("ToIssueUID = %q, want 01JZ0000000000000000000002 (decoded from to_uid)", got.link.ToIssueUID)
 	}
 }
 

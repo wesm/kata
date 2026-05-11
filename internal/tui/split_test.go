@@ -68,9 +68,9 @@ func TestSplit_CursorMoveRetargetsDetail(t *testing.T) {
 	if m.detail.issue == nil {
 		t.Fatal("dm.issue stayed nil after cursor moves")
 	}
-	want := m.list.issues[2].Number
-	if m.detail.issue.Number != want {
-		t.Errorf("dm.issue.Number = %d, want %d", m.detail.issue.Number, want)
+	want := m.list.issues[2].ShortID
+	if m.detail.issue.ShortID != want {
+		t.Errorf("dm.issue.ShortID = %q, want %q", m.detail.issue.ShortID, want)
 	}
 	if m.list.cursor != 2 {
 		t.Errorf("list.cursor = %d, want 2", m.list.cursor)
@@ -282,7 +282,7 @@ func TestSplit_LayoutFlip_FromStackedToSplitFromList(t *testing.T) {
 	if m.layout != layoutStacked {
 		t.Fatalf("setup failed: layout=%v want layoutStacked", m.layout)
 	}
-	m.list.selectedNumber = 7
+	m.list.selectedUID = "01TEST-7zz"
 	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
 	if m.layout != layoutSplit {
 		t.Errorf("layout=%v after resize up, want layoutSplit", m.layout)
@@ -290,8 +290,8 @@ func TestSplit_LayoutFlip_FromStackedToSplitFromList(t *testing.T) {
 	if m.focus != focusList {
 		t.Errorf("focus=%v want focusList", m.focus)
 	}
-	if m.list.selectedNumber != 7 {
-		t.Errorf("selectedNumber=%d want 7", m.list.selectedNumber)
+	if m.list.selectedUID != "01TEST-7zz" {
+		t.Errorf("selectedUID=%q want 01TEST-7zz", m.list.selectedUID)
 	}
 }
 
@@ -325,7 +325,7 @@ func TestSplit_JumpDetail_SurvivesCursorFollowFocusDetail(t *testing.T) {
 	}
 	// jumpDetailMsg must NOT be dropped — pre-fix this returned nil cmd
 	// because the stale m.view==viewList misled the gate.
-	_, cmd := m.Update(jumpDetailMsg{number: 42})
+	_, cmd := m.Update(jumpDetailMsg{ref: "42aa"})
 	if cmd == nil {
 		t.Fatal("jumpDetailMsg dropped — handleJumpDetail's view gate misfires in split mode")
 	}
@@ -361,7 +361,7 @@ func TestSplit_JumpDetail_DroppedWhenViewObscured(t *testing.T) {
 			if m.detailPaneVisible() {
 				t.Fatalf("setup: detailPaneVisible=true with %v, want false", tc.name)
 			}
-			nm, cmd := updateModel(m, jumpDetailMsg{number: 99})
+			nm, cmd := updateModel(m, jumpDetailMsg{ref: "99zz"})
 			if cmd != nil {
 				t.Fatalf("jumpDetailMsg under %s dispatched a cmd — hidden detail state mutated (Job 252 regression)", tc.name)
 			}
@@ -389,14 +389,14 @@ func TestSplit_ListMutation_LandsOnListWhileFocusDetail(t *testing.T) {
 	}
 	mut := mutationDoneMsg{
 		origin: "list", kind: "close",
-		resp: &MutationResp{Issue: &Issue{Number: 42, Status: "closed"}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa", Status: "closed"}},
 	}
 	nm, _ := updateModel(m, mut)
 	if nm.list.status == "" {
 		t.Fatal("list.status empty — list-origin mutation dropped while focusDetail")
 	}
-	if !strings.Contains(nm.list.status, "closed #42") {
-		t.Errorf("list.status = %q, want hint about closed #42", nm.list.status)
+	if !strings.Contains(nm.list.status, "closed #42aa") {
+		t.Errorf("list.status = %q, want hint about closed #42aa", nm.list.status)
 	}
 }
 
@@ -409,7 +409,7 @@ func TestSplit_ListMutation_LandsOnListWhileFocusDetail(t *testing.T) {
 func TestSplit_DetailMutation_LandsOnDetailWhileFocusList(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	m.detail.issue = &Issue{ProjectID: 7, Number: 42, Title: "to edit"}
+	m.detail.issue = &Issue{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa", Title: "to edit"}
 	m.detail.scopePID = 7
 	m.detail.gen = 5
 	m.focus = focusList
@@ -418,14 +418,14 @@ func TestSplit_DetailMutation_LandsOnDetailWhileFocusList(t *testing.T) {
 	}
 	mut := mutationDoneMsg{
 		origin: "detail", gen: 5, kind: "body.edit",
-		resp: &MutationResp{Issue: &Issue{Number: 42, Body: "new"}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa", Body: "new"}},
 	}
 	nm, _ := updateModel(m, mut)
 	if nm.detail.status == "" {
 		t.Fatal("detail.status empty — detail-origin mutation dropped while focusList")
 	}
-	if !strings.Contains(nm.detail.status, "#42") {
-		t.Errorf("detail.status = %q, want hint mentioning #42", nm.detail.status)
+	if !strings.Contains(nm.detail.status, "#42aa") {
+		t.Errorf("detail.status = %q, want hint mentioning #42aa", nm.detail.status)
 	}
 }
 
@@ -482,29 +482,31 @@ func TestSplit_SuggestionMenuClampActuallyFires_AtMinSplit(t *testing.T) {
 // but the dispatch path is forward-looking), two rows can share the
 // same Number across different projects. dispatchListKey's pre-fix
 // trigger compared selectedNumber alone, which would treat the move
-// from row A (Number=1, ProjectID=7) to row B (Number=1, ProjectID=8)
+// from row A (ShortID=aaa1, ProjectID=7) to row B (ShortID=aaa1, ProjectID=8)
 // as a no-op and never retarget the detail pane. Composite identity
-// (project_id, number) detects the cross-project change correctly.
-func TestSplit_CursorFollow_RetargetsOnSameNumberDifferentProject(t *testing.T) {
+// (project_id, UID) detects the cross-project change correctly.
+func TestSplit_CursorFollow_RetargetsOnSameShortIDDifferentProject(t *testing.T) {
 	m, cleanup := splitTestSetup(t)
 	defer cleanup()
-	// Two rows with same Number but different ProjectID — the
-	// cross-project case all-projects mode would surface.
+	// Two rows with same ShortID but different ProjectID — the
+	// cross-project case all-projects mode would surface. UIDs differ
+	// because UID is globally unique.
 	m.scope = scope{allProjects: true}
 	m.list.issues = []Issue{
-		{ProjectID: 7, Number: 1, Title: "row A in proj 7", Status: "open"},
-		{ProjectID: 8, Number: 1, Title: "row B in proj 8", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-aaa1A", ShortID: "aaa1", Title: "row A in proj 7", Status: "open"},
+		{ProjectID: 8, UID: "01TEST-aaa1B", ShortID: "aaa1", Title: "row B in proj 8", Status: "open"},
 	}
 	m.list.cursor = 0
-	m.list.selectedNumber = m.list.issues[0].Number
+	m.list.selectedUID = m.list.issues[0].UID
 	// Position detail on row A explicitly so the test asserts the
 	// post-j retarget moved it to row B (not just that something
 	// landed on row B by coincidence).
 	rowA := m.list.issues[0]
 	m.detail.issue = &rowA
 	startGen := m.nextDetailFollowGen
-	// Press j — cursor moves to row 1; selectedNumber stays 1 because
-	// both rows share Number. Pre-fix this was a silent no-op.
+	// Press j — cursor moves to row 1; UID differs across projects so
+	// the retarget fires. Pre-fix this was a silent no-op when matching
+	// on (project_id, number) alone with shared numbers.
 	m, _ = updateModel(m, runeKey('j'))
 	if m.list.cursor != 1 {
 		t.Fatalf("setup failed: cursor=%d after j, want 1", m.list.cursor)
@@ -514,11 +516,11 @@ func TestSplit_CursorFollow_RetargetsOnSameNumberDifferentProject(t *testing.T) 
 	}
 	if m.detail.issue.ProjectID != 8 {
 		t.Errorf("detail.issue.ProjectID=%d after j, want 8 (row B); "+
-			"selectedNumber-only check missed cross-project move",
+			"selectedUID-only check missed cross-project move",
 			m.detail.issue.ProjectID)
 	}
-	if m.detail.issue.Number != 1 {
-		t.Errorf("detail.issue.Number=%d, want 1", m.detail.issue.Number)
+	if m.detail.issue.ShortID != "aaa1" {
+		t.Errorf("detail.issue.ShortID=%q, want aaa1", m.detail.issue.ShortID)
 	}
 	if m.nextDetailFollowGen <= startGen {
 		t.Errorf("nextDetailFollowGen did not advance; debounce tick not scheduled "+

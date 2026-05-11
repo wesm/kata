@@ -1,8 +1,8 @@
  Project: —                                                                                                   kata カタ 
 
-  #42  fix login bug on Safari                                                              [open]                      
+  #42aa  fix login bug on Safari                                                            [open]                      
   authored by wesm                                                                                                      
-  owner: none   parent: #12 workspace polish parent                                                                     
+  owner: none   parent: #c012 workspace polish parent                                                                   
   priority: none                                                                                                        
   children: 1 open / 2 total                                                                                            
                                                                                                                         
@@ -11,8 +11,8 @@
   Click the login button twice.                                                                                         
                                                                                                                         
   Children                                                                                                              
-    #43    open      detail hint bars incomplete                            alice       1h ago                          
-    #44    closed    new issue form parent field                            wesm        2h ago                          
+    #c043  open      detail hint bars incomplete                            alice       1h ago                          
+    #c044  closed    new issue form parent field                            wesm        2h ago                          
                                                                                                                         
   Activity   [ Comments (2) ]   Events (2)   Links (1)                                                                  
   > alice  Apr 30 10:00                                                                                                 

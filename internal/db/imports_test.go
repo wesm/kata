@@ -84,15 +84,21 @@ func TestImportBatch_CreatesIssueCommentsLabelsLinks(t *testing.T) {
 	}
 	require.NotNil(t, linkEvent)
 	payload := unmarshalPayload[struct {
-		LinkID     int64  `json:"link_id"`
-		Type       string `json:"type"`
-		FromNumber int64  `json:"from_number"`
-		ToNumber   int64  `json:"to_number"`
+		LinkID      int64  `json:"link_id"`
+		Type        string `json:"type"`
+		FromShortID string `json:"from_short_id"`
+		FromUID     string `json:"from_uid"`
+		ToShortID   string `json:"to_short_id"`
+		ToUID       string `json:"to_uid"`
 	}](t, linkEvent.Payload)
 	assert.Equal(t, links[0].ID, payload.LinkID)
 	assert.Equal(t, "blocks", payload.Type)
-	assert.Equal(t, blocker.Number, payload.FromNumber)
-	assert.Equal(t, blocked.Number, payload.ToNumber)
+	assert.Equal(t, blocker.ShortID, payload.FromShortID)
+	assert.Equal(t, blocker.UID, payload.FromUID,
+		"import link payload must carry from_uid so SSE consumers key on stable identity")
+	assert.Equal(t, blocked.ShortID, payload.ToShortID)
+	assert.Equal(t, blocked.UID, payload.ToUID,
+		"import link payload must carry to_uid so SSE consumers key on stable identity")
 }
 
 func TestImportBatch_RelatedLinkEventPayloadKeepsImportDirectionWhenStorageCanonicalizes(t *testing.T) {
@@ -137,15 +143,21 @@ func TestImportBatch_RelatedLinkEventPayloadKeepsImportDirectionWhenStorageCanon
 	}
 	require.NotNil(t, linkEvent)
 	payload := unmarshalPayload[struct {
-		LinkID     int64  `json:"link_id"`
-		Type       string `json:"type"`
-		FromNumber int64  `json:"from_number"`
-		ToNumber   int64  `json:"to_number"`
+		LinkID      int64  `json:"link_id"`
+		Type        string `json:"type"`
+		FromShortID string `json:"from_short_id"`
+		FromUID     string `json:"from_uid"`
+		ToShortID   string `json:"to_short_id"`
+		ToUID       string `json:"to_uid"`
 	}](t, linkEvent.Payload)
 	assert.Equal(t, links[0].ID, payload.LinkID)
 	assert.Equal(t, "related", payload.Type)
-	assert.Equal(t, a.Number, payload.FromNumber)
-	assert.Equal(t, b.Number, payload.ToNumber)
+	// Event attribution is "a created the link"; canonicalization may swap
+	// storage endpoints but the payload's from/to follows the URL-issue POV.
+	assert.Equal(t, a.ShortID, payload.FromShortID)
+	assert.Equal(t, a.UID, payload.FromUID)
+	assert.Equal(t, b.ShortID, payload.ToShortID)
+	assert.Equal(t, b.UID, payload.ToUID)
 }
 
 func TestImportBatch_ReimportSourceNewerUpdatesFieldsAndTimestamp(t *testing.T) {

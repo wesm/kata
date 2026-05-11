@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -47,7 +48,7 @@ func newCommentCmd() *cobra.Command {
 			return err
 		}
 		status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
-			fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/comments", baseURL, pid, issue.Number),
+			fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/comments", baseURL, pid, url.PathEscape(issue.RefForAPI)),
 			map[string]any{"actor": actor, "body": body})
 		if err != nil {
 			return err

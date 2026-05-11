@@ -128,9 +128,9 @@ func TestPurgeLogUIDNotNullRejected(t *testing.T) {
 	// uid omitted entirely.
 	_, err := d.ExecContext(ctx, `
 		INSERT INTO purge_log(origin_instance_uid, project_id, purged_issue_id, project_name,
-		                     issue_number, issue_title, issue_author,
+		                     issue_title, issue_author,
 		                     comment_count, link_count, label_count, event_count, actor, purged_at)
-		VALUES (?, 1, 99, 'p', 1, 'title', 'tester', 0, 0, 0, 0, 'tester',
+		VALUES (?, 1, 99, 'p', 'title', 'tester', 0, 0, 0, 0, 'tester',
 		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 		d.InstanceUID())
 	require.Error(t, err, "purge_log.uid NOT NULL must reject INSERT without uid")
@@ -140,9 +140,9 @@ func TestPurgeLogUIDNotNullRejected(t *testing.T) {
 	require.NoError(t, err)
 	_, err = d.ExecContext(ctx, `
 		INSERT INTO purge_log(uid, project_id, purged_issue_id, project_name,
-		                     issue_number, issue_title, issue_author,
+		                     issue_title, issue_author,
 		                     comment_count, link_count, label_count, event_count, actor, purged_at)
-		VALUES (?, 1, 99, 'p', 1, 'title', 'tester', 0, 0, 0, 0, 'tester',
+		VALUES (?, 1, 99, 'p', 'title', 'tester', 0, 0, 0, 0, 'tester',
 		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 		freshUID)
 	require.Error(t, err, "purge_log.origin_instance_uid NOT NULL must reject INSERT without origin")

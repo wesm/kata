@@ -201,8 +201,8 @@ func TestParentNumbersByIssues_ReturnsImmediateParents(t *testing.T) {
 
 	got, err := d.ParentNumbersByIssues(ctx, p.ID, []int64{child1.ID, child2.ID, unrelated.ID})
 	require.NoError(t, err)
-	assert.Equal(t, parent.Number, got[child1.ID])
-	assert.Equal(t, parent.Number, got[child2.ID])
+	assert.Equal(t, parent.ID, got[child1.ID])
+	assert.Equal(t, parent.ID, got[child2.ID])
 	assert.NotContains(t, got, unrelated.ID)
 }
 
@@ -221,7 +221,7 @@ func TestParentNumbersByIssues_ConstrainsProject(t *testing.T) {
 
 	got, err := d.ParentNumbersByIssues(ctx, pa.ID, []int64{childA.ID, childB.ID})
 	require.NoError(t, err)
-	assert.Equal(t, parentA.Number, got[childA.ID])
+	assert.Equal(t, parentA.ID, got[childA.ID])
 	assert.NotContains(t, got, childB.ID)
 }
 

@@ -31,7 +31,7 @@ func (dm detailModel) handleMutationKey(
 			return dm, nil, true
 		}
 		dm.status = ""
-		return dm, openNewChildInputCmd(dm.issue.Number), true
+		return dm, openNewChildInputCmd(dm.issue.ShortID), true
 	}
 	return dm.handleModalOpenKey(msg, km)
 }
@@ -143,35 +143,36 @@ func (dm detailModel) applyMutation(
 // mutationSuccessText. Keeping the dispatch table-driven keeps the
 // formatter at cyclomatic ≤8 and makes adding kinds (Task 11+) trivial.
 var successTemplates = map[string]string{
-	"close":          "closed #%d",
-	"reopen":         "reopened #%d",
-	"label.add":      "added label to #%d",
-	"label.remove":   "removed label from #%d",
-	"owner.assign":   "assigned #%d",
-	"owner.clear":    "unassigned #%d",
-	"link.parent":    "linked #%d",
-	"link.blocks":    "linked #%d",
-	"link.relates":   "linked #%d",
-	"body.edit":      "updated body of #%d",
-	"comment.add":    "added comment to #%d",
-	"priority.set":   "set priority of #%d",
-	"priority.clear": "cleared priority of #%d",
+	"close":          "closed #%s",
+	"reopen":         "reopened #%s",
+	"label.add":      "added label to #%s",
+	"label.remove":   "removed label from #%s",
+	"owner.assign":   "assigned #%s",
+	"owner.clear":    "unassigned #%s",
+	"link.parent":    "linked #%s",
+	"link.blocks":    "linked #%s",
+	"link.relates":   "linked #%s",
+	"body.edit":      "updated body of #%s",
+	"comment.add":    "added comment to #%s",
+	"priority.set":   "set priority of #%s",
+	"priority.clear": "cleared priority of #%s",
 }
 
 // mutationSuccessText is the per-kind toast for a successful mutation.
-// The issue number is read off dm.issue because the resp may not carry
-// it (the daemon's mutation envelope embeds the issue, but the test
-// fakes don't always populate that — and dm.issue is authoritative).
+// The issue short_id is read off dm.issue because the resp may not
+// carry it (the daemon's mutation envelope embeds the issue, but the
+// test fakes don't always populate that — and dm.issue is
+// authoritative).
 func mutationSuccessText(m mutationDoneMsg, iss *Issue) string {
-	num := int64(0)
+	ref := ""
 	if iss != nil {
-		num = iss.Number
+		ref = iss.ShortID
 	}
-	if m.resp != nil && m.resp.Issue != nil {
-		num = m.resp.Issue.Number
+	if m.resp != nil && m.resp.Issue != nil && m.resp.Issue.ShortID != "" {
+		ref = m.resp.Issue.ShortID
 	}
 	if tpl, ok := successTemplates[m.kind]; ok {
-		return fmt.Sprintf(tpl, num)
+		return fmt.Sprintf(tpl, ref)
 	}
 	return ""
 }
@@ -187,13 +188,13 @@ func (dm detailModel) refetchAfterMutation(api detailAPI) tea.Cmd {
 		return nil
 	}
 	pid := dm.scopePID
-	num := dm.issue.Number
+	ref := dm.issue.ShortID
 	gen := dm.gen
 	return tea.Batch(
-		fetchIssue(api, pid, num, gen),
-		fetchComments(api, pid, num, gen),
-		fetchEvents(api, pid, num, gen),
-		fetchLinks(api, pid, num, gen),
+		fetchIssue(api, pid, ref, gen),
+		fetchComments(api, pid, ref, gen),
+		fetchEvents(api, pid, ref, gen),
+		fetchLinks(api, pid, ref, gen),
 	)
 }
 
@@ -204,11 +205,11 @@ func (dm detailModel) dispatchClose(api detailAPI) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
+	pid, ref, actor, gen := dm.scopePID, dm.issue.ShortID, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.Close(ctx, pid, num, actor)
+		resp, err := api.Close(ctx, pid, ref, actor)
 		return mutationDoneMsg{
 			origin: "detail", gen: gen, kind: "close", resp: resp, err: err,
 		}
@@ -220,11 +221,11 @@ func (dm detailModel) dispatchReopen(api detailAPI) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
+	pid, ref, actor, gen := dm.scopePID, dm.issue.ShortID, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.Reopen(ctx, pid, num, actor)
+		resp, err := api.Reopen(ctx, pid, ref, actor)
 		return mutationDoneMsg{
 			origin: "detail", gen: gen, kind: "reopen", resp: resp, err: err,
 		}
@@ -238,7 +239,7 @@ func (dm detailModel) dispatchLabel(
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
+	pid, ref, actor, gen := dm.scopePID, dm.issue.ShortID, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -248,10 +249,10 @@ func (dm detailModel) dispatchLabel(
 			kind string
 		)
 		if add {
-			resp, err = api.AddLabel(ctx, pid, num, label, actor)
+			resp, err = api.AddLabel(ctx, pid, ref, label, actor)
 			kind = "label.add"
 		} else {
-			resp, err = api.RemoveLabel(ctx, pid, num, label, actor)
+			resp, err = api.RemoveLabel(ctx, pid, ref, label, actor)
 			kind = "label.remove"
 		}
 		return mutationDoneMsg{
@@ -266,7 +267,7 @@ func (dm detailModel) dispatchAssign(api detailAPI, owner string) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
+	pid, ref, actor, gen := dm.scopePID, dm.issue.ShortID, dm.actor, dm.gen
 	kind := "owner.assign"
 	if owner == "" {
 		kind = "owner.clear"
@@ -274,36 +275,39 @@ func (dm detailModel) dispatchAssign(api detailAPI, owner string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.Assign(ctx, pid, num, owner, actor)
+		resp, err := api.Assign(ctx, pid, ref, owner, actor)
 		return mutationDoneMsg{
 			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
 		}
 	}
 }
 
-// dispatchLink calls AddLink with the given type and a numeric target.
-// Non-numeric input surfaces as an error in the status line — the
-// daemon enforces the type vocabulary so we don't pre-validate it here.
+// dispatchLink calls AddLink with the given type and a string target.
+// The target is trimmed and a leading "#" is stripped so users can
+// type "#abc4" or "abc4" interchangeably; an empty trimmed input
+// surfaces as a parse error. The daemon enforces the type vocabulary
+// and the ref shape, so we don't pre-validate the short_id format
+// here.
 func (dm detailModel) dispatchLink(
 	api detailAPI, linkType, target string,
 ) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
-	to, err := strconv.ParseInt(strings.TrimSpace(target), 10, 64)
-	if err != nil {
+	toRef := strings.TrimPrefix(strings.TrimSpace(target), "#")
+	if toRef == "" {
 		return parseFailedCmd(linkType, target, dm.gen)
 	}
-	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
+	pid, ref, actor, gen := dm.scopePID, dm.issue.ShortID, dm.actor, dm.gen
 	kind := "link." + linkType
 	if linkType == "related" {
 		kind = "link.relates"
 	}
-	body := LinkBody{Type: linkType, ToNumber: to}
+	body := LinkBody{Type: linkType, ToRef: toRef}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.AddLink(ctx, pid, num, body, actor)
+		resp, err := api.AddLink(ctx, pid, ref, body, actor)
 		return mutationDoneMsg{
 			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
 		}
@@ -334,11 +338,11 @@ func (dm detailModel) dispatchSetPriority(
 		}
 		priority = &n
 	}
-	pid, num, actor, gen := dm.scopePID, dm.issue.Number, dm.actor, dm.gen
+	pid, ref, actor, gen := dm.scopePID, dm.issue.ShortID, dm.actor, dm.gen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.SetPriority(ctx, pid, num, priority, actor)
+		resp, err := api.SetPriority(ctx, pid, ref, priority, actor)
 		return mutationDoneMsg{
 			origin: "detail", gen: gen, kind: kind, resp: resp, err: err,
 		}
@@ -369,7 +373,7 @@ func parseFailedCmd(kind, input string, gen int64) tea.Cmd {
 			origin: "detail",
 			gen:    gen,
 			kind:   "link." + kind,
-			err:    fmt.Errorf("parse %q failed: expected an issue number", input),
+			err:    fmt.Errorf("parse %q failed: expected a short_id (e.g. abc4)", input),
 		}
 	}
 }

@@ -58,14 +58,62 @@ func issuesURL(projectID int64) string {
 	return fmt.Sprintf("/api/v1/projects/%d/issues", projectID)
 }
 
-// issueURL returns the URL for a specific issue under a project. When suffix
-// is non-empty it is appended after the issue number (e.g. "comments" or
-// "actions/close"); when empty the resource URL itself is returned.
-func issueURL(projectID int64, issueNumber int64, suffix string) string {
-	if suffix == "" {
-		return fmt.Sprintf("/api/v1/projects/%d/issues/%d", projectID, issueNumber)
+// issueURL returns the URL for a specific issue under a project. The int64
+// parameter is the issue's row id (e.g. from bootstrapProjectWithIssue);
+// the helper resolves it to the issue's short_id via the active
+// handle set by bootstrapProjectWithIssue. Tests that bootstrap on their
+// own should call issueURLRef directly. Falls back to formatting the
+// id as a string when no handle is registered (preserves negative-path
+// tests like "/issues/9999" that intentionally point at no row).
+func issueURL(projectID int64, issueID int64, suffix string) string {
+	ref := fmt.Sprintf("%d", issueID)
+	if currentHandleForIssueURL != nil {
+		issue, err := currentHandleForIssueURL.DB().IssueByID(context.Background(), issueID)
+		if err == nil && issue.ShortID != "" {
+			ref = issue.ShortID
+		}
 	}
-	return fmt.Sprintf("/api/v1/projects/%d/issues/%d/%s", projectID, issueNumber, suffix)
+	return issueURLRef(projectID, ref, suffix)
+}
+
+// issueURLRef builds the per-issue URL from a string ref. Use this for new
+// tests that hold a short_id or UID directly.
+func issueURLRef(projectID int64, ref, suffix string) string {
+	if suffix == "" {
+		return fmt.Sprintf("/api/v1/projects/%d/issues/%s", projectID, ref)
+	}
+	return fmt.Sprintf("/api/v1/projects/%d/issues/%s/%s", projectID, ref, suffix)
+}
+
+// issueRefByID returns the short_id of an issue by its row id. Helper for
+// tests that need to call the surface API with a wire-format ref.
+func issueRefByID(t *testing.T, h *httptestServerHandle, issueID int64) string {
+	t.Helper()
+	issue, err := h.DB().IssueByID(context.Background(), issueID)
+	require.NoError(t, err)
+	return issue.ShortID
+}
+
+// linkPeerTest mirrors api.LinkPeer for test JSON decoding. UID is the
+// canonical reference; ShortID is the rendered display value.
+type linkPeerTest struct {
+	UID     string `json:"uid"`
+	ShortID string `json:"short_id"`
+}
+
+// issueShortIDFromCreate decodes the short_id field from a /issues POST
+// response. Tests use this to capture the newly-minted short_id and feed it
+// back as a ref to subsequent links_delta / link API calls.
+func issueShortIDFromCreate(t *testing.T, bs []byte) string {
+	t.Helper()
+	var out struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &out))
+	require.NotEmpty(t, out.Issue.ShortID, "create response missing short_id: %s", string(bs))
+	return out.Issue.ShortID
 }
 
 // bootstrapProject spins up a fresh server + git workspace and runs `kata
@@ -78,12 +126,24 @@ func bootstrapProject(t *testing.T, opts ...serverOption) (*httptestServerHandle
 	_, bs := postJSON(t, h.ts.(*httptest.Server), "/api/v1/projects", map[string]any{"start_path": h.dir})
 	var resp struct{ Project struct{ ID int64 } }
 	require.NoError(t, json.Unmarshal(bs, &resp))
+	// Register the handle so issueURL can look up issue.short_id at request
+	// time without each test passing the handle in. Tests in this package
+	// don't run in parallel, so a single pointer is enough; t.Cleanup
+	// wipes it between tests.
+	currentHandleForIssueURL = h
+	t.Cleanup(func() {
+		if currentHandleForIssueURL == h {
+			currentHandleForIssueURL = nil
+		}
+	})
 	return h, resp.Project.ID
 }
 
 // bootstrapProjectWithIssue runs bootstrapProject and additionally posts a
-// minimal issue so callers can target issue number 1 directly. Returns the
-// handle, the cast *httptest.Server, the project rowid, and the issue number.
+// minimal issue. Returns the handle, the cast *httptest.Server, the
+// project rowid, and the seeded issue's row id. The fourth return value
+// is treated as the issue ref in tests via issueURL — the helper looks up
+// the row's short_id and substitutes it into the URL.
 func bootstrapProjectWithIssue(t *testing.T) (*httptestServerHandle, *httptest.Server, int64, int64) {
 	t.Helper()
 	h, pid := bootstrapProject(t)
@@ -91,8 +151,20 @@ func bootstrapProjectWithIssue(t *testing.T) (*httptestServerHandle, *httptest.S
 	resp, bs := postJSON(t, ts, issuesURL(pid),
 		map[string]any{"actor": "x", "title": "x"})
 	require.Equalf(t, 200, resp.StatusCode, "seed issue: %s", string(bs))
-	return h, ts, pid, 1
+	var body struct {
+		Issue struct {
+			ID int64 `json:"id"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &body))
+	return h, ts, pid, body.Issue.ID
 }
+
+// currentHandleForIssueURL is set by bootstrapProjectWithIssue so issueURL
+// can look up an int64 issue id → short_id at request time. Tests run
+// sequentially within a package by default; t.Cleanup wipes the pointer
+// after each test so the global never leaks between tests.
+var currentHandleForIssueURL *httptestServerHandle
 
 // assertAPIError asserts the response carries the standard error envelope
 // shape with the given HTTP status and error.code. The raw body is surfaced

@@ -195,20 +195,20 @@ func TestFilterForm_CommitUsesDedicatedPath(t *testing.T) {
 	assertInputKind(t, nm, inputNone)
 }
 
-// TestFilterForm_CommitZeroesSelectedNumberAndResetsCursor: a filter
-// commit zeros selectedNumber and resets cursor to 0 — matches the
+// TestFilterForm_CommitZeroesSelectedUIDAndResetsCursor: a filter
+// commit zeros selectedUID and resets cursor to 0 — matches the
 // s/c convention. Predictable fresh-view behavior beats trying to
 // pin selection across a filter change.
-func TestFilterForm_CommitZeroesSelectedNumberAndResetsCursor(t *testing.T) {
+func TestFilterForm_CommitZeroesSelectedUIDAndResetsCursor(t *testing.T) {
 	m := openFilterForm(t, filterFormFixture())
 	m.list.cursor = 5
-	m.list.selectedNumber = 42
+	m.list.selectedUID = "01TEST-42aa"
 	nm, _ := stepModel(m, tea.KeyMsg{Type: tea.KeyCtrlS})
 	if nm.list.cursor != 0 {
 		t.Fatalf("cursor = %d, want 0 after commit", nm.list.cursor)
 	}
-	if nm.list.selectedNumber != 0 {
-		t.Fatalf("selectedNumber = %d, want 0 after commit", nm.list.selectedNumber)
+	if nm.list.selectedUID != "" {
+		t.Fatalf("selectedUID = %q, want empty after commit", nm.list.selectedUID)
 	}
 }
 
@@ -431,12 +431,12 @@ func TestFilterForm_LabelsField_AnyOfSemantics_AppliesViaCommit(t *testing.T) {
 	// Verify the any-of filter actually narrows: feed two issues, one
 	// with "bug", one with "feature"; only the bug row survives.
 	issues := []Issue{
-		{Number: 1, Labels: []string{"bug"}},
-		{Number: 2, Labels: []string{"feature"}},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Labels: []string{"bug"}},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Labels: []string{"feature"}},
 	}
 	got := filteredIssues(issues, nm.list.filter)
-	if len(got) != 1 || got[0].Number != 1 {
-		t.Fatalf("filteredIssues = %+v, want only #1 (any-of bug)", got)
+	if len(got) != 1 || got[0].ShortID != "aaa1" {
+		t.Fatalf("filteredIssues = %+v, want only #aaa1 (any-of bug)", got)
 	}
 }
 
@@ -521,7 +521,10 @@ func TestSnapshot_List_WithFilterChipsFromModal(t *testing.T) {
 	lm := newListModel()
 	lm.loading = false
 	lm.issues = []Issue{{
-		Number: 42, Title: "fix login bug on Safari", Status: "open",
+		UID:       "01TEST-42aa",
+		ShortID:   "42aa",
+		Title:     "fix login bug on Safari",
+		Status:    "open",
 		Owner:     ptrString("alice"),
 		Labels:    []string{"bug", "prio-1"},
 		UpdatedAt: snapshotFixedNow.Add(-30 * 60_000_000_000), // 30m

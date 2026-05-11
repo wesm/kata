@@ -214,10 +214,11 @@ func printDigestHuman(cmd *cobra.Command, bs []byte) error {
 				Unblocked int `json:"unblocked"`
 			} `json:"totals"`
 			Issues []struct {
-				ProjectID   int64    `json:"project_id"`
-				ProjectName string   `json:"project_name"`
-				IssueNumber int64    `json:"issue_number"`
-				Actions     []string `json:"actions"`
+				ProjectID    int64    `json:"project_id"`
+				ProjectName  string   `json:"project_name"`
+				IssueShortID string   `json:"issue_short_id"`
+				IssueUID     string   `json:"issue_uid"`
+				Actions      []string `json:"actions"`
 			} `json:"issues"`
 		} `json:"actors"`
 	}
@@ -246,13 +247,13 @@ func printDigestHuman(cmd *cobra.Command, bs []byte) error {
 			return err
 		}
 		for _, iss := range a.Issues {
-			prefix := fmt.Sprintf("#%d", iss.IssueNumber)
+			prefix := iss.IssueShortID
 			// On cross-project digests, prefix the project name so the
-			// reader can disambiguate colliding numbers.
+			// reader can disambiguate colliding short_ids.
 			if b.ProjectID == 0 && iss.ProjectName != "" {
-				prefix = fmt.Sprintf("%s#%d", textsafe.Line(iss.ProjectName)+"/", iss.IssueNumber)
+				prefix = fmt.Sprintf("%s#%s", textsafe.Line(iss.ProjectName), iss.IssueShortID)
 			}
-			if _, err := fmt.Fprintf(out, "  %-12s %s\n",
+			if _, err := fmt.Fprintf(out, "  %-14s %s\n",
 				prefix, textsafe.Line(strings.Join(iss.Actions, ", "))); err != nil {
 				return err
 			}

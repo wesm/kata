@@ -13,10 +13,6 @@ var (
 	// same project row.
 	ErrProjectMergeSameProject = errors.New("cannot merge a project into itself")
 
-	// ErrProjectMergeIssueNumberCollision is returned when moving source issues
-	// would violate the target's UNIQUE(project_id, number) constraint.
-	ErrProjectMergeIssueNumberCollision = errors.New("project merge issue number collision")
-
 	// ErrProjectMergeImportMappingCollision is returned when moving source import
 	// mappings would violate the target's source identity uniqueness.
 	ErrProjectMergeImportMappingCollision = errors.New("project merge import mapping collision")
@@ -33,19 +29,6 @@ var (
 	// prevent.
 	ErrProjectMergeArchivedTarget = errors.New("target project is archived")
 )
-
-// ProjectMergeCollisionError carries the issue numbers that blocked a merge.
-type ProjectMergeCollisionError struct {
-	Numbers []int64
-}
-
-func (e *ProjectMergeCollisionError) Error() string {
-	return fmt.Sprintf("%v: %v", ErrProjectMergeIssueNumberCollision, e.Numbers)
-}
-
-func (e *ProjectMergeCollisionError) Unwrap() error {
-	return ErrProjectMergeIssueNumberCollision
-}
 
 // ProjectMergeImportMappingCollision identifies one import mapping identity
 // that already exists on the target project.
@@ -81,19 +64,33 @@ type MergeProjectsParams struct {
 	TargetName      *string
 }
 
+// ShortIDExtension records a single source-side issue whose short_id was
+// extended during merge to break a collision with an existing target-side
+// short_id. The UID is stable across the shift; PreMergeShortID is the
+// value the issue carried on the source project, PostMergeShortID is the
+// value stored after the merge.
+type ShortIDExtension struct {
+	UID              string
+	PreMergeShortID  string
+	PostMergeShortID string
+}
+
 // ProjectMergeResult summarizes the rows moved by MergeProjects.
 type ProjectMergeResult struct {
-	Source         Project `json:"source"`
-	Target         Project `json:"target"`
-	IssuesMoved    int64   `json:"issues_moved"`
-	AliasesMoved   int64   `json:"aliases_moved"`
-	EventsMoved    int64   `json:"events_moved"`
-	PurgeLogsMoved int64   `json:"purge_logs_moved"`
+	Source            Project            `json:"source"`
+	Target            Project            `json:"target"`
+	IssuesMoved       int64              `json:"issues_moved"`
+	AliasesMoved      int64              `json:"aliases_moved"`
+	EventsMoved       int64              `json:"events_moved"`
+	PurgeLogsMoved    int64              `json:"purge_logs_moved"`
+	ShortIDExtensions []ShortIDExtension `json:"short_id_extensions,omitempty"`
 }
 
 // MergeProjects moves every project-scoped row from SourceProjectID into
-// TargetProjectID, then deletes the source project. It never renumbers issues;
-// callers must resolve any issue-number collisions before retrying.
+// TargetProjectID, then deletes the source project. Source-side issues whose
+// short_ids collide with target-side short_ids are auto-extended in
+// ULID-ascending order (spec §5.2); existing target short_ids stay put. The
+// returned ShortIDExtensions list reports each shifted issue's pre/post values.
 func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectMergeResult, error) {
 	if p.SourceProjectID == p.TargetProjectID {
 		return ProjectMergeResult{}, ErrProjectMergeSameProject
@@ -119,19 +116,22 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 		return ProjectMergeResult{}, ErrProjectMergeArchivedTarget
 	}
 
-	collisions, err := projectMergeIssueNumberCollisions(ctx, tx, p.SourceProjectID, p.TargetProjectID)
-	if err != nil {
-		return ProjectMergeResult{}, err
-	}
-	if len(collisions) > 0 {
-		return ProjectMergeResult{}, &ProjectMergeCollisionError{Numbers: collisions}
-	}
 	mappingCollisions, err := projectMergeImportMappingCollisions(ctx, tx, p.SourceProjectID, p.TargetProjectID)
 	if err != nil {
 		return ProjectMergeResult{}, err
 	}
 	if len(mappingCollisions) > 0 {
 		return ProjectMergeResult{}, &ProjectMergeImportMappingCollisionError{Mappings: mappingCollisions}
+	}
+
+	// Reconcile short_id collisions BEFORE the bulk UPDATE moves issues onto
+	// the target. The UNIQUE(project_id, short_id) index would otherwise reject
+	// the move at the database layer. Each source-side issue is rewritten to
+	// its smallest non-colliding length across both projects in ULID-ascending
+	// order so the result is deterministic (spec §5.2).
+	extensions, err := extendCollidingSourceShortIDs(ctx, tx, source.ID, target.ID)
+	if err != nil {
+		return ProjectMergeResult{}, err
 	}
 
 	issuesMoved, err := countProjectRows(ctx, tx, "issues", source.ID)
@@ -174,20 +174,12 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 		return ProjectMergeResult{}, fmt.Errorf("move aliases: %w", err)
 	}
 
-	nextIssueNumber, err := mergedNextIssueNumber(ctx, tx, source, target)
-	if err != nil {
-		return ProjectMergeResult{}, err
-	}
 	if p.TargetName != nil {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE projects SET name = ?, next_issue_number = ? WHERE id = ?`,
-			*p.TargetName, nextIssueNumber, target.ID); err != nil {
+			`UPDATE projects SET name = ? WHERE id = ?`,
+			*p.TargetName, target.ID); err != nil {
 			return ProjectMergeResult{}, fmt.Errorf("update target project: %w", err)
 		}
-	} else if _, err := tx.ExecContext(ctx,
-		`UPDATE projects SET next_issue_number = ? WHERE id = ?`,
-		nextIssueNumber, target.ID); err != nil {
-		return ProjectMergeResult{}, fmt.Errorf("update target next issue number: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, source.ID); err != nil {
 		return ProjectMergeResult{}, fmt.Errorf("delete source project: %w", err)
@@ -202,36 +194,92 @@ func (d *DB) MergeProjects(ctx context.Context, p MergeProjectsParams) (ProjectM
 	}
 
 	return ProjectMergeResult{
-		Source:         source,
-		Target:         mergedTarget,
-		IssuesMoved:    issuesMoved,
-		AliasesMoved:   aliasesMoved,
-		EventsMoved:    eventsMoved,
-		PurgeLogsMoved: purgeLogsMoved,
+		Source:            source,
+		Target:            mergedTarget,
+		IssuesMoved:       issuesMoved,
+		AliasesMoved:      aliasesMoved,
+		EventsMoved:       eventsMoved,
+		PurgeLogsMoved:    purgeLogsMoved,
+		ShortIDExtensions: extensions,
 	}, nil
 }
 
-func projectMergeIssueNumberCollisions(ctx context.Context, tx *sql.Tx, sourceID, targetID int64) ([]int64, error) {
+// extendCollidingSourceShortIDs rewrites the short_id of every source-side
+// issue whose value would collide with an existing target-side short_id on
+// move. Iteration is ULID-ascending so replays produce the same result
+// (spec §5.2). Each replacement is the shortest length L >= shortid.MinLength
+// at which the candidate is free in BOTH source and target — checking both
+// projects together avoids transient duplicates on the source side before
+// the bulk UPDATE runs.
+//
+// Target-side purge_log tombstones are honored as collisions too: a source
+// issue moving into a target whose purge_log already claims that short_id
+// would otherwise silently take a slot a previously-purged issue owned.
+func extendCollidingSourceShortIDs(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceID, targetID int64,
+) ([]ShortIDExtension, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT s.number
+		SELECT s.id, s.uid, s.short_id
 		FROM issues s
-		INNER JOIN issues t ON t.project_id = ? AND t.number = s.number
 		WHERE s.project_id = ?
-		ORDER BY s.number
-		LIMIT 20`, targetID, sourceID)
+		  AND (
+		    EXISTS (SELECT 1 FROM issues t
+		             WHERE t.project_id = ? AND t.short_id = s.short_id)
+		    OR
+		    EXISTS (SELECT 1 FROM purge_log p
+		             WHERE p.project_id = ? AND p.short_id = s.short_id)
+		  )
+		ORDER BY s.uid ASC`, sourceID, targetID, targetID)
 	if err != nil {
-		return nil, fmt.Errorf("check project merge issue number collisions: %w", err)
+		return nil, fmt.Errorf("scan source/target short_id collisions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var out []int64
+	type collider struct {
+		id       int64
+		uid      string
+		oldShort string
+	}
+	var colliders []collider
 	for rows.Next() {
-		var n int64
-		if err := rows.Scan(&n); err != nil {
-			return nil, fmt.Errorf("scan project merge collision: %w", err)
+		var c collider
+		if err := rows.Scan(&c.id, &c.uid, &c.oldShort); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan collider row: %w", err)
 		}
-		out = append(out, n)
+		colliders = append(colliders, c)
 	}
-	return out, rows.Err()
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close collider rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate collider rows: %w", err)
+	}
+
+	var extensions []ShortIDExtension
+	for _, c := range colliders {
+		// Search strictly longer than the colliding length: spec §5.2 forbids
+		// shortening on merge, and the current length is known to collide
+		// against a target row (otherwise this issue wouldn't be a collider).
+		// Without the +1 floor, a source issue that was extended past
+		// shortid.MinLength to dodge source-side neighbors which were later
+		// purged would be re-keyed down to MinLength here, violating the rule.
+		newShortID, err := assignShortIDIn(ctx, tx, []int64{sourceID, targetID}, c.uid, len(c.oldShort)+1)
+		if err != nil {
+			return nil, fmt.Errorf("auto-extend short_id for %s: %w", c.uid, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE issues SET short_id = ? WHERE id = ?`,
+			newShortID, c.id); err != nil {
+			return nil, fmt.Errorf("update extended short_id for %s: %w", c.uid, err)
+		}
+		extensions = append(extensions, ShortIDExtension{
+			UID:              c.uid,
+			PreMergeShortID:  c.oldShort,
+			PostMergeShortID: newShortID,
+		})
+	}
+	return extensions, nil
 }
 
 func projectMergeImportMappingCollisions(
@@ -271,19 +319,4 @@ func countProjectRows(ctx context.Context, tx *sql.Tx, table string, projectID i
 		return 0, fmt.Errorf("count %s rows: %w", table, err)
 	}
 	return n, nil
-}
-
-func mergedNextIssueNumber(ctx context.Context, tx *sql.Tx, source, target Project) (int64, error) {
-	next := target.NextIssueNumber
-	if source.NextIssueNumber > next {
-		next = source.NextIssueNumber
-	}
-	var maxNumber sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(number) FROM issues WHERE project_id = ?`, target.ID).Scan(&maxNumber); err != nil {
-		return 0, fmt.Errorf("read merged max issue number: %w", err)
-	}
-	if maxNumber.Valid && maxNumber.Int64+1 > next {
-		next = maxNumber.Int64 + 1
-	}
-	return next, nil
 }

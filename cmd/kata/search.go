@@ -100,9 +100,9 @@ func printSearchResults(cmd *cobra.Command, bs []byte) error {
 	var b struct {
 		Results []struct {
 			Issue struct {
-				Number int64  `json:"number"`
-				Title  string `json:"title"`
-				Status string `json:"status"`
+				ShortID string `json:"short_id"`
+				Title   string `json:"title"`
+				Status  string `json:"status"`
 			} `json:"issue"`
 			Score     float64  `json:"score"`
 			MatchedIn []string `json:"matched_in"`
@@ -119,8 +119,8 @@ func printSearchResults(cmd *cobra.Command, bs []byte) error {
 		return err
 	}
 	for _, r := range b.Results {
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%-4d  %.2f  %-8s  %s  (%s)\n",
-			r.Issue.Number, r.Score, r.Issue.Status,
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%-8s  %.2f  %-8s  %s  (%s)\n",
+			r.Issue.ShortID, r.Score, r.Issue.Status,
 			textsafe.Line(r.Issue.Title),
 			strings.Join(r.MatchedIn, ",")); err != nil {
 			return err

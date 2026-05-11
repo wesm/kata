@@ -13,10 +13,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// int64Ptr returns a pointer to v, the canonical helper for populating
-// optional *int64 fields (e.g. Issue.ParentNumber) in test fixtures.
-func int64Ptr(v int64) *int64 { return &v }
-
 // testIssueProjectID is the ProjectID used by the testIssue builder. It
 // matches the projectID on the scope returned by newTestModel/homedScope so
 // fixtures and model state agree by default.
@@ -26,14 +22,15 @@ const testIssueProjectID int64 = 7
 // below rather than constructing issueOpt values directly.
 type issueOpt func(*Issue)
 
-// testIssue builds an Issue with ProjectID=7 and a default title of
-// "issue <number>". Tests that care about the title set it explicitly via
-// withTitle.
-func testIssue(number int64, opts ...issueOpt) Issue {
+// testIssue builds an Issue with ProjectID=7, a synthetic UID derived
+// from shortID, and a default title of "issue <shortID>". Tests that
+// care about the title set it explicitly via withTitle.
+func testIssue(shortID string, opts ...issueOpt) Issue {
 	i := Issue{
 		ProjectID: testIssueProjectID,
-		Number:    number,
-		Title:     fmt.Sprintf("issue %d", number),
+		UID:       "01TEST-" + shortID,
+		ShortID:   shortID,
+		Title:     fmt.Sprintf("issue %s", shortID),
 	}
 	for _, opt := range opts {
 		opt(&i)
@@ -45,16 +42,25 @@ func withTitle(title string) issueOpt {
 	return func(i *Issue) { i.Title = title }
 }
 
-func withParent(parent int64) issueOpt {
-	return func(i *Issue) { i.ParentNumber = &parent }
+func withParent(parentShortID string) issueOpt {
+	return func(i *Issue) {
+		p := parentShortID
+		i.ParentShortID = &p
+	}
 }
 
 func withCounts(open, total int) issueOpt {
 	return func(i *Issue) { i.ChildCounts = &ChildCounts{Open: open, Total: total} }
 }
 
-func withBlocks(blocks ...int64) issueOpt {
-	return func(i *Issue) { i.Blocks = blocks }
+func withBlocks(blocks ...string) issueOpt {
+	return func(i *Issue) {
+		peers := make([]LinkPeer, len(blocks))
+		for j, b := range blocks {
+			peers[j] = LinkPeer{UID: "01TEST-" + b, ShortID: b}
+		}
+		i.Blocks = peers
+	}
 }
 
 func withStatus(status string) issueOpt {
@@ -154,12 +160,19 @@ func resizeModel(m Model, width, height int) Model {
 	return nm
 }
 
-// makeTestIssues returns count Issues numbered 1..count with a stable
-// "row" title, suitable for pagination and viewport boundary tests.
+// makeTestIssues returns count Issues with stable "row" titles and
+// deterministic UID/ShortID fields, suitable for pagination and viewport
+// boundary tests.
 func makeTestIssues(count int) []Issue {
 	issues := make([]Issue, count)
 	for i := range issues {
-		issues[i] = Issue{Number: int64(i + 1), Title: "row"}
+		sid := fmt.Sprintf("r%03d", i+1)
+		issues[i] = Issue{
+			ProjectID: testIssueProjectID,
+			UID:       "01TEST-" + sid,
+			ShortID:   sid,
+			Title:     "row",
+		}
 	}
 	return issues
 }
@@ -271,13 +284,13 @@ func assertTerminalColor(t *testing.T, tc lipgloss.TerminalColor, label, want st
 }
 
 // assertSelection fails t if either the cursor row or the recorded
-// selectedNumber identity differs from the wants.
-func assertSelection(t *testing.T, m Model, wantCursor int, wantNumber int64) {
+// selectedUID identity differs from the wants.
+func assertSelection(t *testing.T, m Model, wantCursor int, wantUID string) {
 	t.Helper()
 	if m.list.cursor != wantCursor {
 		t.Fatalf("cursor = %d, want %d", m.list.cursor, wantCursor)
 	}
-	if m.list.selectedNumber != wantNumber {
-		t.Fatalf("selectedNumber = %d, want %d", m.list.selectedNumber, wantNumber)
+	if m.list.selectedUID != wantUID {
+		t.Fatalf("selectedUID = %q, want %q", m.list.selectedUID, wantUID)
 	}
 }

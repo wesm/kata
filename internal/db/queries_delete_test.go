@@ -23,8 +23,6 @@ func TestSoftDeleteIssue_SetsDeletedAtAndEmitsEvent(t *testing.T) {
 	assert.JSONEq(t, "{}", string(evt.Payload), "soft_deleted event has empty payload")
 	require.NotNil(t, evt.IssueID)
 	assert.Equal(t, issue.ID, *evt.IssueID, "event refs the soft-deleted issue id")
-	require.NotNil(t, evt.IssueNumber)
-	assert.Equal(t, issue.Number, *evt.IssueNumber, "event refs the soft-deleted issue number")
 	require.NotNil(t, updated.DeletedAt)
 	assert.True(t, updated.UpdatedAt.After(issue.UpdatedAt) || updated.UpdatedAt.Equal(issue.UpdatedAt),
 		"updated_at must not regress on soft-delete")
@@ -110,8 +108,6 @@ func TestRestoreIssue_EmitsEventWithPayloadAndRefs(t *testing.T) {
 	assert.JSONEq(t, "{}", string(evt.Payload), "restored event has empty payload")
 	require.NotNil(t, evt.IssueID)
 	assert.Equal(t, issue.ID, *evt.IssueID)
-	require.NotNil(t, evt.IssueNumber)
-	assert.Equal(t, issue.Number, *evt.IssueNumber)
 	assert.True(t, updated.UpdatedAt.After(issue.UpdatedAt) || updated.UpdatedAt.Equal(issue.UpdatedAt),
 		"updated_at must not regress on restore")
 }
@@ -166,8 +162,11 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 		ProjectID: p.ID, FromIssueID: keeper.ID, ToIssueID: target.ID,
 		Type: "blocks", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: keeper.ID, EventIssueNumber: keeper.Number,
-		FromNumber: keeper.Number, ToNumber: target.Number, Actor: "tester",
+		EventType:    "issue.linked",
+		EventIssueID: keeper.ID,
+		FromShortID:  keeper.ShortID, FromUID: keeper.UID,
+		ToShortID: target.ShortID, ToUID: target.UID,
+		Actor: "tester",
 	})
 	require.NoError(t, err)
 
@@ -178,7 +177,6 @@ func TestPurgeIssue_RemovesAllDependentsAndAudits(t *testing.T) {
 	assert.Equal(t, target.UID, *pl.IssueUID)
 	assert.Equal(t, p.UID, *pl.ProjectUID)
 	assert.Equal(t, "kata", pl.ProjectName)
-	assert.Equal(t, target.Number, pl.IssueNumber)
 	assert.Equal(t, "delete me", pl.IssueTitle)
 	assert.Equal(t, "tester", pl.IssueAuthor)
 	assert.Equal(t, int64(1), pl.CommentCount)
@@ -240,7 +238,7 @@ func TestEditIssueAtomic_AddBlocksHandlesConcurrentInsertGracefully(t *testing.T
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   a.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{b.Number},
+		AddBlocks: []int64{b.ID},
 	})
 	require.NoError(t, err)
 
@@ -249,7 +247,7 @@ func TestEditIssueAtomic_AddBlocksHandlesConcurrentInsertGracefully(t *testing.T
 	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   a.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{b.Number},
+		AddBlocks: []int64{b.ID},
 	})
 	require.NoError(t, err, "duplicate add must be a no-op, never an error")
 	assert.Empty(t, res.Changes.BlocksAdded, "duplicate add must report no change")
@@ -281,7 +279,7 @@ func TestPurgeIssue_PreservesSinglePeerAggregatedLinksChangedEvent(t *testing.T)
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number},
+		AddBlocks: []int64{target.ID},
 	})
 	require.NoError(t, err)
 
@@ -330,7 +328,7 @@ func TestPurgeIssue_PreservesAggregatedLinksChangedEventsOnOtherIssues(t *testin
 	_, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number, other.Number},
+		AddBlocks: []int64{target.ID, other.ID},
 	})
 	require.NoError(t, err)
 
@@ -404,7 +402,7 @@ func TestEditIssueAtomic_LinksChangedSetsEnvelopePeerForSingleEdge(t *testing.T)
 	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{target.Number},
+		AddBlocks: []int64{target.ID},
 	})
 	require.NoError(t, err)
 
@@ -436,7 +434,7 @@ func TestEditIssueAtomic_LinksChangedNullsEnvelopePeerForMultiEdge(t *testing.T)
 	res, err := d.EditIssueAtomic(ctx, db.EditIssueAtomicParams{
 		IssueID:   subject.ID,
 		Actor:     "tester",
-		AddBlocks: []int64{t1.Number, t2.Number},
+		AddBlocks: []int64{t1.ID, t2.ID},
 	})
 	require.NoError(t, err)
 
@@ -460,9 +458,11 @@ func TestPurgeIssue_NoEventsLeavesResetCursorNull(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	issueUID, err := uid.New()
 	require.NoError(t, err)
+	// short_id is the lowercased trailing-4 ULID suffix (cf. shortid.Derive).
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO issues(uid, project_id, number, title, author) VALUES(?, ?, 1, 'no-events', 'tester')`,
-		issueUID, p.ID)
+		`INSERT INTO issues(uid, project_id, short_id, title, author)
+		 VALUES(?, ?, lower(substr(?, 23, 4)), 'no-events', 'tester')`,
+		issueUID, p.ID, issueUID)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)
@@ -530,4 +530,77 @@ func TestPurgeIssue_OnSoftDeletedIssue(t *testing.T) {
 	// Row is gone from issues.
 	assertRowCount(ctx, t, d, 0, "issue row removed even though it was soft-deleted first",
 		`SELECT count(*) FROM issues WHERE id = ?`, target.ID)
+}
+
+func TestPurgeIssue_SnapshotsShortIDIntoPurgeLog(t *testing.T) {
+	d, ctx, _, target := setupTestIssue(t)
+	require.NotEmpty(t, target.ShortID, "issue under test must have a short_id")
+
+	pl, err := d.PurgeIssue(ctx, target.ID, "agent", nil)
+	require.NoError(t, err)
+	require.NotNil(t, pl.ShortID, "purge_log must record the issue's short_id")
+	assert.Equal(t, target.ShortID, *pl.ShortID)
+}
+
+// TestPurgeTombstone_BlocksReuseOfShortIDAtSameLength is the central
+// purge-tombstone regression. Without the tombstone, purging the first
+// issue would free its short_id and a later create whose ULID happens
+// to suffix-match would silently inherit the slot — re-targeting any
+// external "kata#abc4" ref that had been written against the purged
+// issue. With the tombstone, assignShortIDIn auto-extends past L=4
+// just as it would against a live sibling.
+func TestPurgeTombstone_BlocksReuseOfShortIDAtSameLength(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	a, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", a.ShortID)
+
+	_, err = d.PurgeIssue(ctx, a.ID, "agent", nil)
+	require.NoError(t, err)
+
+	// Different ULID with the same last 4 chars. Without the tombstone, this
+	// new issue would take "d4ex" (the slot is "free" since A is gone). With
+	// the tombstone, assignShortIDIn auto-extends to L=5.
+	b, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "second",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "xd4ex", b.ShortID,
+		"purge_log tombstone must block reuse of A's short_id at L=4")
+}
+
+func TestPurgeTombstone_DifferentProjectsDoNotInterfere(t *testing.T) {
+	// Tombstones are scoped to (project_id, short_id). A purge in project P1
+	// must not gate a create in project P2 with the same ULID suffix.
+	d, ctx, p1 := setupTestProject(t)
+	p2 := createProject(ctx, t, d, "demo2")
+
+	a, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p1.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.PurgeIssue(ctx, a.ID, "agent", nil)
+	require.NoError(t, err)
+
+	// Same ULID suffix, different project — should land at L=4.
+	b, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p2.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "second",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "d4ex", b.ShortID,
+		"P1's purge_log tombstone must not gate P2's short_id pool")
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/spf13/cobra"
 )
@@ -29,7 +30,7 @@ func newRestoreCmd() *cobra.Command {
 				return err
 			}
 			status, bs, err := httpDoJSON(ctx, client, http.MethodPost,
-				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/actions/restore", baseURL, pid, issue.Number),
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/restore", baseURL, pid, url.PathEscape(issue.RefForAPI)),
 				map[string]any{"actor": actor})
 			if err != nil {
 				return err
@@ -38,7 +39,7 @@ func newRestoreCmd() *cobra.Command {
 				return apiErrFromBody(status, bs)
 			}
 			if !flags.Quiet && !flags.JSON {
-				_, err = fmt.Fprintf(cmd.OutOrStdout(), "#%d restored\n", issue.Number)
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s restored\n", issue.RefForAPI)
 				return err
 			}
 			return printMutation(cmd, bs)

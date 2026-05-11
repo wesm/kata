@@ -15,7 +15,7 @@ import (
 // ErrNotFound is returned when a single-row lookup matches zero rows.
 var ErrNotFound = errors.New("not found")
 
-// CreateProject inserts a new projects row with default next_issue_number=1.
+// CreateProject inserts a new projects row.
 func (d *DB) CreateProject(ctx context.Context, name string) (Project, error) {
 	projectUID, err := katauid.New()
 	if err != nil {
@@ -213,85 +213,6 @@ func parseSQLiteTimestamp(s string) (time.Time, error) {
 	return time.Time{}, firstErr
 }
 
-// ProjectHasIssuesError is returned by ResetIssueCounter when the target
-// project still has at least one row in the issues table. Carries the count
-// observed at rejection time so callers can surface it without re-querying.
-type ProjectHasIssuesError struct{ Count int64 }
-
-func (e *ProjectHasIssuesError) Error() string {
-	return fmt.Sprintf("project has %d issues", e.Count)
-}
-
-// CountIssues returns the number of rows currently in the issues table for
-// projectID. Purged rows are gone from the table entirely (queries_delete.go),
-// so a zero count means a clean slate.
-func (d *DB) CountIssues(ctx context.Context, projectID int64) (int64, error) {
-	var n int64
-	if err := d.QueryRowContext(ctx,
-		`SELECT count(*) FROM issues WHERE project_id = ?`, projectID).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count issues: %w", err)
-	}
-	return n, nil
-}
-
-// ErrInvalidCounterValue is returned by ResetIssueCounter when `to < 1`.
-// The CLI and HTTP handler also enforce this; the DB-layer check is
-// defense-in-depth so a buggy future caller can't quietly set the counter
-// to zero or negative.
-var ErrInvalidCounterValue = errors.New("counter value must be >= 1")
-
-// ResetIssueCounter sets projects.next_issue_number to `to` for projectID,
-// but only when the project has no rows in the issues table. The empty-check
-// is folded into the UPDATE's WHERE clause (NOT EXISTS) so the gate is atomic
-// with the write — SQLite's default DEFERRED transaction would not have
-// taken a write lock for a separate count() query, leaving a window for a
-// concurrent CreateIssue between count and update. Returns ErrNotFound when
-// the project does not exist; *ProjectHasIssuesError carrying the observed
-// count when the project is non-empty.
-func (d *DB) ResetIssueCounter(ctx context.Context, projectID, to int64) error {
-	if to < 1 {
-		return ErrInvalidCounterValue
-	}
-	res, err := d.ExecContext(ctx,
-		`UPDATE projects SET next_issue_number = ?
-		 WHERE id = ?
-		   AND NOT EXISTS (SELECT 1 FROM issues WHERE project_id = projects.id)`,
-		to, projectID)
-	if err != nil {
-		return fmt.Errorf("update counter: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if n == 1 {
-		return nil
-	}
-	// Update affected zero rows: either the project doesn't exist or it has
-	// at least one issue. Disambiguate so callers map to 404 vs 409 — at this
-	// point we've already failed the gate, so any drift in the count comes
-	// from concurrent activity that postdated the rejection and is not
-	// load-bearing.
-	if _, perr := d.ProjectByID(ctx, projectID); errors.Is(perr, ErrNotFound) {
-		return ErrNotFound
-	} else if perr != nil {
-		return fmt.Errorf("post-update project lookup: %w", perr)
-	}
-	count, cerr := d.CountIssues(ctx, projectID)
-	if cerr != nil {
-		return fmt.Errorf("post-update count: %w", cerr)
-	}
-	// A concurrent purge between the failed UPDATE and this lookup can drop
-	// the count to zero, but the UPDATE's NOT EXISTS proved the project was
-	// non-empty at the moment we tried to write. Clamp to 1 so the error
-	// payload doesn't claim "has 0 issues" — that would be both confusing
-	// and structurally inconsistent with the rejection itself.
-	if count < 1 {
-		count = 1
-	}
-	return &ProjectHasIssuesError{Count: count}
-}
-
 // AttachAlias inserts a project_aliases row.
 func (d *DB) AttachAlias(ctx context.Context, projectID int64, identity, kind, rootPath string) (ProjectAlias, error) {
 	res, err := d.ExecContext(ctx,
@@ -359,7 +280,7 @@ func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlia
 }
 
 // projectSelect is the canonical SELECT list for projects rows.
-const projectSelect = `SELECT id, uid, name, created_at, next_issue_number, deleted_at FROM projects`
+const projectSelect = `SELECT id, uid, name, created_at, deleted_at FROM projects`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows used by scan helpers.
 type rowScanner interface {
@@ -368,7 +289,7 @@ type rowScanner interface {
 
 func scanProject(r rowScanner) (Project, error) {
 	var p Project
-	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.CreatedAt, &p.NextIssueNumber, &p.DeletedAt)
+	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.CreatedAt, &p.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -416,6 +337,21 @@ type CreateIssueParams struct {
 	Title     string
 	Body      string
 	Author    string
+
+	// Optional. When non-empty, CreateIssue uses this ULID instead of
+	// generating one. Required to be a valid 26-char ULID; the caller owns
+	// uniqueness (the UNIQUE constraint on issues.uid will still surface
+	// duplicates as a constraint error). This seam supports deterministic
+	// tests and the JSONL replay path; live callers should leave it empty.
+	UID string
+
+	// Optional. When non-empty, CreateIssue bypasses assignShortID's
+	// auto-extend loop and persists this value verbatim on the new row.
+	// The value must satisfy shortid.Valid AND equal the lowercased suffix
+	// of UID at its own length — the same invariant the schema CHECK
+	// enforces. Used by JSONL import (spec §8.1) to preserve stored
+	// short_ids across future cutovers; live callers leave it empty.
+	ShortIDOverride string
 
 	// Optional initial state. Plan 2 fields. CreateIssue inserts label/link
 	// rows and applies the owner in the same TX, then folds them into the
@@ -487,30 +423,36 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	var (
 		projectName string
 		projectUID  string
-		nextNum     int64
 	)
 	if err := tx.QueryRowContext(ctx,
-		`UPDATE projects
-		 SET next_issue_number = next_issue_number + 1
-		 WHERE id = ? AND deleted_at IS NULL
-		 RETURNING next_issue_number - 1, name, uid`, p.ProjectID).
-		Scan(&nextNum, &projectName, &projectUID); err != nil {
+		`SELECT name, uid FROM projects WHERE id = ? AND deleted_at IS NULL`, p.ProjectID).
+		Scan(&projectName, &projectUID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrNotFound
 		}
-		return Issue{}, Event{}, fmt.Errorf("allocate issue number: %w", err)
+		return Issue{}, Event{}, fmt.Errorf("lookup project for create: %w", err)
 	}
 
-	issueUID, err := katauid.New()
+	issueUID := p.UID
+	if issueUID == "" {
+		issueUID, err = katauid.New()
+		if err != nil {
+			return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
+		}
+	} else if !katauid.Valid(issueUID) {
+		return Issue{}, Event{}, fmt.Errorf("invalid issue uid %q", issueUID)
+	}
+
+	shortID, err := resolveShortID(ctx, tx, p.ProjectID, issueUID, p.ShortIDOverride)
 	if err != nil {
-		return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
+		return Issue{}, Event{}, err
 	}
 
 	// Insert issue + optional owner/priority columns in one statement.
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO issues(uid, project_id, number, title, body, author, owner, priority)
+		`INSERT INTO issues(uid, project_id, short_id, title, body, author, owner, priority)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, nextNum, p.Title, p.Body, p.Author, owner, p.Priority)
+		issueUID, p.ProjectID, shortID, p.Title, p.Body, p.Author, owner, p.Priority)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -531,32 +473,36 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	// Initial links — resolve to_number → (to_issue_id, to_issue_uid)
-	// within the same project, excluding soft-deleted targets. The
-	// schema's same-project trigger enforces the cross-project check,
-	// but we'd rather surface a typed not-found than a generic constraint
-	// failure. The peer UID is captured here and folded into the
-	// issue.created event payload for stable peer identity across
-	// counter resets.
-	resolvedTargetUIDs := make([]string, 0, len(links))
+	// Initial links — resolve to_number → (to_issue_id, to_issue_uid,
+	// to_issue_short_id) within the same project, excluding soft-deleted
+	// targets. The schema's same-project trigger enforces the cross-project
+	// check, but we'd rather surface a typed not-found than a generic
+	// constraint failure. The peer UID and short_id are captured here and
+	// folded into the issue.created event payload: UID is canonical, short_id
+	// is the rendered display value (spec §11).
+	resolvedTargets := make([]createdLinkTarget, 0, len(links))
 	for _, l := range links {
 		var (
-			toIssueID  int64
-			toIssueUID string
+			toIssueID      int64
+			toIssueUID     string
+			toIssueShortID string
 		)
+		// Initial-link targets are addressed by their issue ID for now; the
+		// CLI/daemon will be migrated to short_ids in Tasks 11/14. Until
+		// then this lookup intentionally treats ToNumber as a numeric ID.
 		err := tx.QueryRowContext(ctx,
-			`SELECT id, uid FROM issues
-			 WHERE project_id = ? AND number = ? AND deleted_at IS NULL`,
-			p.ProjectID, l.ToNumber).Scan(&toIssueID, &toIssueUID)
+			`SELECT id, uid, short_id FROM issues
+			 WHERE project_id = ? AND id = ? AND deleted_at IS NULL`,
+			p.ProjectID, l.ToNumber).Scan(&toIssueID, &toIssueUID, &toIssueShortID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrInitialLinkTargetNotFound
 		}
 		if err != nil {
 			return Issue{}, Event{}, fmt.Errorf("resolve initial link target: %w", err)
 		}
-		resolvedTargetUIDs = append(resolvedTargetUIDs, toIssueUID)
-		// Canonical ordering is a storage concern: the payload still reports
-		// the caller's to_number unchanged, so the wire shape isn't affected.
+		resolvedTargets = append(resolvedTargets, createdLinkTarget{UID: toIssueUID, ShortID: toIssueShortID})
+		// Canonical ordering is a storage concern: the payload reports the
+		// peer's stable identity (UID + short_id), not a numeric ref.
 		fromID, toID := issueID, toIssueID
 		if l.Incoming && l.Type == "blocks" {
 			// "this issue is blocked by N" → link runs FROM N TO new issue.
@@ -573,7 +519,7 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		}
 	}
 
-	payload := buildCreatedPayload(labels, links, resolvedTargetUIDs, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
+	payload := buildCreatedPayload(labels, links, resolvedTargets, owner, p.Priority, p.IdempotencyKey, p.IdempotencyFingerprint)
 
 	evt, err := d.insertEventTx(ctx, tx, eventInsert{
 		ProjectID:   p.ProjectID,
@@ -581,7 +527,6 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 		ProjectName: projectName,
 		IssueID:     &issueID,
 		IssueUID:    &issueUID,
-		IssueNumber: &nextNum,
 		Type:        "issue.created",
 		Actor:       p.Author,
 		Payload:     payload,
@@ -601,18 +546,26 @@ func (d *DB) CreateIssue(ctx context.Context, p CreateIssueParams) (Issue, Event
 	return issue, evt, nil
 }
 
+// createdLinkTarget captures the (uid, short_id) pair for one resolved
+// initial-link peer. The pair is folded into the issue.created event
+// payload (spec §11): UIDs are canonical, short_ids are display snapshots.
+type createdLinkTarget struct {
+	UID     string
+	ShortID string
+}
+
 // buildCreatedPayload returns the issue.created event payload as JSON. Empty
 // initial state → "{}". Otherwise emits keys for whichever components are set,
 // preserving determinism (sorted labels) so events are byte-stable.
 //
-// targetUIDs is parallel to links (same length and order). Each link's
-// to_issue_uid is captured at insertion time so the payload can identify
-// peers stably across `kata reset-counter` (numbers can be reused;
-// UIDs cannot). Pass nil/empty when no links are being recorded.
-func buildCreatedPayload(labels []string, links []InitialLink, targetUIDs []string, owner *string, priority *int64, idempotencyKey, idempotencyFingerprint string) string {
+// targets is parallel to links (same length and order). Each link's peer
+// is captured at insertion time so the payload identifies the target
+// stably (UID) and renderably (short_id). Pass nil/empty when no links
+// are being recorded.
+func buildCreatedPayload(labels []string, links []InitialLink, targets []createdLinkTarget, owner *string, priority *int64, idempotencyKey, idempotencyFingerprint string) string {
 	type linkOut struct {
 		Type       string `json:"type"`
-		ToNumber   int64  `json:"to_number"`
+		ToShortID  string `json:"to_short_id,omitempty"`
 		ToIssueUID string `json:"to_issue_uid,omitempty"`
 		Incoming   bool   `json:"incoming,omitempty"`
 	}
@@ -631,14 +584,14 @@ func buildCreatedPayload(labels []string, links []InitialLink, targetUIDs []stri
 	if len(links) > 0 {
 		o.Links = make([]linkOut, 0, len(links))
 		for i, l := range links {
-			var uid string
-			if i < len(targetUIDs) {
-				uid = targetUIDs[i]
+			var t createdLinkTarget
+			if i < len(targets) {
+				t = targets[i]
 			}
 			o.Links = append(o.Links, linkOut{
 				Type:       l.Type,
-				ToNumber:   l.ToNumber,
-				ToIssueUID: uid,
+				ToShortID:  t.ShortID,
+				ToIssueUID: t.UID,
 				Incoming:   l.Incoming,
 			})
 		}
@@ -720,27 +673,58 @@ func (d *DB) IssueByID(ctx context.Context, id int64) (Issue, error) {
 	return scanIssue(row)
 }
 
-// IssueByNumber fetches an issue by (project_id, number). Includes
-// soft-deleted rows; see IssueByID for the rationale.
-func (d *DB) IssueByNumber(ctx context.Context, projectID, number int64) (Issue, error) {
-	row := d.QueryRowContext(ctx, issueSelect+` WHERE i.project_id = ? AND i.number = ?`, projectID, number)
+// IncludeDeleted controls whether a lookup is allowed to return soft-deleted
+// rows. Spec §6: normal read/mutate paths exclude them; the carveout paths
+// (restore, idempotent re-delete, purge, idempotency-key collision detection)
+// pass IncludeDeletedYes.
+type IncludeDeleted int
+
+const (
+	// IncludeDeletedNo filters out rows with deleted_at IS NOT NULL.
+	IncludeDeletedNo IncludeDeleted = 0
+	// IncludeDeletedYes returns soft-deleted rows alongside live ones.
+	IncludeDeletedYes IncludeDeleted = 1
+)
+
+// IssueByShortID resolves a project-scoped short_id. Soft-deleted issues are
+// returned only when include == IncludeDeletedYes (spec §6: used by restore,
+// idempotent re-delete, purge confirmation, and idempotency-key collision
+// detection). Returns ErrNotFound when no row matches the filter.
+func (d *DB) IssueByShortID(ctx context.Context, projectID int64, shortID string, include IncludeDeleted) (Issue, error) {
+	q := issueSelect + ` WHERE i.project_id = ? AND i.short_id = ?`
+	if include == IncludeDeletedNo {
+		q += ` AND i.deleted_at IS NULL`
+	}
+	row := d.QueryRowContext(ctx, q, projectID, shortID)
 	return scanIssue(row)
 }
 
-// IssueByUID fetches an issue by stable UID. Includes soft-deleted rows; see
-// IssueByID for the rationale.
-func (d *DB) IssueByUID(ctx context.Context, issueUID string) (Issue, error) {
-	row := d.QueryRowContext(ctx, issueSelect+` WHERE i.uid = ?`, issueUID)
+// IssueByUID fetches an issue by stable UID. Soft-deleted rows are returned
+// only when include == IncludeDeletedYes (spec §6 carveout, matching
+// IssueByShortID). Returns ErrNotFound when no row matches the filter.
+func (d *DB) IssueByUID(ctx context.Context, issueUID string, include IncludeDeleted) (Issue, error) {
+	q := issueSelect + ` WHERE i.uid = ?`
+	if include == IncludeDeletedNo {
+		q += ` AND i.deleted_at IS NULL`
+	}
+	row := d.QueryRowContext(ctx, q, issueUID)
 	return scanIssue(row)
 }
 
 // IssueUIDPrefixMatch returns issues whose UID starts with prefix, ordered by
-// UID for deterministic ambiguity reporting.
-func (d *DB) IssueUIDPrefixMatch(ctx context.Context, prefix string, limit int) ([]Issue, error) {
+// UID for deterministic ambiguity reporting. Soft-deleted rows are returned
+// only when include == IncludeDeletedYes (spec §6 carveout, matching
+// IssueByUID).
+func (d *DB) IssueUIDPrefixMatch(ctx context.Context, prefix string, limit int, include IncludeDeleted) ([]Issue, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := d.QueryContext(ctx, issueSelect+` WHERE i.uid LIKE ? || '%' ORDER BY i.uid ASC LIMIT ?`, prefix, limit)
+	q := issueSelect + ` WHERE i.uid LIKE ? || '%'`
+	if include == IncludeDeletedNo {
+		q += ` AND i.deleted_at IS NULL`
+	}
+	q += ` ORDER BY i.uid ASC LIMIT ?`
+	rows, err := d.QueryContext(ctx, q, prefix, limit)
 	if err != nil {
 		return nil, fmt.Errorf("issue uid prefix match: %w", err)
 	}
@@ -902,7 +886,6 @@ func (d *DB) CreateComment(ctx context.Context, p CreateCommentParams) (Comment,
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
 		Type:        "issue.commented",
 		Actor:       p.Author,
 		Payload:     payload,
@@ -956,7 +939,6 @@ func (d *DB) CloseIssue(ctx context.Context, issueID int64, reason, actor string
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
 		Type:        "issue.closed",
 		Actor:       actor,
 		Payload:     payload,
@@ -1002,7 +984,6 @@ func (d *DB) ReopenIssue(ctx context.Context, issueID int64, actor string) (Issu
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
 		Type:        "issue.reopened",
 		Actor:       actor,
 		Payload:     "{}",
@@ -1070,7 +1051,6 @@ func (d *DB) EditIssue(ctx context.Context, p EditIssueParams) (Issue, *Event, b
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
 		Type:        "issue.updated",
 		Actor:       p.Actor,
 		Payload:     "{}",
@@ -1105,7 +1085,7 @@ func joinComma(parts []string) string {
 // rows; callers see ErrNotFound for both nonexistent and deleted issues.
 func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
 	const q = `
-		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
+		SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at, p.name
 		FROM issues i
@@ -1114,7 +1094,7 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	var i Issue
 	var projectName string
 	err := tx.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &projectName)
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &projectName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound
 	}
@@ -1124,11 +1104,11 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	return i, projectName, nil
 }
 
-const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
+const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
 
 func scanIssue(r rowScanner) (Issue, error) {
 	var i Issue
-	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
+	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, ErrNotFound
 	}
@@ -1145,7 +1125,6 @@ type eventInsert struct {
 	ProjectName     string
 	IssueID         *int64
 	IssueUID        *string
-	IssueNumber     *int64
 	RelatedIssueID  *int64
 	RelatedIssueUID *string
 	Type            string
@@ -1196,7 +1175,6 @@ func (d *DB) UpdateOwner(ctx context.Context, issueID int64, newOwner *string, a
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
 		Type:        eventType,
 		Actor:       actor,
 		Payload:     payload,
@@ -1264,18 +1242,18 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 		return Event{}, fmt.Errorf("generate event uid: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, issue_number, related_issue_id, related_issue_uid, type, actor, payload)
+		`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, related_issue_id, related_issue_uid, type, actor, payload)
 		 VALUES(
 		   ?, ?, ?, ?, ?,
 		   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
-		   ?, ?,
+		   ?,
 		   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 		   ?, ?, ?
 		 )`,
 		eventUID, d.instanceUID,
 		in.ProjectID, in.ProjectName, in.IssueID,
 		stringPtrValue(in.IssueUID), in.IssueID,
-		in.IssueNumber, in.RelatedIssueID,
+		in.RelatedIssueID,
 		stringPtrValue(in.RelatedIssueUID), in.RelatedIssueID,
 		in.Type, in.Actor, in.Payload)
 	if err != nil {
@@ -1288,7 +1266,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	var e Event
 	err = tx.QueryRowContext(ctx, eventSelectByID, id).
 		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName, &e.IssueID,
-			&e.IssueUID, &e.IssueNumber, &e.RelatedIssueID, &e.RelatedIssueUID,
+			&e.IssueUID, &e.IssueShortID, &e.RelatedIssueID, &e.RelatedIssueUID, &e.RelatedIssueShortID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt)
 	if err != nil {
 		return Event{}, fmt.Errorf("read event: %w", err)
@@ -1296,11 +1274,18 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	return e, nil
 }
 
+// eventSelectByID reads a single event by id with the same shape EventsAfter
+// and EventsInWindow produce — the issue and related_issue short_ids are
+// LEFT JOINed from the live `issues` table so mutation responses (which
+// scan their inserted event through this query) carry the same wire shape
+// as events streamed via poll/SSE.
 const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
-       e.issue_id, e.issue_uid, e.issue_number, e.related_issue_id, e.related_issue_uid,
+       e.issue_id, e.issue_uid, i.short_id, e.related_issue_id, e.related_issue_uid, ri.short_id,
        e.type, e.actor, e.payload, e.created_at
   FROM events e
   JOIN projects p ON p.id = e.project_id
+  LEFT JOIN issues i ON i.id = e.issue_id
+  LEFT JOIN issues ri ON ri.id = e.related_issue_id
  WHERE e.id = ?`
 
 func stringPtrValue(s *string) any {

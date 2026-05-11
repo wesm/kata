@@ -103,7 +103,7 @@ func (d *DB) searchFTS(ctx context.Context, r searchFTSReq) ([]SearchCandidate, 
 	// column on contentless tables. Each subquery returns 1 if the row's
 	// title/body/comments column matches the per-column phrase, 0 otherwise.
 	query := fmt.Sprintf(`
-		SELECT i.id, i.project_id, i.number, i.title, i.body, i.status,
+		SELECT i.id, i.project_id, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at,
 		       bm25(issues_fts),
@@ -135,7 +135,7 @@ func (d *DB) searchFTS(ctx context.Context, r searchFTSReq) ([]SearchCandidate, 
 			rawScore                    float64
 			inTitle, inBody, inComments bool
 		)
-		if err := rows.Scan(&i.ID, &i.ProjectID, &i.Number, &i.Title, &i.Body, &i.Status,
+		if err := rows.Scan(&i.ID, &i.ProjectID, &i.ShortID, &i.Title, &i.Body, &i.Status,
 			&i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt,
 			&i.ClosedAt, &i.DeletedAt,
 			&rawScore, &inTitle, &inBody, &inComments); err != nil {

@@ -16,12 +16,12 @@ func registerCommentsHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "createComment",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/comments",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/comments",
 	}, func(ctx context.Context, in *api.CommentRequest) (*api.CommentResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}

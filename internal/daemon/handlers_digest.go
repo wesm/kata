@@ -86,20 +86,21 @@ func doDigest(
 	return out, nil
 }
 
-// issueKey identifies an issue across projects in the digest aggregator. We
-// can't key on issue_number alone because cross-project digests can have
-// colliding numbers, and a (project_id, issue_number) pair is enough to
-// disambiguate without resolving the canonical issues.id.
+// issueKey identifies an issue across projects in the digest aggregator.
+// The UID is globally unique on its own, but we still hold the project id
+// because it scopes the rendering helpers (project_name comes off the
+// event row regardless).
 type issueKey struct {
 	ProjectID int64
-	Number    int64
+	UID       string
 }
 
 // issueAccum tracks the per-(actor,issue) action sequence. We collapse repeats
-// (comments especially) to "verb:N" tokens so the human renderer doesn't
-// drown in duplicate lines for chatty agents.
+// (comments especially) to "verb:short_id" tokens so the human renderer
+// doesn't drown in duplicate lines for chatty agents.
 type issueAccum struct {
 	ProjectName     string
+	IssueShortID    string // joined from issues.short_id by EventsInWindow
 	Created         bool
 	CloseReason     string // empty if not closed in window
 	Reopened        bool
@@ -111,9 +112,9 @@ type issueAccum struct {
 	PriorityCleared bool
 	LabelsAdded     []string
 	LabelsRemoved   []string
-	Linked          []string // formatted "type:#N"
+	Linked          []string // formatted "type:short_id"
 	Unlinked        []string
-	UnblocksOthers  []int64 // issue numbers this actor unblocked
+	UnblocksOthers  []string // short_ids this actor unblocked
 	Deleted         bool
 	Restored        bool
 	Other           int
@@ -138,12 +139,18 @@ func aggregateDigest(rows []db.Event) (api.DigestTotals, []api.DigestActorEntry)
 		// Some event types have no associated issue (none today, but be defensive).
 		var key issueKey
 		var acc *issueAccum
-		if e.IssueNumber != nil {
-			key = issueKey{ProjectID: e.ProjectID, Number: *e.IssueNumber}
+		if e.IssueUID != nil {
+			key = issueKey{ProjectID: e.ProjectID, UID: *e.IssueUID}
 			a, ok := st.issues[key]
 			if !ok {
 				a = &issueAccum{ProjectName: e.ProjectName}
 				st.issues[key] = a
+			}
+			// Latest short_id observed for this issue wins so renders
+			// reflect any post-merge / post-cutover shift visible at
+			// digest time. UID keys keep the row stable regardless.
+			if e.IssueShortID != nil && *e.IssueShortID != "" {
+				a.IssueShortID = *e.IssueShortID
 			}
 			acc = a
 		}
@@ -201,13 +208,13 @@ func applyEvent(e db.Event, totals, grand *api.DigestTotals, acc *issueAccum) {
 				// create) is stored as type="blocks" with incoming=true;
 				// the digest's per-edge label flips to "blocked_by" so the
 				// summary reads in the issue's POV — without this, a
-				// `--blocked-by` create would surface as `blocks:#N` and
-				// reverse the dependency direction in reports.
+				// `--blocked-by` create would surface as `blocks:short_id`
+				// and reverse the dependency direction in reports.
 				label := lk.Type
 				if lk.Type == "blocks" && lk.Incoming {
 					label = "blocked_by"
 				}
-				acc.Linked = append(acc.Linked, fmt.Sprintf("%s:#%d", label, lk.ToNumber))
+				acc.Linked = append(acc.Linked, fmt.Sprintf("%s:%s", label, lk.ToShortID))
 			}
 		}
 	case "issue.closed":
@@ -274,21 +281,21 @@ func applyEvent(e db.Event, totals, grand *api.DigestTotals, acc *issueAccum) {
 		bump(&totals.Linked, &grand.Linked)
 		if acc != nil {
 			if t, to := linkSummary(e.Payload); t != "" {
-				acc.Linked = append(acc.Linked, fmt.Sprintf("%s:#%d", t, to))
+				acc.Linked = append(acc.Linked, fmt.Sprintf("%s:%s", t, to))
 			}
 		}
 	case "issue.unlinked":
 		bump(&totals.Unlinked, &grand.Unlinked)
 		t, to := linkSummary(e.Payload)
 		if acc != nil && t != "" {
-			acc.Unlinked = append(acc.Unlinked, fmt.Sprintf("%s:#%d", t, to))
+			acc.Unlinked = append(acc.Unlinked, fmt.Sprintf("%s:%s", t, to))
 		}
 		// "blocked-on-X resolved": when the blocker side explicitly removes
 		// the blocks edge, credit them with unblocking the other issue. The
-		// link payload uses from_number = the URL issue (the blocker, whose
-		// edit removes the link), so the to_number is the issue that
+		// link payload uses from_short_id = the URL issue (the blocker,
+		// whose edit removes the link), so to_short_id is the issue that
 		// becomes unblocked.
-		if t == "blocks" && acc != nil && to > 0 {
+		if t == "blocks" && acc != nil && to != "" {
 			acc.UnblocksOthers = append(acc.UnblocksOthers, to)
 			bump(&totals.Unblocked, &grand.Unblocked)
 		}
@@ -395,23 +402,26 @@ func createdInitialState(payload string) ([]string, string, []createdLink) {
 }
 
 type createdLink struct {
-	Type     string `json:"type"`
-	ToNumber int64  `json:"to_number"`
-	Incoming bool   `json:"incoming,omitempty"`
+	Type      string `json:"type"`
+	ToShortID string `json:"to_short_id"`
+	Incoming  bool   `json:"incoming,omitempty"`
 }
 
-func linkSummary(payload string) (string, int64) {
+// linkSummary extracts the (type, to_short_id) pair from an
+// issue.linked / issue.unlinked payload. Returns empty strings on parse
+// failure.
+func linkSummary(payload string) (string, string) {
 	if payload == "" {
-		return "", 0
+		return "", ""
 	}
 	var p struct {
-		Type     string `json:"type"`
-		ToNumber int64  `json:"to_number"`
+		Type      string `json:"type"`
+		ToShortID string `json:"to_short_id"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return "", 0
+		return "", ""
 	}
-	return p.Type, p.ToNumber
+	return p.Type, p.ToShortID
 }
 
 // applyLinksChangedDigest expands an issue.links_changed payload into the
@@ -419,35 +429,38 @@ func linkSummary(payload string) (string, int64) {
 // so reports do not vary by API path. The aggregated event always carries
 // the issue's POV (parent/blocks/blocked_by/related, each with adds and
 // removes); a single edit may produce many digest entries.
+//
+// Per spec §9.2 the *_added / *_removed fields are short_id strings; the
+// digest renders "type:short_id" tokens directly.
 func applyLinksChangedDigest(payload string, totals, grand *api.DigestTotals, acc *issueAccum) {
 	if payload == "" {
 		return
 	}
 	var p struct {
-		ParentSet        *int64  `json:"parent_set,omitempty"`
-		ParentRemoved    *int64  `json:"parent_removed,omitempty"`
-		BlocksAdded      []int64 `json:"blocks_added,omitempty"`
-		BlocksRemoved    []int64 `json:"blocks_removed,omitempty"`
-		BlockedByAdded   []int64 `json:"blocked_by_added,omitempty"`
-		BlockedByRemoved []int64 `json:"blocked_by_removed,omitempty"`
-		RelatedAdded     []int64 `json:"related_added,omitempty"`
-		RelatedRemoved   []int64 `json:"related_removed,omitempty"`
+		ParentSet        *string  `json:"parent_set,omitempty"`
+		ParentRemoved    *string  `json:"parent_removed,omitempty"`
+		BlocksAdded      []string `json:"blocks_added,omitempty"`
+		BlocksRemoved    []string `json:"blocks_removed,omitempty"`
+		BlockedByAdded   []string `json:"blocked_by_added,omitempty"`
+		BlockedByRemoved []string `json:"blocked_by_removed,omitempty"`
+		RelatedAdded     []string `json:"related_added,omitempty"`
+		RelatedRemoved   []string `json:"related_removed,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return
 	}
-	add := func(linkType string, target int64) {
+	add := func(linkType, target string) {
 		bump(&totals.Linked, &grand.Linked)
 		if acc != nil {
-			acc.Linked = append(acc.Linked, fmt.Sprintf("%s:#%d", linkType, target))
+			acc.Linked = append(acc.Linked, fmt.Sprintf("%s:%s", linkType, target))
 		}
 	}
-	remove := func(linkType string, target int64, alsoUnblocks bool) {
+	remove := func(linkType, target string, alsoUnblocks bool) {
 		bump(&totals.Unlinked, &grand.Unlinked)
 		if acc != nil {
-			acc.Unlinked = append(acc.Unlinked, fmt.Sprintf("%s:#%d", linkType, target))
+			acc.Unlinked = append(acc.Unlinked, fmt.Sprintf("%s:%s", linkType, target))
 		}
-		if alsoUnblocks && acc != nil && target > 0 {
+		if alsoUnblocks && acc != nil && target != "" {
 			acc.UnblocksOthers = append(acc.UnblocksOthers, target)
 			bump(&totals.Unblocked, &grand.Unblocked)
 		}
@@ -488,7 +501,7 @@ func applyLinksChangedDigest(payload string, totals, grand *api.DigestTotals, ac
 
 // renderIssueAccums turns the per-issue accumulators into the wire shape:
 // one DigestIssueActions per issue with a stable, ordered list of action
-// tokens. Issues are sorted by (project_id, number).
+// tokens. Issues are sorted by (project_id, uid).
 func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 	keys := make([]issueKey, 0, len(m))
 	for k := range m {
@@ -498,7 +511,7 @@ func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 		if keys[i].ProjectID != keys[j].ProjectID {
 			return keys[i].ProjectID < keys[j].ProjectID
 		}
-		return keys[i].Number < keys[j].Number
+		return keys[i].UID < keys[j].UID
 	})
 	out := make([]api.DigestIssueActions, 0, len(keys))
 	for _, k := range keys {
@@ -507,10 +520,11 @@ func renderIssueAccums(m map[issueKey]*issueAccum) []api.DigestIssueActions {
 			continue
 		}
 		out = append(out, api.DigestIssueActions{
-			ProjectID:   k.ProjectID,
-			ProjectName: acc.ProjectName,
-			IssueNumber: k.Number,
-			Actions:     renderActions(acc),
+			ProjectID:    k.ProjectID,
+			ProjectName:  acc.ProjectName,
+			IssueUID:     k.UID,
+			IssueShortID: acc.IssueShortID,
+			Actions:      renderActions(acc),
 		})
 	}
 	return out
@@ -557,7 +571,7 @@ func renderActions(acc *issueAccum) []string {
 		actions = append(actions, "un"+u)
 	}
 	for _, n := range acc.UnblocksOthers {
-		actions = append(actions, fmt.Sprintf("unblocks:#%d", n))
+		actions = append(actions, "unblocks:"+n)
 	}
 	if acc.Reopened {
 		actions = append(actions, "reopened")

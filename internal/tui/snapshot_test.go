@@ -111,18 +111,18 @@ func snapListModel(issues []Issue) listModel {
 func snapListFixture() []Issue {
 	return []Issue{
 		{
-			Number: 1, Title: "fix login bug on Safari",
+			UID: "01TEST-aaa1", ShortID: "aaa1", Title: "fix login bug on Safari",
 			Status: "open", Owner: ptrString("claude-4.7"),
 			Priority:  ptrInt64(1),
 			UpdatedAt: snapshotFixedNow.Add(-3 * time.Hour),
 		},
 		{
-			Number: 2, Title: "rebuild search index",
+			UID: "01TEST-bbb2", ShortID: "bbb2", Title: "rebuild search index",
 			Status: "closed", Owner: ptrString("wesm"),
 			UpdatedAt: snapshotFixedNow.Add(-1 * time.Hour),
 		},
 		{
-			Number: 3, Title: "purge stale tokens",
+			UID: "01TEST-ccc3", ShortID: "ccc3", Title: "purge stale tokens",
 			Status:    "open",
 			DeletedAt: ptrTime(snapshotFixedNow.Add(-2 * time.Hour)),
 			UpdatedAt: snapshotFixedNow.Add(-2 * time.Hour),
@@ -131,34 +131,34 @@ func snapListFixture() []Issue {
 }
 
 func snapTreeFixture() []Issue {
-	parent := int64(10)
-	child := int64(11)
+	parentSID := "p010"
+	childSID := "c011"
 	return []Issue{
 		{
-			ProjectID: 7, Number: parent, Title: "professional workspace polish",
+			ProjectID: 7, UID: "01TEST-p010", ShortID: parentSID, Title: "professional workspace polish",
 			Status: "open", Owner: ptrString("wesm"),
 			UpdatedAt:   snapshotFixedNow.Add(-30 * time.Minute),
 			ChildCounts: &ChildCounts{Open: 1, Total: 2},
 		},
 		{
-			ProjectID: 7, Number: child, ParentNumber: &parent,
+			ProjectID: 7, UID: "01TEST-c011", ShortID: childSID, ParentShortID: &parentSID,
 			Title: "detail hint bars incomplete", Status: "open",
 			Owner:       ptrString("claude"),
 			UpdatedAt:   snapshotFixedNow.Add(-45 * time.Minute),
 			ChildCounts: &ChildCounts{Open: 1, Total: 1},
 		},
 		{
-			ProjectID: 7, Number: 12, ParentNumber: &parent,
+			ProjectID: 7, UID: "01TEST-c012", ShortID: "c012", ParentShortID: &parentSID,
 			Title: "new issue form parent field", Status: "closed",
 			UpdatedAt: snapshotFixedNow.Add(-2 * time.Hour),
 		},
 		{
-			ProjectID: 7, Number: 13, ParentNumber: &child,
+			ProjectID: 7, UID: "01TEST-g013", ShortID: "g013", ParentShortID: &childSID,
 			Title: "child detail jump target", Status: "open",
 			UpdatedAt: snapshotFixedNow.Add(-3 * time.Hour),
 		},
 		{
-			ProjectID: 7, Number: 20, Title: "standalone queue cleanup",
+			ProjectID: 7, UID: "01TEST-s020", ShortID: "s020", Title: "standalone queue cleanup",
 			Status: "open", UpdatedAt: snapshotFixedNow.Add(-4 * time.Hour),
 		},
 	}
@@ -170,7 +170,7 @@ func snapTreeFixture() []Issue {
 func snapDetailFixture() detailModel {
 	when := time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC)
 	iss := Issue{
-		ProjectID: 7, Number: 42, Title: "fix login bug on Safari",
+		ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa", Title: "fix login bug on Safari",
 		Status: "open", Author: "wesm",
 		Body: "Reproduces in Safari 17 only.\nClick the login button twice.",
 	}
@@ -187,7 +187,9 @@ func snapDetailFixture() detailModel {
 		},
 		links: []LinkEntry{
 			{
-				ID: 100, Type: "blocks", FromNumber: 42, ToNumber: 7,
+				ID: 100, Type: "blocks",
+				From:   LinkPeer{UID: "01TEST-42aa", ShortID: "42aa"},
+				To:     LinkPeer{UID: "01TEST-7bb", ShortID: "7bb"},
 				Author: "wesm", CreatedAt: when,
 			},
 		},
@@ -196,15 +198,15 @@ func snapDetailFixture() detailModel {
 
 func snapDetailHierarchyFixture() detailModel {
 	dm := snapDetailFixture()
-	dm.parent = &IssueRef{Number: 12, Title: "workspace polish parent", Status: "open"}
+	dm.parent = &IssueRef{UID: "01TEST-c012", ShortID: "c012", Title: "workspace polish parent", Status: "open"}
 	dm.children = []Issue{
 		{
-			ProjectID: 7, Number: 43, Title: "detail hint bars incomplete",
+			ProjectID: 7, UID: "01TEST-c043", ShortID: "c043", Title: "detail hint bars incomplete",
 			Status: "open", Owner: ptrString("alice"),
 			UpdatedAt: snapshotFixedNow.Add(-1 * time.Hour),
 		},
 		{
-			ProjectID: 7, Number: 44, Title: "new issue form parent field",
+			ProjectID: 7, UID: "01TEST-c044", ShortID: "c044", Title: "new issue form parent field",
 			Status: "closed", Owner: ptrString("wesm"),
 			UpdatedAt: snapshotFixedNow.Add(-2 * time.Hour),
 		},
@@ -275,10 +277,12 @@ func TestSnapshot_List_ScrollIndicator(t *testing.T) {
 	defer snapshotInit(t)()
 	issues := make([]Issue, 50)
 	for i := range issues {
+		sid := fmt.Sprintf("s%03d", i+1)
 		issues[i] = Issue{
-			Number: int64(i + 1),
-			Title:  "issue " + ptrFormat(int64(i+1)),
-			Status: "open",
+			UID:     "01TEST-" + sid,
+			ShortID: sid,
+			Title:   "issue " + sid,
+			Status:  "open",
 			UpdatedAt: snapshotFixedNow.Add(
 				-time.Duration(i+1) * time.Hour,
 			),
@@ -299,7 +303,10 @@ func ptrFormat(n int64) string {
 func TestSnapshot_List_WithFilterChips(t *testing.T) {
 	defer snapshotInit(t)()
 	lm := snapListModel([]Issue{{
-		Number: 1, Title: "narrowed by chips", Status: "open",
+		UID:       "01TEST-aaa1",
+		ShortID:   "aaa1",
+		Title:     "narrowed by chips",
+		Status:    "open",
 		Owner:     ptrString("alice"),
 		UpdatedAt: snapshotFixedNow.Add(-30 * time.Minute),
 	}})
@@ -318,7 +325,7 @@ func TestSnapshot_List_TreeCollapsed(t *testing.T) {
 func TestSnapshot_List_TreeExpanded(t *testing.T) {
 	defer snapshotInit(t)()
 	lm := snapListModel(snapTreeFixture())
-	lm.expanded = expansionSet{{projectID: 7, number: 10}: true}
+	lm.expanded = expansionSet{{projectID: 7, shortID: "p010"}: true}
 	got := lm.View(120, 22, snapViewChrome())
 	assertGolden(t, "list-tree-expanded", got)
 }
@@ -342,7 +349,7 @@ func TestSnapshot_List_TreeContextRow(t *testing.T) {
 func TestSnapshot_List_TreeNoColor(t *testing.T) {
 	defer snapshotInit(t)()
 	lm := snapListModel(snapTreeFixture())
-	lm.expanded = expansionSet{{projectID: 7, number: 10}: true}
+	lm.expanded = expansionSet{{projectID: 7, shortID: "p010"}: true}
 	lm.filter = ListFilter{Search: "hint bars"}
 	got := lm.View(120, 22, snapViewChrome())
 	if !strings.Contains(got, "-") || !strings.Contains(got, "~") {
@@ -358,7 +365,7 @@ func TestSnapshot_Detail_WithLabelPrompt(t *testing.T) {
 	dm := snapDetailFixture()
 	chrome := viewChrome{
 		input: newPanelPrompt(inputLabelPrompt, formTarget{
-			projectID: dm.scopePID, issueNumber: dm.issue.Number,
+			projectID: dm.scopePID, issueShortID: dm.issue.ShortID,
 		}),
 	}
 	got := dm.View(120, 30, chrome)
@@ -471,7 +478,7 @@ func TestSnapshot_Detail_DocumentPage80x50(t *testing.T) {
 func TestSnapshot_Detail_DocumentWide160x32(t *testing.T) {
 	defer snapshotInit(t)()
 	iss := Issue{
-		ProjectID: 7, Number: 1,
+		ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1",
 		Title: "fix the tui to be less shitty", Status: "open",
 		Author:    "anonymous",
 		Body:      "enter some stuff here",
@@ -497,14 +504,14 @@ func TestSnapshot_Detail_DocumentNarrow(t *testing.T) {
 	dm := snapDetailFixture()
 	dm.issue.Owner = ptrString("alice")
 	dm.issue.Labels = []string{"bug", "prio-1"}
-	dm.parent = &IssueRef{Number: 12, Title: "workspace polish", Status: "open"}
+	dm.parent = &IssueRef{UID: "01TEST-c012", ShortID: "c012", Title: "workspace polish", Status: "open"}
 	got := dm.View(72, 40, viewChrome{})
 	assertGolden(t, "detail-document-narrow", got)
 }
 
 func TestSnapshot_Detail_DocumentEmpty(t *testing.T) {
 	defer snapshotInit(t)()
-	iss := Issue{ProjectID: 7, Number: 99, Title: "empty issue", Status: "open"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-99zz", ShortID: "99zz", Title: "empty issue", Status: "open"}
 	dm := detailModel{issue: &iss}
 	got := dm.View(80, 32, viewChrome{})
 	assertGolden(t, "detail-document-empty", got)
@@ -514,7 +521,8 @@ func TestSnapshot_Detail_DocumentMarkdown(t *testing.T) {
 	defer snapshotInit(t)()
 	iss := Issue{
 		ProjectID: 7,
-		Number:    55,
+		UID:       "01TEST-mm55",
+		ShortID:   "mm55",
 		Title:     "markdown body",
 		Status:    "open",
 		Body: strings.Join([]string{
@@ -679,7 +687,7 @@ func snapSplitModel(width, height int, focus focusPane) Model {
 	m.list.loading = false
 	m.list.issues = snapListFixture()
 	m.list.cursor = 1
-	m.list.selectedNumber = 2
+	m.list.selectedUID = "01TEST-bbb2"
 	m.detail = dm
 	m.width, m.height = width, height
 	m.layout = pickLayout(width, height)
@@ -733,7 +741,7 @@ func snapLabelPromptModel() Model {
 		detail:        dm,
 	}
 	m.input = newPanelPrompt(inputLabelPrompt, formTarget{
-		projectID: 7, issueNumber: dm.issue.Number, detailGen: dm.gen,
+		projectID: 7, issueShortID: dm.issue.ShortID, detailGen: dm.gen,
 	})
 	return m
 }

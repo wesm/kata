@@ -513,63 +513,16 @@ func TestInit_ByName_DefaultsName(t *testing.T) {
 	assert.Equal(t, "auto-name", body.Project.Name)
 }
 
-func TestResetCounter_EmptyProjectSucceeds(t *testing.T) {
+// TestResetCounterEndpointReturns404 pins that the /reset-counter endpoint
+// is gone after the short_id cutover (spec §9.5). With next_issue_number
+// dropped from the schema there is no counter to reset.
+func TestResetCounterEndpointReturns404(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)
 	pidStr := strconv.FormatInt(pid, 10)
-
-	resp, bs := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/reset-counter",
-		map[string]any{"to": 7})
-	require.Equal(t, 200, resp.StatusCode, string(bs))
-
-	var body struct {
-		Project struct {
-			ID              int64 `json:"id"`
-			NextIssueNumber int64 `json:"next_issue_number"`
-		} `json:"project"`
-	}
-	require.NoError(t, json.Unmarshal(bs, &body))
-	assert.Equal(t, pid, body.Project.ID)
-	assert.EqualValues(t, 7, body.Project.NextIssueNumber)
-
-	// Counter actually moved: a fresh create allocates from the new value.
-	resp2, bs2 := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/issues",
-		map[string]any{"actor": "agent", "title": "x"})
-	require.Equal(t, 200, resp2.StatusCode, string(bs2))
-	assert.Contains(t, string(bs2), `"number":7`)
-}
-
-func TestResetCounter_RefusesWhenIssuesExist(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	pidStr := strconv.FormatInt(pid, 10)
-
-	requireOK(t, postWithHeader(t, ts, "/api/v1/projects/"+pidStr+"/issues",
-		nil, map[string]any{"actor": "agent", "title": "x"}))
-
-	resp, bs := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/reset-counter",
+	resp, _ := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/reset-counter",
 		map[string]any{"to": 1})
-	assertAPIError(t, resp.StatusCode, bs, http.StatusConflict, "project_has_issues")
-	assert.Contains(t, string(bs), `"issue_count":1`)
-}
-
-func TestResetCounter_RejectsZeroOrNegative(t *testing.T) {
-	h, pid := bootstrapProject(t)
-	ts := h.ts.(*httptest.Server)
-	pidStr := strconv.FormatInt(pid, 10)
-
-	for _, to := range []int64{0, -5} {
-		resp, bs := postJSON(t, ts, "/api/v1/projects/"+pidStr+"/reset-counter",
-			map[string]any{"to": to})
-		assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "validation")
-	}
-}
-
-func TestResetCounter_ProjectNotFound(t *testing.T) {
-	ts := newTestServer(t)
-	resp, bs := postJSON(t, ts, "/api/v1/projects/9999/reset-counter",
-		map[string]any{"to": 1})
-	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestListProjectsAndShow(t *testing.T) {
@@ -605,10 +558,12 @@ func TestListProjects_DefaultShape(t *testing.T) {
 	require.Len(t, parsed.Projects, 1)
 	p := parsed.Projects[0]
 
-	for _, key := range []string{"id", "uid", "name", "created_at", "next_issue_number"} {
+	for _, key := range []string{"id", "uid", "name", "created_at"} {
 		_, ok := p[key]
 		assert.True(t, ok, "missing key %q in projects[0]: %s", key, body)
 	}
+	_, hasCounter := p["next_issue_number"]
+	assert.False(t, hasCounter, "next_issue_number must be absent after spec §9.5: %s", body)
 	_, hasStats := p["stats"]
 	assert.False(t, hasStats, "stats must not appear in default response: %s", body)
 	_, hasUpdated := p["updated_at"]
@@ -670,7 +625,7 @@ func TestMergeProject_SourceMovesIntoSurvivingTarget(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.AttachAlias(ctx, beta.ID, "github.com/wesm/beta", "git", "/tmp/beta")
 	require.NoError(t, err)
-	_, _, err = store.CreateIssue(ctx, db.CreateIssueParams{
+	created, _, err := store.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: alpha.ID, Title: "existing work", Author: "tester",
 	})
 	require.NoError(t, err)
@@ -681,11 +636,11 @@ func TestMergeProject_SourceMovesIntoSurvivingTarget(t *testing.T) {
 	require.Equal(t, 200, resp.StatusCode, string(bs))
 	assert.Contains(t, string(bs), `"name":"beta"`)
 	assert.Contains(t, string(bs), `"issues_moved":1`)
-	assert.Contains(t, string(bs), `"next_issue_number":2`)
 
-	issue, err := store.IssueByNumber(ctx, beta.ID, 1)
+	issue, err := store.IssueByID(ctx, created.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "existing work", issue.Title)
+	assert.Equal(t, beta.ID, issue.ProjectID, "issue moved onto target project")
 	_, err = store.ProjectByID(ctx, alpha.ID)
 	assert.ErrorIs(t, err, db.ErrNotFound)
 }
@@ -970,7 +925,6 @@ func TestMergeProject_ImportMappingCollisionReturns409(t *testing.T) {
 	require.NoError(t, err)
 	target, err := h.db.CreateProject(ctx, "target")
 	require.NoError(t, err)
-	require.NoError(t, h.db.ResetIssueCounter(ctx, target.ID, 10))
 	sourceIssue, _, err := h.db.CreateIssue(ctx, db.CreateIssueParams{ProjectID: source.ID, Title: "source", Author: "tester"})
 	require.NoError(t, err)
 	targetIssue, _, err := h.db.CreateIssue(ctx, db.CreateIssueParams{ProjectID: target.ID, Title: "target", Author: "tester"})

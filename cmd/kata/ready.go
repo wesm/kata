@@ -58,9 +58,9 @@ func newReadyCmd() *cobra.Command {
 			}
 			var b struct {
 				Issues []struct {
-					Number int64   `json:"number"`
-					Title  string  `json:"title"`
-					Owner  *string `json:"owner,omitempty"`
+					ShortID string  `json:"short_id"`
+					Title   string  `json:"title"`
+					Owner   *string `json:"owner,omitempty"`
 				} `json:"issues"`
 			}
 			if err := json.Unmarshal(bs, &b); err != nil {
@@ -71,8 +71,8 @@ func newReadyCmd() *cobra.Command {
 				if i.Owner != nil {
 					owner = *i.Owner
 				}
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "#%-4d  %s  (%s)\n",
-					i.Number, textsafe.Line(i.Title), textsafe.Line(owner)); err != nil {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%-8s  %s  (%s)\n",
+					i.ShortID, textsafe.Line(i.Title), textsafe.Line(owner)); err != nil {
 					return err
 				}
 			}

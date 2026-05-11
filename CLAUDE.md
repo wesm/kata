@@ -8,7 +8,12 @@ start of each session for the agent contract; the short version:
 - Author defaults to `$KATA_AUTHOR > $USER > git user.name`; set
   `KATA_AUTHOR` only if you need a different actor (e.g. an agent
   handle distinct from your login).
-- `kata list --json` to see open work; `kata show <N> --json` for detail.
+- Issue refs use short_ids derived from each issue's ULID. In a bound
+  workspace the bare form (`abc4`) is enough; cross-project references
+  qualify with the project name (`kata#abc4`). Full 26-char ULIDs are
+  also accepted. Legacy numeric refs (`#12`, `12`) no longer resolve.
+  See `docs/superpowers/specs/2026-05-10-kata-short-ids.md`.
+- `kata list --json` to see open work; `kata show <ref> --json` for detail.
 - Search before creating: `kata search "<keywords>" --json`.
 - Update existing issues over creating duplicates (`kata comment`,
   `kata label add`, `kata edit --blocks/--blocked-by/--related/--parent`).
@@ -16,7 +21,7 @@ start of each session for the agent contract; the short version:
   from the operating issue's POV. Repeatable except `--parent`. Removes
   are `--remove-parent` (strict; must equal current) plus idempotent
   `--remove-blocks/--remove-blocked-by/--remove-related`.
-- Close only when the work is actually complete: `kata close <N> --reason done`.
+- Close only when the work is actually complete: `kata close <ref> --reason done`.
 - Never `kata delete` or `kata purge` without explicit user authorization.
 
 For long-running work, `kata events --tail` streams NDJSON.

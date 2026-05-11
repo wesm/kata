@@ -1,6 +1,6 @@
  Project: —                                                                                                   kata カタ 
 
-  #42  fix login bug on Safari                                                              [open]                      
+  #42aa  fix login bug on Safari                                                            [open]                      
   authored by wesm                                                                                                      
   owner: none   parent: none                                                                                            
   priority: none                                                                                                        
@@ -10,7 +10,7 @@
   Click the login button twice.                                                                                         
                                                                                                                         
   Activity   Comments (2)   Events (2)   [ Links (1) ]                                                                  
-  > [blocks] → #7 ← #42  by wesm @ 2026-04-30 10:00                                                                     
+  > [blocks] → #7bb ← #42aa  by wesm @ 2026-04-30 10:00                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         

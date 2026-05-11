@@ -20,6 +20,13 @@ func mkProject(t *testing.T, env *testenv.Env, _ string, name string) int64 {
 	t.Helper()
 	p, err := env.DB.CreateProject(context.Background(), name)
 	require.NoError(t, err)
+	// Register env for issuePath's int64→short_id resolution.
+	currentEnvForIssuePath = env
+	t.Cleanup(func() {
+		if currentEnvForIssuePath == env {
+			currentEnvForIssuePath = nil
+		}
+	})
 	return p.ID
 }
 
@@ -83,10 +90,11 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	var b struct {
 		ResetRequired bool `json:"reset_required"`
 		Events        []struct {
-			EventID    int64   `json:"event_id"`
-			Type       string  `json:"type"`
-			ProjectUID string  `json:"project_uid"`
-			IssueUID   *string `json:"issue_uid"`
+			EventID      int64   `json:"event_id"`
+			Type         string  `json:"type"`
+			ProjectUID   string  `json:"project_uid"`
+			IssueUID     *string `json:"issue_uid"`
+			IssueShortID *string `json:"issue_short_id"`
 		} `json:"events"`
 		NextAfterID int64 `json:"next_after_id"`
 	}
@@ -98,8 +106,32 @@ func TestPollEvents_ReturnsEventsAndAdvancesCursor(t *testing.T) {
 	assert.Equal(t, project.UID, b.Events[0].ProjectUID)
 	require.NotNil(t, b.Events[0].IssueUID)
 	assert.Equal(t, first.UID, *b.Events[0].IssueUID)
+	require.NotNil(t, b.Events[0].IssueShortID, "envelope must surface joined issue_short_id")
+	assert.Equal(t, first.ShortID, *b.Events[0].IssueShortID)
 	assert.Equal(t, int64(2), b.NextAfterID, "advances to max event id")
 	assert.False(t, b.ResetRequired)
+}
+
+// TestEvents_PayloadIncludesShortIDNotNumber pins the wire-level rename:
+// each event row emits issue_short_id (joined from issues.short_id) and
+// issue_uid, and does NOT carry an issue_number field. The check is on raw
+// JSON keys (not a typed struct) so a regression that re-introduces
+// issue_number would surface.
+func TestEvents_PayloadIncludesShortIDNotNumber(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	created := mkIssue(t, env, pid, "evtest")
+
+	var raw struct {
+		Events []map[string]any `json:"events"`
+	}
+	envGetJSON(t, env, "/api/v1/projects/"+strconv.FormatInt(pid, 10)+"/events?after_id=0&limit=10", &raw)
+	require.NotEmpty(t, raw.Events, "expected at least one event")
+	first := raw.Events[0]
+	assert.Equal(t, created.ShortID, first["issue_short_id"])
+	assert.Equal(t, created.UID, first["issue_uid"])
+	_, hasNum := first["issue_number"]
+	assert.False(t, hasNum, "issue_number must not appear in event envelope")
 }
 
 func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
@@ -112,17 +144,20 @@ func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
 	_, _, err = env.DB.CreateLinkAndEvent(context.Background(), db.CreateLinkParams{
 		ProjectID: pid, FromIssueID: from.ID, ToIssueID: to.ID, Type: "blocks", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: from.ID, EventIssueNumber: from.Number,
-		FromNumber: from.Number, ToNumber: to.Number, Actor: "tester",
+		EventType: "issue.linked", EventIssueID: from.ID,
+		FromShortID: from.ShortID, FromUID: from.UID,
+		ToShortID: to.ShortID, ToUID: to.UID, Actor: "tester",
 	})
 	require.NoError(t, err)
 
 	var b struct {
 		Events []struct {
-			Type            string  `json:"type"`
-			ProjectUID      string  `json:"project_uid"`
-			IssueUID        *string `json:"issue_uid"`
-			RelatedIssueUID *string `json:"related_issue_uid"`
+			Type                string  `json:"type"`
+			ProjectUID          string  `json:"project_uid"`
+			IssueUID            *string `json:"issue_uid"`
+			IssueShortID        *string `json:"issue_short_id"`
+			RelatedIssueUID     *string `json:"related_issue_uid"`
+			RelatedIssueShortID *string `json:"related_issue_short_id"`
 		} `json:"events"`
 	}
 	envGetJSON(t, env, "/api/v1/events?after_id=2&limit=10", &b)
@@ -133,6 +168,10 @@ func TestPollEvents_UIDsIncludeRelatedIssue(t *testing.T) {
 	require.NotNil(t, b.Events[0].RelatedIssueUID)
 	assert.Equal(t, from.UID, *b.Events[0].IssueUID)
 	assert.Equal(t, to.UID, *b.Events[0].RelatedIssueUID)
+	require.NotNil(t, b.Events[0].IssueShortID, "envelope must surface issue_short_id for linked events")
+	require.NotNil(t, b.Events[0].RelatedIssueShortID, "envelope must surface related_issue_short_id for linked events")
+	assert.Equal(t, from.ShortID, *b.Events[0].IssueShortID)
+	assert.Equal(t, to.ShortID, *b.Events[0].RelatedIssueShortID)
 }
 
 func TestPollEvents_NextAfterIDEchoesAfterIDOnEmpty(t *testing.T) {
@@ -526,10 +565,12 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 	require.True(t, ok, "drain frame should arrive")
 	assert.Equal(t, "issue.created", first.event)
 
+	project, perr := env.DB.ProjectByID(context.Background(), pid)
+	require.NoError(t, perr)
 	purgeResp, _ := envDoRaw(t, env, http.MethodPost,
-		issuePath(pid, is.Number, "actions/purge"),
+		issuePathRef(pid, is.ShortID, "actions/purge"),
 		map[string]string{"actor": "tester"},
-		map[string]string{"X-Kata-Confirm": "PURGE #" + strconv.FormatInt(is.Number, 10)})
+		map[string]string{"X-Kata-Confirm": "PURGE " + project.Name + "#" + is.ShortID})
 	require.Equal(t, 200, purgeResp.StatusCode)
 
 	reset, ok := framer.Next(t, 2*time.Second)
@@ -549,13 +590,13 @@ func TestSSE_LiveResetClosesStream(t *testing.T) {
 func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 	env := testenv.New(t)
 	pid := mkProject(t, env, "github.com/test/a", "a")
-	mkIssue(t, env, pid, "first")  // #1, will be initial parent
-	mkIssue(t, env, pid, "second") // #2, will be replacement parent
-	mkIssue(t, env, pid, "child")  // #3, the issue we re-parent
+	first := mkIssue(t, env, pid, "first")   // initial parent
+	second := mkIssue(t, env, pid, "second") // replacement parent
+	child := mkIssue(t, env, pid, "child")
 
-	// Initial parent link 3 → 1.
-	envPostJSON(t, env, issuePath(pid, 3, "links"),
-		map[string]any{"actor": "tester", "type": "parent", "to_number": 1}, nil)
+	// Initial parent link child → first.
+	envPostJSON(t, env, issuePathRef(pid, child.ShortID, "links"),
+		map[string]any{"actor": "tester", "type": "parent", "to_ref": first.ShortID}, nil)
 
 	// Subscribe AFTER the initial link so we don't see its frame in the drain.
 	maxID, err := env.DB.MaxEventID(context.Background())
@@ -563,9 +604,9 @@ func TestSSE_ParentReplaceEmitsTwoFrames(t *testing.T) {
 	sseResp := openSSE(t, env, "after_id="+strconv.FormatInt(maxID, 10), nil)
 	defer func() { _ = sseResp.Body.Close() }()
 
-	// Re-parent 3 → 2 with replace.
-	envPostJSON(t, env, issuePath(pid, 3, "links"),
-		map[string]any{"actor": "tester", "type": "parent", "to_number": 2, "replace": true}, nil)
+	// Re-parent child → second with replace.
+	envPostJSON(t, env, issuePathRef(pid, child.ShortID, "links"),
+		map[string]any{"actor": "tester", "type": "parent", "to_ref": second.ShortID, "replace": true}, nil)
 
 	// Live phase delivers two frames in order: issue.unlinked then issue.linked.
 	frames := readSSEFramesUntilN(t, sseResp.Body, 2, 2*time.Second)

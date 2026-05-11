@@ -67,7 +67,7 @@ func TestIssueByNumber_SurfacesPriority(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, err := d.IssueByNumber(ctx, p.ID, created.Number)
+	got, err := d.IssueByID(ctx, created.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got.Priority)
 	assert.Equal(t, prio, *got.Priority)

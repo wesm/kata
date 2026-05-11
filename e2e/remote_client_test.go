@@ -84,12 +84,23 @@ func TestRemoteClient_DaemonOnTCPClientViaKATA_SERVER(t *testing.T) {
 	runRemoteCmd(t, bin, clientWS, clientEnv,
 		"create", "hello from remote", "--body", "via KATA_SERVER")
 
-	// list and confirm the issue is in the SERVER's DB.
+	// list and confirm the issue is in the SERVER's DB. Capture the
+	// short_id so we can close the issue without relying on a fixed
+	// numeric ref (which the CLI now rejects).
 	out := runRemoteCmdOutput(t, bin, clientWS, clientEnv, "list", "--json")
 	assert.Contains(t, out, "hello from remote")
+	var listed struct {
+		Issues []struct {
+			ShortID string `json:"short_id"`
+		} `json:"issues"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed),
+		"list --json should decode: %s", out)
+	require.Len(t, listed.Issues, 1, "expected exactly one issue: %s", out)
+	require.NotEmpty(t, listed.Issues[0].ShortID)
 
-	// close it.
-	runRemoteCmd(t, bin, clientWS, clientEnv, "close", "1", "--reason", "done")
+	// close it by short_id.
+	runRemoteCmd(t, bin, clientWS, clientEnv, "close", listed.Issues[0].ShortID, "--reason", "done")
 
 	// Critical assertion: the client KATA_HOME has no runtime files.
 	// If a local daemon had been auto-started on the client side,

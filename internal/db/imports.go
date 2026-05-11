@@ -76,10 +76,10 @@ type ImportBatchResult struct {
 // "created", "updated", or "unchanged"; Reason carries an optional rationale
 // (e.g. "local newer").
 type ImportItemResult struct {
-	ExternalID  string `json:"external_id"`
-	IssueNumber int64  `json:"issue_number"`
-	Status      string `json:"status"`
-	Reason      string `json:"reason,omitempty"`
+	ExternalID   string `json:"external_id"`
+	IssueShortID string `json:"issue_short_id"`
+	Status       string `json:"status"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // ErrImportValidation is returned by ImportBatch when the request fails
@@ -146,7 +146,7 @@ func (d *DB) ImportBatch(ctx context.Context, p ImportBatchParams) (ImportBatchR
 		} else if state.sourceNewer {
 			status = "updated"
 		}
-		result.Items = append(result.Items, ImportItemResult{ExternalID: item.ExternalID, IssueNumber: state.issue.Number, Status: status})
+		result.Items = append(result.Items, ImportItemResult{ExternalID: item.ExternalID, IssueShortID: state.issue.ShortID, Status: status})
 	}
 
 	for _, item := range p.Items {
@@ -300,25 +300,27 @@ func (d *DB) importIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, i
 }
 
 func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchParams, item ImportItem, projectName, projectUID string) (Issue, Event, error) {
-	var nextNum int64
+	// Validate project exists and is not archived.
+	var exists int
 	if err := tx.QueryRowContext(ctx,
-		`UPDATE projects
-		 SET next_issue_number = next_issue_number + 1
-		 WHERE id = ? AND deleted_at IS NULL
-		 RETURNING next_issue_number - 1`, p.ProjectID).
-		Scan(&nextNum); err != nil {
+		`SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL`, p.ProjectID).
+		Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Issue{}, Event{}, ErrNotFound
 		}
-		return Issue{}, Event{}, fmt.Errorf("allocate issue number: %w", err)
+		return Issue{}, Event{}, fmt.Errorf("check project: %w", err)
 	}
 	issueUID, err := katauid.New()
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("generate issue uid: %w", err)
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO issues(uid, project_id, number, title, body, status, closed_reason, owner, author, created_at, updated_at, closed_at, priority)
+	shortID, err := assignShortID(ctx, tx, p.ProjectID, issueUID)
+	if err != nil {
+		return Issue{}, Event{}, fmt.Errorf("assign import short_id: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO issues(uid, project_id, short_id, title, body, status, closed_reason, owner, author, created_at, updated_at, closed_at, priority)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, nextNum, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.Author, item.CreatedAt, item.UpdatedAt, item.ClosedAt, item.Priority)
+		issueUID, p.ProjectID, shortID, item.Title, item.Body, item.Status, item.ClosedReason, normalizeOwner(item.Owner), item.Author, item.CreatedAt, item.UpdatedAt, item.ClosedAt, item.Priority)
 	if err != nil {
 		return Issue{}, Event{}, fmt.Errorf("insert imported issue: %w", err)
 	}
@@ -330,7 +332,7 @@ func (d *DB) insertImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
-	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectUID: projectUID, ProjectName: projectName, IssueID: &issueID, IssueUID: &issueUID, IssueNumber: &nextNum, Type: "issue.created", Actor: p.Actor, Payload: payload})
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectUID: projectUID, ProjectName: projectName, IssueID: &issueID, IssueUID: &issueUID, Type: "issue.created", Actor: p.Actor, Payload: payload})
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
@@ -352,7 +354,7 @@ func (d *DB) updateImportedIssue(ctx context.Context, tx *sql.Tx, p ImportBatchP
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
-	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &existing.ID, IssueNumber: &existing.Number, Type: "issue.updated", Actor: p.Actor, Payload: payload})
+	evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &existing.ID, Type: "issue.updated", Actor: p.Actor, Payload: payload})
 	if err != nil {
 		return Issue{}, Event{}, err
 	}
@@ -393,7 +395,7 @@ func (d *DB) importComments(ctx context.Context, tx *sql.Tx, p ImportBatchParams
 		if err != nil {
 			return nil, 0, fmt.Errorf("marshal import comment payload: %w", err)
 		}
-		evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: &issue.Number, Type: "issue.commented", Actor: p.Actor, Payload: string(payload)})
+		evt, err := d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, Type: "issue.commented", Actor: p.Actor, Payload: string(payload)})
 		if err != nil {
 			return nil, 0, err
 		}
@@ -477,7 +479,7 @@ func (d *DB) insertLabelEvent(ctx context.Context, tx *sql.Tx, p ImportBatchPara
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal label payload: %w", err)
 	}
-	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: &issue.Number, Type: eventType, Actor: p.Actor, Payload: string(payload)})
+	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
 func (d *DB) reconcileImportLinks(ctx context.Context, tx *sql.Tx, p ImportBatchParams, issue Issue, item ImportItem, states map[string]*importIssueState, projectName string) ([]Event, int, error) {
@@ -602,26 +604,41 @@ func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParam
 	if relatedID == issue.ID {
 		relatedID = link.FromIssueID
 	}
-	toNumber, err := issueNumberByID(ctx, tx, relatedID)
+	toShortID, toUID, err := issueIdentByID(ctx, tx, relatedID)
 	if err != nil {
 		return Event{}, err
 	}
-	payload, err := json.Marshal(map[string]any{"source": p.Source, "link_id": link.ID, "type": link.Type, "from_number": issue.Number, "to_number": toNumber})
+	// from_uid / to_uid match the live link-event shape from
+	// queries_links.go — without them, TUI SSE refresh paths that key
+	// parent-pane invalidation on payload UIDs miss import-generated
+	// updates.
+	payload, err := json.Marshal(map[string]any{
+		"source":        p.Source,
+		"link_id":       link.ID,
+		"type":          link.Type,
+		"from_short_id": issue.ShortID,
+		"from_uid":      issue.UID,
+		"to_short_id":   toShortID,
+		"to_uid":        toUID,
+	})
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
-	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, IssueNumber: &issue.Number, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
+	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
-func issueNumberByID(ctx context.Context, tx *sql.Tx, issueID int64) (int64, error) {
-	var number int64
-	if err := tx.QueryRowContext(ctx, `SELECT number FROM issues WHERE id = ?`, issueID).Scan(&number); err != nil {
+// issueIdentByID returns the (short_id, uid) pair for an issue. Used by
+// import path so link-event payloads carry the same identity pair the
+// live daemon emits.
+func issueIdentByID(ctx context.Context, tx *sql.Tx, issueID int64) (string, string, error) {
+	var shortID, uid string
+	if err := tx.QueryRowContext(ctx, `SELECT short_id, uid FROM issues WHERE id = ?`, issueID).Scan(&shortID, &uid); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrNotFound
+			return "", "", ErrNotFound
 		}
-		return 0, fmt.Errorf("lookup issue number: %w", err)
+		return "", "", fmt.Errorf("lookup issue ident: %w", err)
 	}
-	return number, nil
+	return shortID, uid, nil
 }
 
 func importEventPayload(source, externalID string) (string, error) {

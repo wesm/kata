@@ -189,7 +189,7 @@ func TestDetailRedesign_ExplicitTabPickStaysSticky(t *testing.T) {
 // rendered width.
 func TestDetailRedesign_FooterHintsAreComprehensive(t *testing.T) {
 	dm := detailModel{
-		issue:       &Issue{Number: 1, Title: "issue", Status: "open"},
+		issue:       &Issue{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "issue", Status: "open"},
 		detailFocus: focusActivity,
 		activeTab:   tabComments,
 	}
@@ -235,7 +235,7 @@ func TestDetailRedesign_SectionHeadersHaveNoBackgroundSlab(t *testing.T) {
 // where issue contents are incidental — only the embedded *Issue
 // pointer is required to drive view and tab logic.
 func simpleDetailModel() detailModel {
-	iss := Issue{ProjectID: 7, Number: 1, Title: "issue", Status: "open"}
+	iss := Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "issue", Status: "open"}
 	return detailModel{issue: &iss}
 }
 

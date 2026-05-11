@@ -29,17 +29,17 @@ func listFixture() []Issue {
 	deleted := time.Now().Add(-2 * time.Hour)
 	return []Issue{
 		{
-			Number: 1, Title: "fix login bug on Safari",
+			UID: "01TEST-aaa1", ShortID: "aaa1", Title: "fix login bug on Safari",
 			Status: "open", Owner: ptrString("claude-4.7"),
 			UpdatedAt: time.Now().Add(-3 * time.Hour),
 		},
 		{
-			Number: 2, Title: "rebuild search index",
+			UID: "01TEST-bbb2", ShortID: "bbb2", Title: "rebuild search index",
 			Status: "closed", Owner: ptrString("wesm"),
 			UpdatedAt: time.Now().Add(-1 * time.Hour),
 		},
 		{
-			Number: 3, Title: "purge stale tokens",
+			UID: "01TEST-ccc3", ShortID: "ccc3", Title: "purge stale tokens",
 			Status: "open", DeletedAt: ptrTime(deleted),
 			UpdatedAt: deleted,
 		},
@@ -85,7 +85,7 @@ func TestList_Render_FitsAt80Cols(t *testing.T) {
 	lm := newListModel()
 	lm.loading = false
 	lm.issues = []Issue{
-		{Number: 1, Title: "fits at the floor", Status: "open", Priority: ptrInt64(1)},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "fits at the floor", Status: "open", Priority: ptrInt64(1)},
 	}
 	out := lm.View(80, 30, viewChrome{})
 	for i, line := range strings.Split(out, "\n") {
@@ -104,8 +104,8 @@ func TestList_Render_PriorityColumn(t *testing.T) {
 	lm := newListModel()
 	lm.loading = false
 	lm.issues = []Issue{
-		{Number: 1, Title: "with priority", Status: "open", Priority: ptrInt64(1)},
-		{Number: 2, Title: "without priority", Status: "open"},
+		{UID: "01TEST-aaa1", ShortID: "aaa1", Title: "with priority", Status: "open", Priority: ptrInt64(1)},
+		{UID: "01TEST-bbb2", ShortID: "bbb2", Title: "without priority", Status: "open"},
 	}
 	out := lm.View(140, 30, viewChrome{})
 	if !strings.Contains(out, "P1") {
@@ -120,11 +120,12 @@ func TestList_Render_PriorityColumn(t *testing.T) {
 }
 
 // TestList_Cursor_DownAndUp drives j/j/k against the three-row fixture
-// and asserts the marker glyph lands on the row containing #2. The third
-// row gives the down-clamp room to move; with two rows j/j/k would land
-// on index 0 because cursor never reaches 2. lipgloss/table pads between
-// columns, so we scan output line-by-line for one that contains both the
-// marker and the row's issue number.
+// and asserts the marker glyph lands on the row containing #bbb2 (the
+// second short_id in listFixture). The third row gives the down-clamp
+// room to move; with two rows j/j/k would land on index 0 because the
+// cursor never reaches 2. lipgloss/table pads between columns, so we
+// scan output line-by-line for one that contains both the marker and
+// the row's short_id.
 func TestList_Cursor_DownAndUp(t *testing.T) {
 	tm := setupListTeatest(t)
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
@@ -135,7 +136,7 @@ func TestList_Cursor_DownAndUp(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
 		for _, line := range strings.Split(string(b), "\n") {
-			if strings.Contains(line, "▶") && strings.Contains(line, "#2") {
+			if strings.Contains(line, "▶") && strings.Contains(line, "#bbb2") {
 				return true
 			}
 		}

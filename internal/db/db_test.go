@@ -29,9 +29,68 @@ func TestOpen_AppliesPragmasAndMigrations(t *testing.T) {
 }
 
 func TestOpen_RecordsCurrentSchemaVersion(t *testing.T) {
-	assert.Equal(t, 7, db.CurrentSchemaVersion())
+	assert.Equal(t, 8, db.CurrentSchemaVersion())
 	d := openTestDB(t)
 	assertSchemaVersion(t, d, db.CurrentSchemaVersion())
+}
+
+func TestSchema_IssuesHasShortIDColumn(t *testing.T) {
+	d := openTestDB(t)
+	var typ string
+	err := d.QueryRow(
+		`SELECT type FROM pragma_table_info('issues') WHERE name='short_id'`,
+	).Scan(&typ)
+	require.NoError(t, err)
+	assert.Equal(t, "TEXT", typ)
+}
+
+func TestSchema_IssuesNumberColumnGone(t *testing.T) {
+	d := openTestDB(t)
+	var n int
+	err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('issues') WHERE name='number'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestSchema_ProjectsNextIssueNumberGone(t *testing.T) {
+	d := openTestDB(t)
+	var n int
+	err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='next_issue_number'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestSchema_EventsIssueNumberGone(t *testing.T) {
+	d := openTestDB(t)
+	var n int
+	err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name='issue_number'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestSchema_PurgeLogIssueNumberGone(t *testing.T) {
+	d := openTestDB(t)
+	var n int
+	err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('purge_log') WHERE name='issue_number'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestSchema_ProjectNameRejectsHash(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(
+		`INSERT INTO projects(uid, name) VALUES('01HZNQ7VFPK1XGD8R5MABCD4EX', 'has#hash')`,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CHECK")
 }
 
 func TestOpen_IsIdempotent(t *testing.T) {

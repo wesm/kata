@@ -13,6 +13,9 @@ import (
 
 const encodedLen = 26
 
+// EncodedLen is the fixed character length of a Crockford base32-encoded ULID.
+const EncodedLen = encodedLen
+
 var (
 	monoMu      sync.Mutex
 	monoEntropy = ulid.Monotonic(rand.Reader, 0)
@@ -49,6 +52,9 @@ func FromStableSeed(seed []byte, t time.Time) (string, error) {
 	}
 	return id.String(), nil
 }
+
+// Length is the fixed character length of a kata ULID (Crockford base32).
+func Length() int { return encodedLen }
 
 // Valid reports whether s is a strict 26-character ULID.
 func Valid(s string) bool {

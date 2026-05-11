@@ -37,21 +37,25 @@ func (o *OptionalInt) OnParamSet(isSet bool, _ any) {
 	o.IsSet = isSet
 }
 
-// EventEnvelope is the wire shape for a single event row.
+// EventEnvelope is the wire shape for a single event row. IssueUID is the
+// canonical reference; IssueShortID is the rendered display value the daemon
+// joins from the live issues table at response time (so old events render
+// correctly across cutovers and federation merges).
 type EventEnvelope struct {
-	EventID           int64   `json:"event_id"`
-	EventUID          string  `json:"event_uid"`
-	OriginInstanceUID string  `json:"origin_instance_uid"`
-	Type              string  `json:"type"`
-	ProjectID         int64   `json:"project_id"`
-	ProjectUID        string  `json:"project_uid"`
-	ProjectName       string  `json:"project_name"`
-	IssueID           *int64  `json:"issue_id,omitempty"`
-	IssueUID          *string `json:"issue_uid,omitempty"`
-	IssueNumber       *int64  `json:"issue_number,omitempty"`
-	RelatedIssueID    *int64  `json:"related_issue_id,omitempty"`
-	RelatedIssueUID   *string `json:"related_issue_uid,omitempty"`
-	Actor             string  `json:"actor"`
+	EventID             int64   `json:"event_id"`
+	EventUID            string  `json:"event_uid"`
+	OriginInstanceUID   string  `json:"origin_instance_uid"`
+	Type                string  `json:"type"`
+	ProjectID           int64   `json:"project_id"`
+	ProjectUID          string  `json:"project_uid"`
+	ProjectName         string  `json:"project_name"`
+	IssueID             *int64  `json:"issue_id,omitempty"`
+	IssueUID            *string `json:"issue_uid,omitempty"`
+	IssueShortID        *string `json:"issue_short_id,omitempty"`
+	RelatedIssueID      *int64  `json:"related_issue_id,omitempty"`
+	RelatedIssueUID     *string `json:"related_issue_uid,omitempty"`
+	RelatedIssueShortID *string `json:"related_issue_short_id,omitempty"`
+	Actor               string  `json:"actor"`
 	// Payload is the event-type-specific JSON object. Always valid JSON
 	// because the schema enforces json_valid(payload) at write time.
 	Payload   json.RawMessage `json:"payload,omitempty"`

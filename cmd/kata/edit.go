@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -98,25 +99,28 @@ func newEditCmd() *cobra.Command {
 		}
 
 		// --parent and --remove-parent are at-most-one but accept any of
-		// #N, N, UID, or UID prefix. resolveSingletonRefToNumber rejects
+		// short_id, qualified, or ULID. resolveSingletonRefToWire rejects
 		// only when distinct refs resolve to *different* issues, so
-		// equivalent forms (e.g. `--parent 2 --parent #2`) succeed.
-		var parentNum, removeParentNum int64
+		// equivalent forms (e.g. `--parent abc4 --parent kata#abc4`) succeed.
+		// issue.ProjectName is the URL issue's canonical project — link
+		// targets must belong to that same project (cross-project refs
+		// require the ULID form, not `<other>#abc4`).
+		var parentRef, removeParentRef string
 		if cmd.Flags().Changed("parent") {
-			parentNum, err = resolveSingletonRefToNumber(ctx, baseURL, pid, parentRefSlice, "--parent", false)
+			parentRef, err = resolveSingletonRefToWire(ctx, baseURL, issue.ProjectName, pid, parentRefSlice, "--parent", false)
 			if err != nil {
 				return err
 			}
 		}
 		if cmd.Flags().Changed("remove-parent") {
-			removeParentNum, err = resolveSingletonRefToNumber(ctx, baseURL, pid, removeParentRefSlice, "--remove-parent", true)
+			removeParentRef, err = resolveSingletonRefToWire(ctx, baseURL, issue.ProjectName, pid, removeParentRefSlice, "--remove-parent", true)
 			if err != nil {
 				return err
 			}
 		}
-		linksDelta, err := buildLinksDelta(ctx, cmd, baseURL, pid,
-			parentNum, blocks, blockedBy, related,
-			removeParentNum, removeBlocks, removeBlockedBy, removeRelated)
+		linksDelta, err := buildLinksDelta(ctx, cmd, baseURL, issue.ProjectName, pid,
+			parentRef, blocks, blockedBy, related,
+			removeParentRef, removeBlocks, removeBlockedBy, removeRelated)
 		if err != nil {
 			return err
 		}
@@ -148,7 +152,7 @@ func newEditCmd() *cobra.Command {
 				return err
 			}
 			_, bs, err := httpDoJSON(ctx, client, http.MethodGet,
-				fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, issue.Number),
+				fmt.Sprintf("%s/api/v1/projects/%d/issues/%s", baseURL, pid, url.PathEscape(issue.RefForAPI)),
 				nil)
 			if err != nil {
 				return err
@@ -176,7 +180,7 @@ func newEditCmd() *cobra.Command {
 			return err
 		}
 		status, bs, err := httpDoJSON(ctx, client, http.MethodPatch,
-			fmt.Sprintf("%s/api/v1/projects/%d/issues/%d", baseURL, pid, issue.Number),
+			fmt.Sprintf("%s/api/v1/projects/%d/issues/%s", baseURL, pid, url.PathEscape(issue.RefForAPI)),
 			payload)
 		if err != nil {
 			return err
@@ -191,16 +195,20 @@ func newEditCmd() *cobra.Command {
 
 // buildLinksDelta translates the edit command's link flags into a wire-format
 // links_delta map. Returns nil when no link flag was passed. Resolves every
-// ref (#N, N, UID, or prefix) to its issue number before building the
-// payload, then runs client-side conflict checks so an obviously-broken
+// ref (short_id, qualified, or ULID) to its wire ref string before building
+// the payload, then runs client-side conflict checks so an obviously-broken
 // delta never reaches the daemon.
+//
+// currentProject is the canonical name of the URL issue's project. Every
+// link target must belong to that project; a qualified `<other>#abc4` ref
+// is rejected up front so it can't silently target the wrong issue.
 func buildLinksDelta(
 	ctx context.Context,
 	cmd *cobra.Command,
-	baseURL string, projectID int64,
-	parentNum int64,
+	baseURL, currentProject string, projectID int64,
+	parentRef string,
 	blocks, blockedBy, related []string,
-	removeParentNum int64,
+	removeParentRef string,
 	removeBlocks, removeBlockedBy, removeRelated []string,
 ) (map[string]any, error) {
 	parentSet := cmd.Flags().Changed("parent")
@@ -218,57 +226,69 @@ func buildLinksDelta(
 		}
 	}
 
-	// parentNum / removeParentNum arrived already resolved from the
+	// parentRef / removeParentRef arrived already resolved from the
 	// at-most-one collapse helper. Multi-valued flags resolve here
 	// (each entry independently). Errors short-circuit the whole edit
 	// so a malformed ref never lands a partial mutation.
 	var (
-		blocksNums, blockedByNums, relatedNums                   []int64
-		removeBlocksNums, removeBlockedByNums, removeRelatedNums []int64
+		blocksRefs, blockedByRefs, relatedRefs                   []string
+		removeBlocksRefs, removeBlockedByRefs, removeRelatedRefs []string
 		err                                                      error
 	)
-	if blocksNums, err = resolveRefSliceToNumbers(ctx, baseURL, projectID, blocks, "--blocks"); err != nil {
+	if blocksRefs, err = resolveRefSliceToWire(ctx, baseURL, currentProject, projectID, blocks, "--blocks"); err != nil {
 		return nil, err
 	}
-	if blockedByNums, err = resolveRefSliceToNumbers(ctx, baseURL, projectID, blockedBy, "--blocked-by"); err != nil {
+	if blockedByRefs, err = resolveRefSliceToWire(ctx, baseURL, currentProject, projectID, blockedBy, "--blocked-by"); err != nil {
 		return nil, err
 	}
-	if relatedNums, err = resolveRefSliceToNumbers(ctx, baseURL, projectID, related, "--related"); err != nil {
+	if relatedRefs, err = resolveRefSliceToWire(ctx, baseURL, currentProject, projectID, related, "--related"); err != nil {
 		return nil, err
 	}
 	// Remove flags are idempotent at the contract level: removing a link
-	// that doesn't exist is a no-op. The resolver tolerates soft-deleted
-	// peers (link row is real even when the peer is hidden) AND missing
-	// peers entirely (the desired end-state — "no link to N" — already
-	// holds when there is no N). Other resolution errors still fail
-	// loudly so genuine typos surface (e.g. ambiguous prefix).
-	if removeBlocksNums, err = resolveRefSliceToNumbersIdempotentRemove(ctx, baseURL, projectID, removeBlocks, "--remove-blocks"); err != nil {
+	// that doesn't exist is a no-op. The daemon's resolver tolerates
+	// soft-deleted peers (the link row is real); idempotent remove of a
+	// completely-missing peer is handled daemon-side too.
+	if removeBlocksRefs, err = resolveRefSliceToWireIdempotentRemove(ctx, baseURL, currentProject, projectID, removeBlocks, "--remove-blocks"); err != nil {
 		return nil, err
 	}
-	if removeBlockedByNums, err = resolveRefSliceToNumbersIdempotentRemove(ctx, baseURL, projectID, removeBlockedBy, "--remove-blocked-by"); err != nil {
+	if removeBlockedByRefs, err = resolveRefSliceToWireIdempotentRemove(ctx, baseURL, currentProject, projectID, removeBlockedBy, "--remove-blocked-by"); err != nil {
 		return nil, err
 	}
-	if removeRelatedNums, err = resolveRefSliceToNumbersIdempotentRemove(ctx, baseURL, projectID, removeRelated, "--remove-related"); err != nil {
+	if removeRelatedRefs, err = resolveRefSliceToWireIdempotentRemove(ctx, baseURL, currentProject, projectID, removeRelated, "--remove-related"); err != nil {
 		return nil, err
 	}
 
-	if conflict := firstIntOverlap(blocksNums, removeBlocksNums); conflict != 0 {
+	// Conflict checks compare canonical UIDs so equivalent forms of the
+	// same ref (short_id vs ULID, qualified vs bare) collide even when
+	// the user spells them differently. Each pair is canonicalized only
+	// when both sides are non-empty, so the common case (one of the two
+	// flags set) skips the extra daemon roundtrips entirely.
+	if conflict, err := firstResolvedOverlap(ctx, baseURL, projectID,
+		blocksRefs, removeBlocksRefs); err != nil {
+		return nil, err
+	} else if conflict != "" {
 		return nil, &cliError{
-			Message:  fmt.Sprintf("--blocks and --remove-blocks both target #%d", conflict),
+			Message:  fmt.Sprintf("--blocks and --remove-blocks both target %s", conflict),
 			Kind:     kindValidation,
 			ExitCode: ExitValidation,
 		}
 	}
-	if conflict := firstIntOverlap(blockedByNums, removeBlockedByNums); conflict != 0 {
+	if conflict, err := firstResolvedOverlap(ctx, baseURL, projectID,
+		blockedByRefs, removeBlockedByRefs); err != nil {
+		return nil, err
+	} else if conflict != "" {
 		return nil, &cliError{
-			Message:  fmt.Sprintf("--blocked-by and --remove-blocked-by both target #%d", conflict),
+			Message:  fmt.Sprintf("--blocked-by and --remove-blocked-by both target %s", conflict),
 			Kind:     kindValidation,
 			ExitCode: ExitValidation,
 		}
 	}
-	if conflict := firstIntOverlap(relatedNums, removeRelatedNums); conflict != 0 {
+	if conflict, err := firstResolvedOverlap(ctx, baseURL, projectID,
+		relatedRefs, removeRelatedRefs); err != nil {
+		return nil, err
+	} else if conflict != "" {
 		return nil, &cliError{
-			Message:  fmt.Sprintf("--related and --remove-related both target #%d", conflict),
+			Message:  fmt.Sprintf("--related and --remove-related both target %s", conflict),
 			Kind:     kindValidation,
 			ExitCode: ExitValidation,
 		}
@@ -276,35 +296,30 @@ func buildLinksDelta(
 
 	delta := map[string]any{}
 	if parentSet {
-		delta["set_parent"] = parentNum
+		delta["set_parent"] = parentRef
 	}
 	if parentRm {
-		delta["remove_parent"] = removeParentNum
+		delta["remove_parent"] = removeParentRef
 	}
-	if len(blocksNums) > 0 {
-		delta["add_blocks"] = blocksNums
+	if len(blocksRefs) > 0 {
+		delta["add_blocks"] = blocksRefs
 	}
-	if len(blockedByNums) > 0 {
-		delta["add_blocked_by"] = blockedByNums
+	if len(blockedByRefs) > 0 {
+		delta["add_blocked_by"] = blockedByRefs
 	}
-	if len(relatedNums) > 0 {
-		delta["add_related"] = relatedNums
+	if len(relatedRefs) > 0 {
+		delta["add_related"] = relatedRefs
 	}
-	if len(removeBlocksNums) > 0 {
-		delta["remove_blocks"] = removeBlocksNums
+	if len(removeBlocksRefs) > 0 {
+		delta["remove_blocks"] = removeBlocksRefs
 	}
-	if len(removeBlockedByNums) > 0 {
-		delta["remove_blocked_by"] = removeBlockedByNums
+	if len(removeBlockedByRefs) > 0 {
+		delta["remove_blocked_by"] = removeBlockedByRefs
 	}
-	if len(removeRelatedNums) > 0 {
-		delta["remove_related"] = removeRelatedNums
+	if len(removeRelatedRefs) > 0 {
+		delta["remove_related"] = removeRelatedRefs
 	}
 	if len(delta) == 0 {
-		// All requested ops resolved away (idempotent --remove-* refs to
-		// missing peers). Return nil so the caller can decide between
-		// "skip the daemon roundtrip" and "send an empty links_delta",
-		// rather than emitting `links_delta: {}` which the daemon
-		// rejects as an empty mutation.
 		return nil, nil
 	}
 	return delta, nil
@@ -334,20 +349,93 @@ func syntheticNoopFromShow(showBody []byte) []byte {
 	return bs
 }
 
-func firstIntOverlap(a, b []int64) int64 {
-	if len(a) == 0 || len(b) == 0 {
-		return 0
+// firstResolvedOverlap canonicalizes every ref in adds and removes to its
+// issue's UID (via a daemon GET) and returns the first ref in `removes`
+// whose canonical UID also appears in `adds`. Used by buildLinksDelta to
+// catch contradictory delta pairs like `--blocks abc4 --remove-blocks
+// 01HZ…` where the ULID resolves to abc4 — string-equality alone would
+// miss the conflict and let an obviously contradictory mutation reach
+// the daemon.
+//
+// Refs that fail to resolve (issue doesn't exist) are skipped; the
+// underlying remove flags are documented as idempotent, and a typo on
+// the add side would surface through the daemon's own validation. The
+// canonical wire string (passed back from the add side) is returned as
+// the conflict label so error messages match what the user typed.
+func firstResolvedOverlap(ctx context.Context, baseURL string, projectID int64, adds, removes []string) (string, error) {
+	if len(adds) == 0 || len(removes) == 0 {
+		return "", nil
 	}
-	seen := make(map[int64]struct{}, len(a))
-	for _, n := range a {
-		seen[n] = struct{}{}
+	addUIDs, err := refsToUIDs(ctx, baseURL, projectID, adds)
+	if err != nil {
+		return "", err
 	}
-	for _, n := range b {
-		if _, ok := seen[n]; ok {
-			return n
+	removeUIDs, err := refsToUIDs(ctx, baseURL, projectID, removes)
+	if err != nil {
+		return "", err
+	}
+	if len(addUIDs) == 0 || len(removeUIDs) == 0 {
+		return "", nil
+	}
+	have := make(map[string]string, len(addUIDs))
+	for ref, uid := range addUIDs {
+		if uid != "" {
+			have[uid] = ref
 		}
 	}
-	return 0
+	for ref, uid := range removeUIDs {
+		if uid == "" {
+			continue
+		}
+		if _, ok := have[uid]; ok {
+			return ref, nil
+		}
+	}
+	return "", nil
+}
+
+// refsToUIDs resolves every ref to its issue's UID via a daemon GET.
+// Refs that fail to resolve (404, soft-deleted under the default
+// include filter) map to an empty string so callers can treat them as
+// "could not canonicalize, skip from conflict checks". Network errors
+// (other than not-found) propagate so the caller doesn't silently
+// proceed with an inconsistent view.
+func refsToUIDs(ctx context.Context, baseURL string, projectID int64, refs []string) (map[string]string, error) {
+	out := make(map[string]string, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	client, err := httpClientFor(ctx, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range refs {
+		if _, seen := out[ref]; seen {
+			continue
+		}
+		path := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s", baseURL, projectID, url.PathEscape(ref))
+		status, bs, err := httpDoJSON(ctx, client, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		if status == http.StatusNotFound {
+			out[ref] = ""
+			continue
+		}
+		if status >= 400 {
+			return nil, apiErrFromBody(status, bs)
+		}
+		var body struct {
+			Issue struct {
+				UID string `json:"uid"`
+			} `json:"issue"`
+		}
+		if err := json.Unmarshal(bs, &body); err != nil {
+			return nil, err
+		}
+		out[ref] = body.Issue.UID
+	}
+	return out, nil
 }
 
 // parseEditPriority interprets the --priority value: "-" clears, an integer

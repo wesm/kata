@@ -17,12 +17,18 @@ Use kata as the shared issue ledger for this workspace.
    only when you need an actor different from your login.
 3. Prefer --json for reads and writes when parsing output.
 4. If the workspace is not initialized, report that kata init is needed.
-5. Search before creating:
+5. Issue refs use short_ids derived from each issue's ULID. In a workspace
+   bound to a project, the bare form is enough (e.g. abc4). Cross-project
+   references qualify with the project name (e.g. kata#abc4). Full 26-char
+   ULIDs also resolve. Legacy numeric refs (12, kata#12) no longer work.
+   The examples below use abc4 and d4ex as placeholders for short_ids you
+   will read out of "kata create --json" / "kata search --json" responses.
+6. Search before creating:
 
    kata search "login race" --json
    kata search --project foo "login race" --json
 
-6. If no existing issue fits, create with an idempotency key:
+7. If no existing issue fits, create with an idempotency key:
 
    kata create "fix login race" \
      --body "Observed double-submit in Safari callback." \
@@ -34,15 +40,15 @@ Use kata as the shared issue ledger for this workspace.
      --idempotency-key "foo-login-race-2026-05-02" \
      --json
 
-7. Prefer updating existing issues over creating duplicates:
+8. Prefer updating existing issues over creating duplicates:
 
-   kata show 12 --json
-   kata show --project foo 12 --json
-   kata comment 12 --body "Found another reproduction path." --json
-   kata label add 12 safari --json
-   kata edit 12 --blocks 18 --json
+   kata show abc4 --json
+   kata show --project foo abc4 --json
+   kata comment abc4 --body "Found another reproduction path." --json
+   kata label add abc4 safari --json
+   kata edit abc4 --blocks d4ex --json
 
-8. Use relationships deliberately. They live as flags on create + edit and
+9. Use relationships deliberately. They live as flags on create + edit and
    are framed from the operating issue's POV — no argument-order traps:
 
    parent      = this issue is a sub-task of a larger issue
@@ -50,19 +56,19 @@ Use kata as the shared issue ledger for this workspace.
    blocked_by  = the target must be resolved before this issue can proceed
    related     = useful context, but not ordering
 
-   kata create "fix auth flow" --parent 4 --blocked-by 7 --related 3 --json
-   kata edit 12 --remove-blocks 18 --related 9 --json
+   kata create "fix auth flow" --parent abc4 --blocked-by d4ex --related j7m2 --json
+   kata edit abc4 --remove-blocks d4ex --related j7m2 --json
 
-   --remove-parent N is strict: it must equal the current parent or fail
-   loudly. Read parent before asserting a removal. The other --remove-* flags
-   are idempotent (no-op when the link is already gone).
+   --remove-parent <ref> is strict: it must equal the current parent or
+   fail loudly. Read parent before asserting a removal. The other
+   --remove-* flags are idempotent (no-op when the link is already gone).
 
-9. Close only when the work is actually complete:
+10. Close only when the work is actually complete:
 
-   kata close 12 --reason done --json
+    kata close abc4 --reason done --json
 
-10. Do not run delete or purge unless the user explicitly asks for that exact
-    destructive action and issue number.
+11. Do not run delete or purge unless the user explicitly asks for that exact
+    destructive action and issue ref.
 
 For long-running agents, poll events:
 

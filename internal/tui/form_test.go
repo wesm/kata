@@ -107,7 +107,7 @@ func TestRouteFormMutation_Success_ClosesFormAndDispatchesToDetail(t *testing.T)
 	m.input.saving = true // simulate in-flight
 	mut := mutationDoneMsg{
 		origin: "form", kind: "form.body.edit", formGen: m.input.formGen,
-		resp: &MutationResp{Issue: &Issue{Number: 42, Body: "new body"}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-42aa", ShortID: "42aa", Body: "new body"}},
 	}
 	out, _ := m.Update(mut)
 	nm := out.(Model)
@@ -151,7 +151,7 @@ func formFixture() Model {
 		list:   listModel{actor: "tester"},
 		scope:  scope{projectID: 7, projectName: "kata"},
 		detail: detailModel{
-			issue:    &Issue{Number: 42, Title: "fix bug", Body: "current body"},
+			issue:    &Issue{UID: "01TEST-42aa", ShortID: "42aa", Title: "fix bug", Body: "current body"},
 			scopePID: 7,
 			gen:      1,
 		},
@@ -171,8 +171,8 @@ func TestForm_OpenBodyEditForm_AllocatesFreshFormGen(t *testing.T) {
 	if m1.input.formGen == 0 {
 		t.Fatal("formGen = 0; want monotonic positive")
 	}
-	if m1.input.target.issueNumber != 42 {
-		t.Fatalf("target issueNumber = %d, want 42", m1.input.target.issueNumber)
+	if m1.input.target.issueShortID != "42aa" {
+		t.Fatalf("target issueShortID = %q, want 42aa", m1.input.target.issueShortID)
 	}
 	if got := m1.input.activeField().value(); got != "current body" {
 		t.Fatalf("textarea = %q, want %q (pre-fill from issue body)",
@@ -197,8 +197,8 @@ func TestForm_OpenCommentForm_StartsEmpty(t *testing.T) {
 	if got := m1.input.activeField().value(); got != "" {
 		t.Fatalf("textarea = %q, want empty", got)
 	}
-	if m1.input.target.issueNumber != 42 {
-		t.Fatalf("target issueNumber = %d, want 42", m1.input.target.issueNumber)
+	if m1.input.target.issueShortID != "42aa" {
+		t.Fatalf("target issueShortID = %q, want 42aa", m1.input.target.issueShortID)
 	}
 }
 
@@ -426,7 +426,7 @@ func TestOpenBodyEditForm_UsesDetailScopePID(t *testing.T) {
 	m := formFixture()
 	m.scope = scope{allProjects: true} // m.scope.projectID == 0
 	m.detail.scopePID = 42
-	m.detail.issue = &Issue{Number: 7, Body: "old"}
+	m.detail.issue = &Issue{UID: "01TEST-7bb", ShortID: "7bb", Body: "old"}
 
 	out := m.openBodyEditForm()
 	if out.input.kind != inputBodyEditForm {
@@ -435,8 +435,8 @@ func TestOpenBodyEditForm_UsesDetailScopePID(t *testing.T) {
 	if got := out.input.target.projectID; got != 42 {
 		t.Fatalf("target.projectID = %d, want 42 (m.detail.scopePID)", got)
 	}
-	if got := out.input.target.issueNumber; got != 7 {
-		t.Fatalf("target.issueNumber = %d, want 7", got)
+	if got := out.input.target.issueShortID; got != "7bb" {
+		t.Fatalf("target.issueShortID = %q, want 7bb", got)
 	}
 }
 
@@ -446,7 +446,7 @@ func TestOpenCommentForm_UsesDetailScopePID(t *testing.T) {
 	m := formFixture()
 	m.scope = scope{allProjects: true}
 	m.detail.scopePID = 42
-	m.detail.issue = &Issue{Number: 7}
+	m.detail.issue = &Issue{UID: "01TEST-7bb", ShortID: "7bb"}
 
 	out := m.openCommentForm()
 	if out.input.kind != inputCommentForm {
@@ -455,8 +455,8 @@ func TestOpenCommentForm_UsesDetailScopePID(t *testing.T) {
 	if got := out.input.target.projectID; got != 42 {
 		t.Fatalf("target.projectID = %d, want 42 (m.detail.scopePID)", got)
 	}
-	if got := out.input.target.issueNumber; got != 7 {
-		t.Fatalf("target.issueNumber = %d, want 7", got)
+	if got := out.input.target.issueShortID; got != "7bb" {
+		t.Fatalf("target.issueShortID = %q, want 7bb", got)
 	}
 }
 
@@ -480,7 +480,7 @@ func TestCommitNewIssueForm_SplitLayoutFocusDetail_UsesDetailScopePID(t *testing
 		list:   listModel{actor: "tester"},
 		scope:  scope{allProjects: true},
 		detail: detailModel{
-			issue:    &Issue{Number: 7},
+			issue:    &Issue{UID: "01TEST-7bb", ShortID: "7bb"},
 			scopePID: 42,
 		},
 		cache: newIssueCache(),
@@ -521,7 +521,7 @@ func TestCommitNewIssueForm_StackedViewDetail_UsesDetailScopePID(t *testing.T) {
 		list:   listModel{actor: "tester"},
 		scope:  scope{allProjects: true},
 		detail: detailModel{
-			issue:    &Issue{Number: 7},
+			issue:    &Issue{UID: "01TEST-7bb", ShortID: "7bb"},
 			scopePID: 42,
 		},
 		cache: newIssueCache(),

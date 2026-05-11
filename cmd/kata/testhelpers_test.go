@@ -188,20 +188,39 @@ func resolvePIDViaHTTP(t *testing.T, baseURL, startPath string) int64 {
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
+// createdIssue captures the wire fields tests need after creating an issue:
+// the short_id (for ref-bearing URLs and human assertions), the UID (for
+// ULID-form refs), and the database row id (for low-level DB lookups in
+// tests that bypass the API).
+type createdIssue struct {
+	ID      int64
+	UID     string
+	ShortID string
+}
+
 // createIssueViaHTTP creates an issue in dir's project via the testenv daemon.
-// Returns the issue number from the response. Reused across destructive-ladder
+// Returns the short_id from the response. Reused across destructive-ladder
 // tests so each test doesn't have to resolve the project ID itself.
-func createIssueViaHTTP(t *testing.T, env *testenv.Env, dir, title string) int64 {
+func createIssueViaHTTP(t *testing.T, env *testenv.Env, dir, title string) string {
+	t.Helper()
+	return createIssueViaHTTPFull(t, env, dir, title).ShortID
+}
+
+// createIssueViaHTTPFull is the same as createIssueViaHTTP but returns every
+// identifier the test might need (row id, UID, short_id).
+func createIssueViaHTTPFull(t *testing.T, env *testenv.Env, dir, title string) createdIssue {
 	t.Helper()
 	pid := resolvePIDViaHTTP(t, env.URL, dir)
 	type response struct {
 		Issue struct {
-			Number int64 `json:"number"`
+			ID      int64  `json:"id"`
+			UID     string `json:"uid"`
+			ShortID string `json:"short_id"`
 		} `json:"issue"`
 	}
 	b := postJSON[response](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues",
 		map[string]any{"actor": "tester", "title": title})
-	return b.Issue.Number
+	return createdIssue{ID: b.Issue.ID, UID: b.Issue.UID, ShortID: b.Issue.ShortID}
 }
 
 // resetFlags restores global flag state for cobra tests. Use t.Cleanup so
@@ -299,11 +318,13 @@ func runCLICapture(t *testing.T, env *testenv.Env, dir string, args ...string) (
 	return buf.String(), err
 }
 
-// setupWorkspaceWithIssue initializes a test environment and workspace with a single issue.
-func setupWorkspaceWithIssue(t *testing.T, issueTitle string) (*testenv.Env, string, int64) {
+// setupWorkspaceWithIssue initializes a test environment and workspace with
+// a single issue. Returns the environment, workspace dir, project ID, and the
+// created issue's short_id (suitable for use as a positional ref).
+func setupWorkspaceWithIssue(t *testing.T, issueTitle string) (*testenv.Env, string, int64, string) {
 	env, dir, pid := setupCLIWorkspace(t)
-	createIssue(t, env, pid, issueTitle)
-	return env, dir, pid
+	short := createIssue(t, env, pid, issueTitle)
+	return env, dir, pid, short
 }
 
 // setupCLIWorkspace bundles resetFlags, testenv.New, initBoundWorkspace, and
@@ -318,22 +339,28 @@ func setupCLIWorkspace(t *testing.T) (*testenv.Env, string, int64) {
 	return env, dir, pid
 }
 
-// createIssue creates an issue via HTTP and discards the response. Use when
-// you need an issue but not its number — numbers go 1, 2, 3 in order so they
-// can be hard-coded.
-func createIssue(t *testing.T, env *testenv.Env, projectID int64, title string) {
+// createIssue creates an issue via HTTP and returns its short_id. Tests can
+// use the short_id directly as the positional ref on subsequent CLI calls.
+func createIssue(t *testing.T, env *testenv.Env, projectID int64, title string) string {
 	t.Helper()
-	postJSONOK(t, env.URL+"/api/v1/projects/"+itoa(projectID)+"/issues",
+	type response struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+	}
+	b := postJSON[response](t, env.URL+"/api/v1/projects/"+itoa(projectID)+"/issues",
 		map[string]any{"actor": "tester", "title": title})
+	return b.Issue.ShortID
 }
 
 // createLinkViaHTTP creates a link between two issues via HTTP. Used by tests
-// that need a pre-existing link to exercise unlink/show/etc.
-func createLinkViaHTTP(t *testing.T, env *testenv.Env, projectID, fromNumber int64, linkType string, toNumber int64) {
+// that need a pre-existing link to exercise unlink/show/etc. Refs are
+// short_ids or ULIDs (anything the daemon's {ref} path accepts).
+func createLinkViaHTTP(t *testing.T, env *testenv.Env, projectID int64, fromRef, linkType, toRef string) {
 	t.Helper()
 	postJSONOK(t,
-		env.URL+"/api/v1/projects/"+itoa(projectID)+"/issues/"+itoa(fromNumber)+"/links",
-		map[string]any{"actor": "tester", "type": linkType, "to_number": toNumber})
+		env.URL+"/api/v1/projects/"+itoa(projectID)+"/issues/"+fromRef+"/links",
+		map[string]any{"actor": "tester", "type": linkType, "to_ref": toRef})
 }
 
 // setupCLIEnv combines the standard workspace initialization and server startup.
@@ -421,9 +448,16 @@ func requireCLIError(t *testing.T, err error, expectedCode int) *cliError {
 	return ce
 }
 
+// linkPeerTest mirrors api.LinkPeer for test decoding.
+type linkPeerTest struct {
+	UID     string `json:"uid"`
+	ShortID string `json:"short_id"`
+}
+
 type IssueResponse struct {
 	Issue struct {
-		Number   int64   `json:"number"`
+		ID       int64   `json:"id"`
+		ShortID  string  `json:"short_id"`
 		UID      string  `json:"uid"`
 		Title    string  `json:"title"`
 		Owner    *string `json:"owner"`
@@ -433,9 +467,9 @@ type IssueResponse struct {
 		Label string `json:"label"`
 	} `json:"labels"`
 	Links []struct {
-		Type       string `json:"type"`
-		FromNumber int64  `json:"from_number"`
-		ToNumber   int64  `json:"to_number"`
+		Type string       `json:"type"`
+		From linkPeerTest `json:"from"`
+		To   linkPeerTest `json:"to"`
 	} `json:"links"`
 }
 
@@ -512,39 +546,7 @@ func (a *asyncCLI) stop() {
 	a.wg.Wait()
 }
 
-func fetchIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, issueNum int64) IssueResponse {
+func fetchIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, ref string) IssueResponse {
 	t.Helper()
-	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+itoa(issueNum))
-}
-
-// fetchDeletedIssueViaHTTP is the include_deleted=true variant. Used by
-// remove-flag tests that need to read a soft-deleted peer's UID after
-// it's already been hidden from the live-issue read path.
-func fetchDeletedIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, issueNum int64) IssueResponse {
-	t.Helper()
-	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+itoa(issueNum)+"?include_deleted=true")
-}
-
-// unambiguousUIDPrefix returns the shortest prefix of target that no entry
-// in others starts with, padded to at least 8 chars (the daemon's prefix
-// floor). Used by UID-prefix CLI tests so they don't rely on a fixed
-// length that breaks when ULIDs minted in the same millisecond happen to
-// share a long random suffix.
-func unambiguousUIDPrefix(t *testing.T, target string, others []string) string {
-	t.Helper()
-	for n := 8; n <= len(target); n++ {
-		candidate := target[:n]
-		clash := false
-		for _, o := range others {
-			if o != target && strings.HasPrefix(o, candidate) {
-				clash = true
-				break
-			}
-		}
-		if !clash {
-			return candidate
-		}
-	}
-	t.Fatalf("could not find unambiguous prefix of %s among %v", target, others)
-	return ""
+	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+ref)
 }

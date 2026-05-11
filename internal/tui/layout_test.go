@@ -79,7 +79,7 @@ func TestLayout_ResizeSplitToStacked_PreservesSelectionFocusDetail(t *testing.T)
 	m.detail.issue = &iss
 	m.detail.scopePID = 7
 	m.focus = focusDetail
-	m.list.selectedNumber = 42
+	m.list.selectedUID = "01TEST-42aa"
 	// Resize down across the breakpoint.
 	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	if m.layout != layoutStacked {
@@ -88,8 +88,8 @@ func TestLayout_ResizeSplitToStacked_PreservesSelectionFocusDetail(t *testing.T)
 	if m.view != viewDetail {
 		t.Errorf("view=%v after split→stacked focusDetail flip, want viewDetail", m.view)
 	}
-	if m.list.selectedNumber != 42 {
-		t.Errorf("selectedNumber=%d after flip, want 42", m.list.selectedNumber)
+	if m.list.selectedUID != "01TEST-42aa" {
+		t.Errorf("selectedUID=%q after flip, want 01TEST-42aa", m.list.selectedUID)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestLayout_ResizeSplitToStacked_PreservesSelectionFocusList(t *testing.T) {
 	defer cleanup()
 	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
 	m.focus = focusList
-	m.list.selectedNumber = 99
+	m.list.selectedUID = "01TEST-99zz"
 	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	if m.layout != layoutStacked {
 		t.Errorf("layout=%v after resize, want layoutStacked", m.layout)
@@ -109,8 +109,8 @@ func TestLayout_ResizeSplitToStacked_PreservesSelectionFocusList(t *testing.T) {
 	if m.view != viewList {
 		t.Errorf("view=%v after split→stacked focusList flip, want viewList", m.view)
 	}
-	if m.list.selectedNumber != 99 {
-		t.Errorf("selectedNumber=%d after flip, want 99", m.list.selectedNumber)
+	if m.list.selectedUID != "01TEST-99zz" {
+		t.Errorf("selectedUID=%q after flip, want 01TEST-99zz", m.list.selectedUID)
 	}
 }
 

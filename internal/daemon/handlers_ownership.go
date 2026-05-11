@@ -7,13 +7,14 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/db"
 )
 
 func registerOwnershipHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "assignIssue",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/assign",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/assign",
 	}, func(ctx context.Context, in *api.AssignRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
@@ -21,7 +22,7 @@ func registerOwnershipHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if strings.TrimSpace(in.Body.Owner) == "" {
 			return nil, api.NewError(400, "validation", "owner must be non-empty", "", nil)
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}
@@ -44,12 +45,12 @@ func registerOwnershipHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "unassignIssue",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/unassign",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/unassign",
 	}, func(ctx context.Context, in *api.UnassignRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}

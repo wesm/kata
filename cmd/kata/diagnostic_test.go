@@ -42,7 +42,8 @@ func TestProjectsRename_RenamesProject(t *testing.T) {
 	assert.Contains(t, out, "renamed project #"+itoa(projectID)+" to Kata Tracker")
 
 	show := requireCmdOutput(t, env, "projects", "show", itoa(projectID))
-	assert.Contains(t, show, "Kata Tracker (next #")
+	assert.Contains(t, show, "Kata Tracker")
+	assert.NotContains(t, show, "next #")
 }
 
 func TestProjectsRename_AcceptsProjectSelector(t *testing.T) {
@@ -57,7 +58,7 @@ func TestProjectsRename_AcceptsProjectSelector(t *testing.T) {
 func TestProjectsMerge_MergesSourceSelectorIntoSurvivingTarget(t *testing.T) {
 	env := testenv.New(t)
 	alpha, beta := setupMergeProjects(t, env)
-	_, _, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
+	created, _, err := env.DB.CreateIssue(context.Background(), db.CreateIssueParams{
 		ProjectID: alpha.ID, Title: "carry history forward", Author: "tester",
 	})
 	require.NoError(t, err)
@@ -66,7 +67,9 @@ func TestProjectsMerge_MergesSourceSelectorIntoSurvivingTarget(t *testing.T) {
 	assert.Contains(t, out, "merged project #"+itoa(alpha.ID)+" into #"+itoa(beta.ID))
 	assert.Contains(t, out, "moved 1 issue")
 
-	issue, err := env.DB.IssueByNumber(context.Background(), beta.ID, 1)
+	// After merge the issue is in beta; look it up by short_id (stable
+	// across the move) rather than by the removed legacy #N counter.
+	issue, err := env.DB.IssueByShortID(context.Background(), beta.ID, created.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, "carry history forward", issue.Title)
 	_, err = env.DB.ProjectByID(context.Background(), alpha.ID)

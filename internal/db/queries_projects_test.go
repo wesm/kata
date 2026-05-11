@@ -19,7 +19,6 @@ func TestCreateProject_RoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "kata", p.Name)
 	assertValidUID(t, p.UID)
-	assert.Equal(t, int64(1), p.NextIssueNumber)
 	assert.False(t, p.CreatedAt.IsZero())
 
 	got, err := d.ProjectByName(ctx, "kata")
@@ -58,7 +57,6 @@ func TestRenameProject_UpdatesNameOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, p.ID, renamed.ID)
 	assert.Equal(t, "Kata Tracker", renamed.Name)
-	assert.Equal(t, p.NextIssueNumber, renamed.NextIssueNumber)
 
 	got, err := d.ProjectByID(ctx, p.ID)
 	require.NoError(t, err)
@@ -157,8 +155,11 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	_, _, err := d.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 		ProjectID: alpha.ID, FromIssueID: child.ID, ToIssueID: parent.ID, Type: "parent", Author: "tester",
 	}, db.LinkEventParams{
-		EventType: "issue.linked", EventIssueID: child.ID, EventIssueNumber: child.Number,
-		FromNumber: child.Number, ToNumber: parent.Number, Actor: "tester",
+		EventType:    "issue.linked",
+		EventIssueID: child.ID,
+		FromShortID:  child.ShortID, FromUID: child.UID,
+		ToShortID: parent.ShortID, ToUID: parent.UID,
+		Actor: "tester",
 	})
 	require.NoError(t, err)
 
@@ -172,17 +173,19 @@ func TestMergeProjects_MovesSourceIntoSurvivingTarget(t *testing.T) {
 	assert.Equal(t, int64(2), merged.IssuesMoved)
 	assert.Equal(t, int64(1), merged.AliasesMoved)
 	assert.Equal(t, int64(3), merged.EventsMoved)
-	assert.Equal(t, int64(3), merged.Target.NextIssueNumber)
 
-	gotParent, err := d.IssueByNumber(ctx, beta.ID, 1)
+	// TODO(Task 7): merge collision behavior is rewritten there; for now switch
+	// the lookups to short_id so the test compiles. The merge-collision
+	// failure of this case is a Task 7 concern, not a Task 5 lookup concern.
+	gotParent, err := d.IssueByShortID(ctx, beta.ID, parent.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, "parent", gotParent.Title)
 	assert.Equal(t, beta.ID, gotParent.ProjectID)
-	gotChild, err := d.IssueByNumber(ctx, beta.ID, 2)
+	gotChild, err := d.IssueByShortID(ctx, beta.ID, child.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	assert.Equal(t, "child", gotChild.Title)
 	assert.Equal(t, beta.ID, gotChild.ProjectID)
-	_, err = d.IssueByNumber(ctx, alpha.ID, 1)
+	_, err = d.IssueByShortID(ctx, alpha.ID, parent.ShortID, db.IncludeDeletedNo)
 	assert.ErrorIs(t, err, db.ErrNotFound)
 	_, err = d.ProjectByID(ctx, alpha.ID)
 	assert.ErrorIs(t, err, db.ErrNotFound)
@@ -256,23 +259,177 @@ func TestMergeProjects_RejectsArchivedTarget(t *testing.T) {
 	assert.ErrorIs(t, err, db.ErrProjectMergeArchivedTarget)
 }
 
-func TestMergeProjects_IssueNumberCollisionReturnsError(t *testing.T) {
+// TestMergeProjects_ExtendsCollidingSourceShortIDs pins the §5.2 merge rule:
+// source-side issues whose short_ids collide with target-side issues are
+// auto-extended to the next non-colliding length. Existing target short_ids
+// stay put. The merge response lists each shifted issue's pre/post short_id.
+func TestMergeProjects_ExtendsCollidingSourceShortIDs(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
-	source := createProject(ctx, t, d, "alpha")
-	target := createProject(ctx, t, d, "beta")
-	makeIssue(t, ctx, d, source.ID, "source issue", "tester")
-	makeIssue(t, ctx, d, target.ID, "target issue", "tester")
+	src := createProject(ctx, t, d, "src")
+	dst := createProject(ctx, t, d, "dst")
 
-	_, err := d.MergeProjects(ctx, db.MergeProjectsParams{
-		SourceProjectID: source.ID,
-		TargetProjectID: target.ID,
+	// Two issues whose ULIDs share the last 4 chars; one in each project.
+	// Because short_ids are assigned per project, both land at "d4ex" on
+	// their own side. The merge has to break the tie.
+	dstIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: dst.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "dst",
+		Author:    "tester",
 	})
-	require.ErrorIs(t, err, db.ErrProjectMergeIssueNumberCollision)
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", dstIssue.ShortID)
+	srcIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: src.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "src",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", srcIssue.ShortID) // independent assignment per project
 
-	got, lookupErr := d.ProjectByID(ctx, source.ID)
-	require.NoError(t, lookupErr)
-	assert.Equal(t, "alpha", got.Name)
+	res, err := d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: src.ID,
+		TargetProjectID: dst.ID,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.ShortIDExtensions, 1)
+	ext := res.ShortIDExtensions[0]
+	assert.Equal(t, srcIssue.UID, ext.UID)
+	assert.Equal(t, "d4ex", ext.PreMergeShortID)
+	assert.Equal(t, "xd4ex", ext.PostMergeShortID)
+
+	// Both issues now visible on dst with distinct short_ids.
+	got, err := d.IssueByShortID(ctx, dst.ID, "d4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, dstIssue.UID, got.UID)
+	got, err = d.IssueByShortID(ctx, dst.ID, "xd4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, srcIssue.UID, got.UID)
+}
+
+// TestMergeProjects_ExtendsAgainstTargetPurgeLogTombstone pins the
+// tombstone-aware merge rule: a source-side issue whose short_id collides
+// with a target-side purge_log tombstone (not a live target issue) is
+// auto-extended too. Without this, a purged-then-merged-into target would
+// silently re-issue the slot the tombstone owned.
+func TestMergeProjects_ExtendsAgainstTargetPurgeLogTombstone(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	src := createProject(ctx, t, d, "src")
+	dst := createProject(ctx, t, d, "dst")
+
+	// Target side: create issue with short_id "d4ex", then purge it. The
+	// purge_log row tombstones "d4ex" against future creates in dst.
+	dstGone, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: dst.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "dst (will be purged)",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", dstGone.ShortID)
+	_, err = d.PurgeIssue(ctx, dstGone.ID, "agent", nil)
+	require.NoError(t, err)
+
+	// Source side: a different ULID with the same last 4 chars. On the source
+	// project alone, it lands at "d4ex" — no live siblings.
+	srcIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: src.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "src",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "d4ex", srcIssue.ShortID)
+
+	// Merge: src.d4ex must auto-extend because dst's purge_log already
+	// claims "d4ex".
+	res, err := d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: src.ID,
+		TargetProjectID: dst.ID,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.ShortIDExtensions, 1)
+	assert.Equal(t, srcIssue.UID, res.ShortIDExtensions[0].UID)
+	assert.Equal(t, "d4ex", res.ShortIDExtensions[0].PreMergeShortID)
+	assert.Equal(t, "xd4ex", res.ShortIDExtensions[0].PostMergeShortID)
+}
+
+// TestMergeProjects_DoesNotShortenExistingShortIDs pins the §5.2 invariant
+// that a merge rekey only ever extends a colliding source short_id; it must
+// never produce a shorter one. The bug this guards against: when a source
+// issue is stored at length L > MinLength because earlier neighbors at the
+// same length-MinLength suffix have since been purged, the namespace at
+// MinLength on the source side is free again. A naive rekey that searches
+// from MinLength would shorten the issue's display ID — silently breaking
+// every external reference that already cited the longer form.
+//
+// The setup uses ShortIDOverride on both sides to seed the exact pathological
+// state without recreating the neighbor-then-purge dance: source B and target
+// T both carry short_id "xd4ex" (length 5) under UIDs whose length-4 suffix
+// "d4ex" is unoccupied on either side. Merge must rekey B to a length >= 6.
+func TestMergeProjects_DoesNotShortenExistingShortIDs(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	src := createProject(ctx, t, d, "src")
+	dst := createProject(ctx, t, d, "dst")
+
+	// Source B at length 5: UID ends in "XD4EX" so the length-4 suffix is
+	// "d4ex" and the length-5 suffix is "xd4ex". ShortIDOverride lets us
+	// skip the auto-extend search and persist length 5 directly, simulating
+	// a state where earlier source-side neighbors at "d4ex" have been
+	// purged but B itself was already extended to length 5.
+	srcIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       src.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		ShortIDOverride: "xd4ex",
+		Title:           "src",
+		Author:          "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "xd4ex", srcIssue.ShortID)
+
+	// Target T at the same length-5 short_id, under a distinct UID that
+	// also ends in "XD4EX". The collision basis is (project_id, short_id),
+	// so the two rows coexist across projects but will clash on merge.
+	dstIssue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       dst.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MACXD4EX",
+		ShortIDOverride: "xd4ex",
+		Title:           "dst",
+		Author:          "tester",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "xd4ex", dstIssue.ShortID)
+
+	res, err := d.MergeProjects(ctx, db.MergeProjectsParams{
+		SourceProjectID: src.ID,
+		TargetProjectID: dst.ID,
+	})
+	require.NoError(t, err)
+	require.Len(t, res.ShortIDExtensions, 1)
+	ext := res.ShortIDExtensions[0]
+	assert.Equal(t, srcIssue.UID, ext.UID)
+	assert.Equal(t, "xd4ex", ext.PreMergeShortID)
+	// The core assertion: the post-merge short_id is strictly longer than
+	// the pre-merge value. Without the floor, length 4 ("d4ex") is free on
+	// both projects, so the buggy path would assign that — a shortening.
+	assert.Greaterf(t, len(ext.PostMergeShortID), len(ext.PreMergeShortID),
+		"rekeyed short_id %q must be longer than pre-merge %q",
+		ext.PostMergeShortID, ext.PreMergeShortID)
+	assert.GreaterOrEqual(t, len(ext.PostMergeShortID), 6,
+		"rekey must search at lengths strictly greater than the colliding length")
+
+	// Target's original short_id stays put (existing target ids are not bumped).
+	got, err := d.IssueByShortID(ctx, dst.ID, "xd4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, dstIssue.UID, got.UID)
+	// Source row resolves at its new (longer) short_id on the merged target.
+	got, err = d.IssueByShortID(ctx, dst.ID, ext.PostMergeShortID, db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, srcIssue.UID, got.UID)
 }
 
 func TestMergeProjects_MovesImportMappingsToTargetProject(t *testing.T) {
@@ -312,7 +469,6 @@ func TestMergeProjects_ImportMappingCollisionReturnsError(t *testing.T) {
 	source := createProject(ctx, t, d, "src")
 	target := createProject(ctx, t, d, "target")
 	sourceIssue := makeIssue(t, ctx, d, source.ID, "source mapped", "tester")
-	require.NoError(t, d.ResetIssueCounter(ctx, target.ID, 100))
 	targetIssue := makeIssue(t, ctx, d, target.ID, "target mapped", "tester")
 
 	_, err := d.UpsertImportMapping(ctx, db.ImportMappingParams{
@@ -333,94 +489,6 @@ func TestMergeProjects_ImportMappingCollisionReturnsError(t *testing.T) {
 		`SELECT count(*) FROM import_mappings WHERE project_id = ?`, source.ID)
 	assertRowCount(ctx, t, d, 1, "target mapping preserved after failed merge",
 		`SELECT count(*) FROM import_mappings WHERE project_id = ?`, target.ID)
-}
-
-func TestResetIssueCounter_EmptyProjectMovesCounter(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-
-	require.NoError(t, d.ResetIssueCounter(ctx, p.ID, 42))
-
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.EqualValues(t, 42, p2.NextIssueNumber)
-}
-
-func TestResetIssueCounter_ReturnsTypedErrorWithCount(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-	for range 3 {
-		makeIssue(t, ctx, d, p.ID, "x", "a")
-	}
-	before, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-
-	err = d.ResetIssueCounter(ctx, p.ID, 1)
-	var hasIssues *db.ProjectHasIssuesError
-	require.ErrorAs(t, err, &hasIssues)
-	assert.EqualValues(t, 3, hasIssues.Count)
-
-	after, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber, "counter must not move when gate trips")
-}
-
-func TestResetIssueCounter_ProjectNotFound(t *testing.T) {
-	d := openTestDB(t)
-	err := d.ResetIssueCounter(context.Background(), 9999, 1)
-	assert.ErrorIs(t, err, db.ErrNotFound)
-}
-
-func TestResetIssueCounter_RejectsInvalidTo(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-
-	for _, to := range []int64{0, -1, -42} {
-		err := d.ResetIssueCounter(ctx, p.ID, to)
-		assert.ErrorIs(t, err, db.ErrInvalidCounterValue, "to=%d", to)
-	}
-	// Counter must remain at its initial value.
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, p2.NextIssueNumber)
-}
-
-// Covers the production scenario: project accumulated issues that were all
-// purged, then the user resets the counter to start over at 1.
-func TestResetIssueCounter_SucceedsAfterPurge(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-
-	var issueIDs []int64
-	for range 3 {
-		issue := makeIssue(t, ctx, d, p.ID, "x", "a")
-		issueIDs = append(issueIDs, issue.ID)
-	}
-	for _, id := range issueIDs {
-		_, err := d.PurgeIssue(ctx, id, "tester", nil)
-		require.NoError(t, err)
-	}
-
-	require.NoError(t, d.ResetIssueCounter(ctx, p.ID, 1))
-
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, p2.NextIssueNumber)
-}
-
-// Guards against splitting the gate back into count-then-update — the
-// empty-check must be atomic with the write so a concurrent CreateIssue
-// can't slip between them.
-func TestResetIssueCounter_GateLivesInUpdate(t *testing.T) {
-	d, ctx, p := setupTestProject(t)
-	makeIssue(t, ctx, d, p.ID, "x", "a")
-
-	before, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-
-	err = d.ResetIssueCounter(ctx, p.ID, 999)
-	var hasIssues *db.ProjectHasIssuesError
-	require.ErrorAs(t, err, &hasIssues)
-
-	after, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.Equal(t, before.NextIssueNumber, after.NextIssueNumber)
 }
 
 func TestBatchProjectStats_EmptyProjectReturnsZeroes(t *testing.T) {
@@ -446,10 +514,14 @@ func TestBatchProjectStats_NoCountInflation(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 	p := createProject(ctx, t, d, "proj")
-	for range 3 {
-		makeIssue(t, ctx, d, p.ID, "i", "tester")
+	var first db.Issue
+	for i := range 3 {
+		iss := makeIssue(t, ctx, d, p.ID, "i", "tester")
+		if i == 0 {
+			first = iss
+		}
 	}
-	iss, err := d.IssueByNumber(ctx, p.ID, 1)
+	iss, err := d.IssueByShortID(ctx, p.ID, first.ShortID, db.IncludeDeletedNo)
 	require.NoError(t, err)
 	_, _, err = d.CreateComment(ctx, db.CreateCommentParams{
 		IssueID: iss.ID,

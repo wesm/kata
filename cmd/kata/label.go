@@ -41,7 +41,7 @@ func labelAddCmd() *cobra.Command {
 				return err
 			}
 			payload := map[string]string{"actor": actor, "label": label}
-			postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/labels", baseURL, pid, issue.Number)
+			postURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/labels", baseURL, pid, url.PathEscape(issue.RefForAPI))
 			status, bs, err := httpDoJSON(ctx, client, http.MethodPost, postURL, payload)
 			if err != nil {
 				return err
@@ -77,8 +77,8 @@ func labelRmCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			deleteURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%d/labels/%s?actor=%s",
-				baseURL, pid, issue.Number, url.PathEscape(label), url.QueryEscape(actor))
+			deleteURL := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/labels/%s?actor=%s",
+				baseURL, pid, url.PathEscape(issue.RefForAPI), url.PathEscape(label), url.QueryEscape(actor))
 			status, bs, err := httpDoJSON(ctx, client, http.MethodDelete, deleteURL, nil)
 			if err != nil {
 				return err
@@ -86,7 +86,7 @@ func labelRmCmd() *cobra.Command {
 			if status >= 400 {
 				return apiErrFromBody(status, bs)
 			}
-			return printLabelRemoved(cmd, bs, issue.Number, label)
+			return printLabelRemoved(cmd, bs, issue.RefForAPI, label)
 		},
 	}
 }
@@ -161,7 +161,7 @@ func printLabelMutation(cmd *cobra.Command, bs []byte) error {
 	}
 	var b struct {
 		Issue struct {
-			Number int64 `json:"number"`
+			ShortID string `json:"short_id"`
 		} `json:"issue"`
 		Label struct {
 			Label string `json:"label"`
@@ -175,19 +175,19 @@ func printLabelMutation(cmd *cobra.Command, bs []byte) error {
 		return nil
 	}
 	if !b.Changed {
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d already labeled %q (no-op)\n",
-			b.Issue.Number, textsafe.Line(b.Label.Label))
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s already labeled %q (no-op)\n",
+			b.Issue.ShortID, textsafe.Line(b.Label.Label))
 		return err
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d labeled %q\n",
-		b.Issue.Number, textsafe.Line(b.Label.Label))
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s labeled %q\n",
+		b.Issue.ShortID, textsafe.Line(b.Label.Label))
 	return err
 }
 
 // printLabelRemoved formats the DELETE-label response. The MutationResponse
 // body carries only {issue, event, changed} so the line is built from the
-// (issue number, label) the CLI used to call DELETE.
-func printLabelRemoved(cmd *cobra.Command, bs []byte, number int64, label string) error {
+// (issue ref, label) the CLI used to call DELETE.
+func printLabelRemoved(cmd *cobra.Command, bs []byte, ref, label string) error {
 	if flags.JSON {
 		var buf bytes.Buffer
 		if err := emitJSON(&buf, json.RawMessage(bs)); err != nil {
@@ -206,9 +206,9 @@ func printLabelRemoved(cmd *cobra.Command, bs []byte, number int64, label string
 		return nil
 	}
 	if !b.Changed {
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d label %q already removed (no-op)\n", number, label)
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s label %q already removed (no-op)\n", ref, label)
 		return err
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "#%d unlabeled %q\n", number, label)
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s unlabeled %q\n", ref, label)
 	return err
 }

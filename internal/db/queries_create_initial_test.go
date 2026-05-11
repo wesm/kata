@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -60,8 +61,8 @@ func TestCreateIssue_WithInitialLinks(t *testing.T) {
 	child, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "child", Author: "tester",
 		Links: []db.InitialLink{
-			{Type: "parent", ToNumber: parent.Number},
-			{Type: "blocks", ToNumber: blocker.Number},
+			{Type: "parent", ToNumber: parent.ID},
+			{Type: "blocks", ToNumber: blocker.ID},
 		},
 	})
 	require.NoError(t, err)
@@ -98,7 +99,7 @@ func TestCreateIssue_RejectsInvalidInitialLinkType(t *testing.T) {
 
 	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "x", Author: "tester",
-		Links: []db.InitialLink{{Type: "child", ToNumber: target.Number}},
+		Links: []db.InitialLink{{Type: "child", ToNumber: target.ID}},
 	})
 	assert.True(t, errors.Is(err, db.ErrInitialLinkInvalidType))
 }
@@ -130,8 +131,8 @@ func TestCreateIssue_DuplicateInitialLinksAreDeduped(t *testing.T) {
 	child, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "child", Author: "tester",
 		Links: []db.InitialLink{
-			{Type: "parent", ToNumber: parent.Number},
-			{Type: "parent", ToNumber: parent.Number}, // exact dup
+			{Type: "parent", ToNumber: parent.ID},
+			{Type: "parent", ToNumber: parent.ID}, // exact dup
 		},
 	})
 	require.NoError(t, err, "duplicate initial links must not roll back")
@@ -165,8 +166,8 @@ func TestCreateIssue_RelatedIncomingNormalizes(t *testing.T) {
 	child, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "child", Author: "tester",
 		Links: []db.InitialLink{
-			{Type: "related", ToNumber: peer.Number, Incoming: false},
-			{Type: "related", ToNumber: peer.Number, Incoming: true},
+			{Type: "related", ToNumber: peer.ID, Incoming: false},
+			{Type: "related", ToNumber: peer.ID, Incoming: true},
 		},
 	})
 	require.NoError(t, err, "related Incoming=true must collapse to the same link, not error")
@@ -208,7 +209,7 @@ func TestCreateIssue_WithAllInitialState(t *testing.T) {
 	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
 		ProjectID: p.ID, Title: "child", Author: "tester",
 		Labels: []string{"bug", "priority:high"},
-		Links:  []db.InitialLink{{Type: "parent", ToNumber: parent.Number}},
+		Links:  []db.InitialLink{{Type: "parent", ToNumber: parent.ID}},
 		Owner:  &owner,
 	})
 	require.NoError(t, err)
@@ -229,14 +230,92 @@ func TestCreateIssue_WithAllInitialState(t *testing.T) {
 	payload := unmarshalPayload[struct {
 		Labels []string `json:"labels"`
 		Links  []struct {
-			Type     string `json:"type"`
-			ToNumber int64  `json:"to_number"`
+			Type      string `json:"type"`
+			ToShortID string `json:"to_short_id"`
 		} `json:"links"`
 		Owner string `json:"owner"`
 	}](t, evt.Payload)
 	assert.Equal(t, []string{"bug", "priority:high"}, payload.Labels)
 	require.Len(t, payload.Links, 1)
 	assert.Equal(t, "parent", payload.Links[0].Type)
-	assert.Equal(t, parent.Number, payload.Links[0].ToNumber)
+	assert.Equal(t, parent.ShortID, payload.Links[0].ToShortID)
 	assert.Equal(t, "alice", payload.Owner)
+}
+
+// Auto-extend tests use ULIDs whose suffixes are constructed to collide at
+// specific lengths, exercising the loop in assignShortID. The injected UIDs
+// flow through the optional CreateIssueParams.UID field; live callers leave
+// UID empty and let CreateIssue call uid.New() instead.
+//
+// Suffix table for the chosen ULIDs:
+//
+//	01HZNQ7VFPK1XGD8R5MABCD4EX -> last4=d4ex,  last5=cd4ex,  last6=bcd4ex
+//	01HZNQ7VFPK1XGD8R5MABXD4EX -> last4=d4ex,  last5=xd4ex,  last6=bxd4ex
+//	01HZNQ7VFPK1XGD8R5AYBXD4EX -> last4=d4ex,  last5=xd4ex,  last6=bxd4ex
+func TestCreateIssue_AssignsLength4WhenUnique(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	row, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "d4ex", row.ShortID)
+}
+
+func TestCreateIssue_ExtendsToLength5OnCollision(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "first",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	// Different ULID with the same last 4 chars (D4EX), forcing extension.
+	row2, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABXD4EX",
+		Title:     "second",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "xd4ex", row2.ShortID)
+}
+
+func TestCreateIssue_ExtendsToLength6OnDoubleCollision(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	uids := []string{
+		"01HZNQ7VFPK1XGD8R5MABCD4EX",
+		"01HZNQ7VFPK1XGD8R5MABXD4EX",
+		"01HZNQ7VFPK1XGD8R5AYBXD4EX",
+	}
+	for i, u := range uids {
+		_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID,
+			UID:       u,
+			Title:     "i" + string(rune('0'+i)),
+			Author:    "tester",
+		})
+		require.NoError(t, err, "create %s", u)
+	}
+	rows, err := d.ListIssues(ctx, db.ListIssuesParams{ProjectID: p.ID})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	// ListIssues orders by updated_at DESC, so the most recent insert comes
+	// first. Index the assertions by UID instead.
+	got := map[string]string{}
+	for _, r := range rows {
+		got[r.UID] = r.ShortID
+	}
+	assert.Equal(t, "d4ex", got["01HZNQ7VFPK1XGD8R5MABCD4EX"])
+	assert.Equal(t, "xd4ex", got["01HZNQ7VFPK1XGD8R5MABXD4EX"])
+	assert.Equal(t, "bxd4ex", got["01HZNQ7VFPK1XGD8R5AYBXD4EX"])
 }

@@ -49,12 +49,11 @@ type ProjectStatsOut struct {
 
 // ProjectOut is the API-shape of a project.
 type ProjectOut struct {
-	ID              int64      `json:"id"`
-	UID             string     `json:"uid"`
-	Name            string     `json:"name"`
-	CreatedAt       time.Time  `json:"created_at"`
-	NextIssueNumber int64      `json:"next_issue_number"`
-	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	ID        int64      `json:"id"`
+	UID       string     `json:"uid"`
+	Name      string     `json:"name"`
+	CreatedAt time.Time  `json:"created_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 
 	// Stats is populated only when the request carries ?include=stats.
 	// Wired in Task 3.
@@ -148,40 +147,38 @@ type MergeProjectRequest struct {
 	}
 }
 
+// MergeShortIDExtension is the API projection of db.ShortIDExtension: one
+// source-side issue whose short_id was auto-extended during merge to break a
+// collision with an existing target-side short_id. UID is stable across the
+// shift; PreMergeShortID is the value the issue carried on the source
+// project, PostMergeShortID is the value it now carries on the target.
+type MergeShortIDExtension struct {
+	UID              string `json:"uid"`
+	PreMergeShortID  string `json:"pre_merge_short_id"`
+	PostMergeShortID string `json:"post_merge_short_id"`
+}
+
 // MergeProjectResultOut summarizes a completed project merge using
 // the API-owned ProjectOut projection. Mirrors db.ProjectMergeResult
 // but routes Source and Target through the projection so the wire
 // shape doesn't depend on internal db.Project fields.
+//
+// ShortIDExtensions reports source-side issues whose short_id was extended
+// during the merge to break a collision with an existing target-side
+// short_id (spec §9.4); omitted when no extensions ran.
 type MergeProjectResultOut struct {
-	Source         ProjectOut `json:"source"`
-	Target         ProjectOut `json:"target"`
-	IssuesMoved    int64      `json:"issues_moved"`
-	AliasesMoved   int64      `json:"aliases_moved"`
-	EventsMoved    int64      `json:"events_moved"`
-	PurgeLogsMoved int64      `json:"purge_logs_moved"`
+	Source            ProjectOut              `json:"source"`
+	Target            ProjectOut              `json:"target"`
+	IssuesMoved       int64                   `json:"issues_moved"`
+	AliasesMoved      int64                   `json:"aliases_moved"`
+	EventsMoved       int64                   `json:"events_moved"`
+	PurgeLogsMoved    int64                   `json:"purge_logs_moved"`
+	ShortIDExtensions []MergeShortIDExtension `json:"short_id_extensions,omitempty"`
 }
 
 // MergeProjectResponse summarizes a completed project merge.
 type MergeProjectResponse struct {
 	Body MergeProjectResultOut
-}
-
-// ResetCounterRequest is POST /api/v1/projects/{project_id}/reset-counter.
-// To is the value next_issue_number will be rewritten to; must be >= 1.
-type ResetCounterRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Body      struct {
-		To int64 `json:"to" required:"true"`
-	}
-}
-
-// ResetCounterResponse echoes the updated project so callers don't need a
-// follow-up GET. Returns 409 with kind="project_has_issues" when the project
-// still has at least one row in the issues table.
-type ResetCounterResponse struct {
-	Body struct {
-		Project ProjectOut `json:"project"`
-	}
 }
 
 // CreateIssueRequest is POST /api/v1/projects/{id}/issues.
@@ -206,15 +203,17 @@ type CreateIssueRequest struct {
 
 // CreateInitialLinkBody is one entry in CreateIssueRequest.Body.Links.
 //
-// Default direction: the new issue is the link's "from" side (e.g. for
-// type=blocks the new issue blocks ToNumber). Setting Incoming=true reverses
-// for type=blocks so the link runs from ToNumber to the new issue (i.e. the
-// new issue is blocked by ToNumber). Incoming=true is rejected for
-// type=parent (no inverse parent direction is exposed) and is a no-op for
-// type=related (which is symmetric).
+// ToRef is a short_id, qualified short_id ("kata#abc4"), or a 26-char ULID;
+// the daemon resolves it to the target issue at request time. Default
+// direction: the new issue is the link's "from" side (e.g. for type=blocks
+// the new issue blocks ToRef). Setting Incoming=true reverses for
+// type=blocks so the link runs from ToRef to the new issue (i.e. the new
+// issue is blocked by ToRef). Incoming=true is rejected for type=parent (no
+// inverse parent direction is exposed) and is a no-op for type=related
+// (which is symmetric).
 type CreateInitialLinkBody struct {
 	Type     string `json:"type" enum:"parent,blocks,related"`
-	ToNumber int64  `json:"to_number"`
+	ToRef    string `json:"to_ref"`
 	Incoming bool   `json:"incoming,omitempty"`
 }
 
@@ -257,25 +256,31 @@ type ListAllIssuesRequest struct {
 
 // IssueOut is the wire projection of one row in ListIssuesResponse.
 // It embeds db.Issue (every persistence column flattens to the top
-// level on JSON marshal) and adds row metadata the daemon hydrates
-// from relationship tables: labels, parent/child summary, and outgoing
-// blocker edges used by the TUI graph's child ordering. Kept
-// separate from db.Issue so the persistence struct stays free of
+// level on JSON marshal — including UID and ShortID) and adds row
+// metadata the daemon hydrates from relationship tables: labels,
+// parent/child summary, outgoing blocker edges, and the rendered
+// QualifiedID ("<project>#<short_id>") for human-facing displays.
+// Kept separate from db.Issue so the persistence struct stays free of
 // wire-only state; rolling labels into db.Issue would force every db
 // query path to know whether labels were hydrated, which they aren't
 // (LabelsByIssue / LabelsByIssues are explicit calls).
+//
+// Blocks/BlockedBy/Related carry structured LinkPeer entries (UID +
+// short_id) so callers can correlate across short_id cutovers without
+// a follow-up join.
 //
 // omitempty drops the field on rows with no labels so the wire
 // payload doesn't carry an empty array per row on label-sparse
 // projects.
 type IssueOut struct {
 	db.Issue
-	Labels       []string        `json:"labels,omitempty"`
-	ParentNumber *int64          `json:"parent_number,omitempty"`
-	ChildCounts  *db.ChildCounts `json:"child_counts,omitempty"`
-	Blocks       []int64         `json:"blocks,omitempty"`
-	BlockedBy    []int64         `json:"blocked_by,omitempty"`
-	Related      []int64         `json:"related,omitempty"`
+	QualifiedID   string          `json:"qualified_id"`
+	Labels        []string        `json:"labels,omitempty"`
+	ParentShortID *string         `json:"parent_short_id,omitempty"`
+	ChildCounts   *db.ChildCounts `json:"child_counts,omitempty"`
+	Blocks        []LinkPeer      `json:"blocks,omitempty"`
+	BlockedBy     []LinkPeer      `json:"blocked_by,omitempty"`
+	Related       []LinkPeer      `json:"related,omitempty"`
 }
 
 // ListIssuesResponse is the list payload. Plan 8 commit 5b: each row
@@ -287,20 +292,26 @@ type ListIssuesResponse struct {
 	}
 }
 
-// IssueRef is the compact issue identity used for parent context.
+// IssueRef is the compact issue identity used for parent context. UID is
+// canonical; ShortID and QualifiedID are display projections rendered at the
+// API boundary.
 type IssueRef struct {
-	Number int64  `json:"number"`
-	Title  string `json:"title"`
-	Status string `json:"status"`
+	UID         string `json:"uid"`
+	ShortID     string `json:"short_id"`
+	QualifiedID string `json:"qualified_id"`
+	Title       string `json:"title"`
+	Status      string `json:"status"`
 }
 
-// ShowIssueRequest is GET /api/v1/projects/{id}/issues/{number}.
+// ShowIssueRequest is GET /api/v1/projects/{id}/issues/{ref}. Ref accepts a
+// short_id (e.g. "abc4"), a qualified short_id (e.g. "kata#abc4"), or a
+// 26-char ULID; the daemon's path resolver picks the matching column.
 // IncludeDeleted=true allows fetching soft-deleted issues; default returns 404
 // for them.
 type ShowIssueRequest struct {
-	ProjectID      int64 `path:"project_id" required:"true"`
-	Number         int64 `path:"number" required:"true"`
-	IncludeDeleted bool  `query:"include_deleted,omitempty"`
+	ProjectID      int64  `path:"project_id" required:"true"`
+	Ref            string `path:"ref" required:"true"`
+	IncludeDeleted bool   `query:"include_deleted,omitempty"`
 }
 
 // ShowIssueByUIDRequest is GET /api/v1/issues/{uid}. UID is globally unique
@@ -322,10 +333,10 @@ type ShowIssueResponse struct {
 	}
 }
 
-// EditIssueRequest is PATCH /api/v1/projects/{id}/issues/{number}.
+// EditIssueRequest is PATCH /api/v1/projects/{id}/issues/{ref}.
 type EditIssueRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor         string      `json:"actor" required:"true"`
 		Title         *string     `json:"title,omitempty"`
@@ -338,37 +349,40 @@ type EditIssueRequest struct {
 }
 
 // LinksDelta describes a batched relationship mutation applied as part of
-// PATCH /issues/{number}. Each list contains target issue numbers; direction
-// is encoded by the field name from the URL issue's POV.
+// PATCH /issues/{ref}. Each entry is a target issue ref (short_id, qualified
+// short_id, or ULID — same accepted by the path parameter); direction is
+// encoded by the field name from the URL issue's POV.
 //
-//	add_blocks        — URL issue blocks N
-//	add_blocked_by    — N blocks URL issue
-//	add_related       — URL issue related to N (canonicalized server-side)
+//	add_blocks        — URL issue blocks ref
+//	add_blocked_by    — ref blocks URL issue
+//	add_related       — URL issue related to ref (canonicalized server-side)
 //	set_parent        — set URL issue's parent (replaces existing)
 //	remove_parent     — strict: must equal current parent
 //	remove_blocks/_blocked_by/_related — idempotent
 type LinksDelta struct {
-	SetParent       *int64  `json:"set_parent,omitempty"`
-	RemoveParent    *int64  `json:"remove_parent,omitempty"`
-	AddBlocks       []int64 `json:"add_blocks,omitempty"`
-	AddBlockedBy    []int64 `json:"add_blocked_by,omitempty"`
-	AddRelated      []int64 `json:"add_related,omitempty"`
-	RemoveBlocks    []int64 `json:"remove_blocks,omitempty"`
-	RemoveBlockedBy []int64 `json:"remove_blocked_by,omitempty"`
-	RemoveRelated   []int64 `json:"remove_related,omitempty"`
+	SetParent       *string  `json:"set_parent,omitempty"`
+	RemoveParent    *string  `json:"remove_parent,omitempty"`
+	AddBlocks       []string `json:"add_blocks,omitempty"`
+	AddBlockedBy    []string `json:"add_blocked_by,omitempty"`
+	AddRelated      []string `json:"add_related,omitempty"`
+	RemoveBlocks    []string `json:"remove_blocks,omitempty"`
+	RemoveBlockedBy []string `json:"remove_blocked_by,omitempty"`
+	RemoveRelated   []string `json:"remove_related,omitempty"`
 }
 
-// LinkChanges reports link mutations actually applied. Empty fields are
-// omitted; entirely empty LinkChanges means every link op was a no-op.
+// LinkChanges reports link mutations actually applied. Every entry carries the
+// peer's UID and short_id so callers can correlate without a follow-up
+// lookup. Empty fields are omitted; entirely empty LinkChanges means every
+// link op was a no-op.
 type LinkChanges struct {
-	ParentSet        *int64  `json:"parent_set,omitempty"`
-	ParentRemoved    *int64  `json:"parent_removed,omitempty"`
-	BlocksAdded      []int64 `json:"blocks_added,omitempty"`
-	BlocksRemoved    []int64 `json:"blocks_removed,omitempty"`
-	BlockedByAdded   []int64 `json:"blocked_by_added,omitempty"`
-	BlockedByRemoved []int64 `json:"blocked_by_removed,omitempty"`
-	RelatedAdded     []int64 `json:"related_added,omitempty"`
-	RelatedRemoved   []int64 `json:"related_removed,omitempty"`
+	ParentSet        *LinkPeer  `json:"parent_set,omitempty"`
+	ParentRemoved    *LinkPeer  `json:"parent_removed,omitempty"`
+	BlocksAdded      []LinkPeer `json:"blocks_added,omitempty"`
+	BlocksRemoved    []LinkPeer `json:"blocks_removed,omitempty"`
+	BlockedByAdded   []LinkPeer `json:"blocked_by_added,omitempty"`
+	BlockedByRemoved []LinkPeer `json:"blocked_by_removed,omitempty"`
+	RelatedAdded     []LinkPeer `json:"related_added,omitempty"`
+	RelatedRemoved   []LinkPeer `json:"related_removed,omitempty"`
 }
 
 // EditIssueResponse extends MutationResponse with a Changes block describing
@@ -391,10 +405,10 @@ type EditIssueResponse struct {
 	}
 }
 
-// CommentRequest is POST /api/v1/projects/{id}/issues/{number}/comments.
+// CommentRequest is POST /api/v1/projects/{id}/issues/{ref}/comments.
 type CommentRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor string `json:"actor" required:"true"`
 		Body  string `json:"body" required:"true"`
@@ -411,42 +425,50 @@ type CommentResponse struct {
 	}
 }
 
-// ActionRequest is POST /api/v1/projects/{id}/issues/{number}/actions/close|reopen.
+// ActionRequest is POST /api/v1/projects/{id}/issues/{ref}/actions/close|reopen.
 // Reason is enforced to the schema's CHECK list so unsupported values surface
 // as 400 validation rather than a SQLite constraint failure (500 internal).
 type ActionRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor  string `json:"actor" required:"true"`
 		Reason string `json:"reason,omitempty" enum:"done,wontfix,duplicate,"` // close only
 	}
 }
 
-// CreateLinkRequest is POST /api/v1/projects/{id}/issues/{number}/links.
+// CreateLinkRequest is POST /api/v1/projects/{id}/issues/{ref}/links.
 type CreateLinkRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
-		Actor    string `json:"actor" required:"true"`
-		Type     string `json:"type" required:"true" enum:"parent,blocks,related"`
-		ToNumber int64  `json:"to_number" required:"true"`
-		Replace  bool   `json:"replace,omitempty"` // type=parent only
+		Actor   string `json:"actor" required:"true"`
+		Type    string `json:"type" required:"true" enum:"parent,blocks,related"`
+		ToRef   string `json:"to_ref" required:"true"`
+		Replace bool   `json:"replace,omitempty"` // type=parent only
 	}
 }
 
-// LinkOut is the wire projection of a link with both endpoint *numbers* (not
-// internal issue ids) so clients can correlate without an extra lookup.
+// LinkPeer pairs an issue UID with the rendered short_id. UID is the stable
+// reference; short_id is a display snapshot that may shift across a short_id
+// cutover or federation merge. Used by every wire shape that carries a link
+// endpoint (LinkOut, LinkChanges, IssueOut.Blocks/BlockedBy/Related).
+type LinkPeer struct {
+	UID     string `json:"uid"`
+	ShortID string `json:"short_id"`
+}
+
+// LinkOut is the wire projection of a link with both endpoints rendered as
+// LinkPeer (UID + short_id) so clients can correlate by either identifier
+// without an extra lookup.
 type LinkOut struct {
-	ID           int64     `json:"id"`
-	ProjectID    int64     `json:"project_id"`
-	FromNumber   int64     `json:"from_number"`
-	FromIssueUID string    `json:"from_issue_uid"`
-	ToNumber     int64     `json:"to_number"`
-	ToIssueUID   string    `json:"to_issue_uid"`
-	Type         string    `json:"type"`
-	Author       string    `json:"author"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
+	ProjectID int64     `json:"project_id"`
+	From      LinkPeer  `json:"from"`
+	To        LinkPeer  `json:"to"`
+	Type      string    `json:"type"`
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // CreateLinkResponse extends MutationResponse with the new link's wire
@@ -460,11 +482,11 @@ type CreateLinkResponse struct {
 	}
 }
 
-// DeleteLinkRequest is DELETE /api/v1/projects/{id}/issues/{number}/links/{link_id}.
+// DeleteLinkRequest is DELETE /api/v1/projects/{id}/issues/{ref}/links/{link_id}.
 // Actor is in the query string because DELETE bodies are non-portable.
 type DeleteLinkRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
-	Number    int64  `path:"number" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	LinkID    int64  `path:"link_id" required:"true"`
 	Actor     string `query:"actor" required:"true"`
 }
@@ -504,10 +526,10 @@ type DetachProjectAliasResponse struct {
 	}
 }
 
-// AddLabelRequest is POST /api/v1/projects/{id}/issues/{number}/labels.
+// AddLabelRequest is POST /api/v1/projects/{id}/issues/{ref}/labels.
 type AddLabelRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor string `json:"actor" required:"true"`
 		Label string `json:"label" required:"true"`
@@ -524,43 +546,43 @@ type AddLabelResponse struct {
 	}
 }
 
-// RemoveLabelRequest is DELETE /api/v1/projects/{id}/issues/{number}/labels/{label}.
+// RemoveLabelRequest is DELETE /api/v1/projects/{id}/issues/{ref}/labels/{label}.
 type RemoveLabelRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
-	Number    int64  `path:"number" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Label     string `path:"label" required:"true"`
 	Actor     string `query:"actor" required:"true"`
 }
 
-// AssignRequest is POST /api/v1/projects/{id}/issues/{number}/actions/assign.
+// AssignRequest is POST /api/v1/projects/{id}/issues/{ref}/actions/assign.
 type AssignRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor string `json:"actor" required:"true"`
 		Owner string `json:"owner" required:"true"`
 	}
 }
 
-// PriorityRequest is POST /api/v1/projects/{id}/issues/{number}/actions/priority.
+// PriorityRequest is POST /api/v1/projects/{id}/issues/{ref}/actions/priority.
 // Priority is the new value 0..4 (0=highest, 4=lowest); omitting the field or
 // passing null clears the issue's priority. The handler emits
 // issue.priority_set or issue.priority_cleared depending on the transition,
 // or no event when the new value matches the current one.
 type PriorityRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor    string `json:"actor" required:"true"`
 		Priority *int64 `json:"priority,omitempty"`
 	}
 }
 
-// UnassignRequest is POST /api/v1/projects/{id}/issues/{number}/actions/unassign.
+// UnassignRequest is POST /api/v1/projects/{id}/issues/{ref}/actions/unassign.
 // Same shape as AssignRequest minus owner.
 type UnassignRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor string `json:"actor" required:"true"`
 	}
@@ -591,12 +613,13 @@ type LabelsListResponse struct {
 	}
 }
 
-// DestructiveActionRequest is POST /api/v1/projects/{id}/issues/{number}/actions/delete
+// DestructiveActionRequest is POST /api/v1/projects/{id}/issues/{ref}/actions/delete
 // and .../actions/purge. Confirm is read from the X-Kata-Confirm header per
-// spec §4.4 and must equal the exact strings "DELETE #N" / "PURGE #N".
+// spec §4.4 and must equal the exact strings "DELETE <project>#<short_id>" /
+// "PURGE <project>#<short_id>".
 type DestructiveActionRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
-	Number    int64  `path:"number" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Confirm   string `header:"X-Kata-Confirm"`
 	Body      struct {
 		Actor  string `json:"actor" required:"true"`
@@ -604,11 +627,11 @@ type DestructiveActionRequest struct {
 	}
 }
 
-// RestoreRequest is POST /api/v1/projects/{id}/issues/{number}/actions/restore.
+// RestoreRequest is POST /api/v1/projects/{id}/issues/{ref}/actions/restore.
 // No confirmation header — restore is reversible and idempotent.
 type RestoreRequest struct {
-	ProjectID int64 `path:"project_id" required:"true"`
-	Number    int64 `path:"number" required:"true"`
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
 	Body      struct {
 		Actor string `json:"actor" required:"true"`
 	}
@@ -663,20 +686,22 @@ type DigestTotals struct {
 }
 
 // DigestIssueActions is the per-issue summary inside one actor's section.
-// Number/ProjectID identify the issue; Actions is a stable, ordered list of
-// human-readable action tokens (e.g. "created", "commented:2", "closed:done",
-// "labeled:bug", "unblocks #7"). The aggregator collapses repeated comments
-// into a count and joins the close reason / label name into the token so the
+// IssueShortID/IssueUID identify the issue (UID is canonical; short_id is a
+// display snapshot). Actions is a stable, ordered list of human-readable
+// action tokens (e.g. "created", "commented:2", "closed:done", "labeled:bug",
+// "unblocks kata#abc4"). The aggregator collapses repeated comments into a
+// count and joins the close reason / label name into the token so the
 // renderer can stay dumb.
 type DigestIssueActions struct {
-	ProjectID   int64    `json:"project_id"`
-	ProjectName string   `json:"project_name"`
-	IssueNumber int64    `json:"issue_number"`
-	Actions     []string `json:"actions"`
+	ProjectID    int64    `json:"project_id"`
+	ProjectName  string   `json:"project_name"`
+	IssueUID     string   `json:"issue_uid"`
+	IssueShortID string   `json:"issue_short_id"`
+	Actions      []string `json:"actions"`
 }
 
 // DigestActorEntry is one actor's slice of the digest. Issues is sorted by
-// issue number for stable rendering.
+// issue UID for stable rendering.
 type DigestActorEntry struct {
 	Actor  string               `json:"actor"`
 	Totals DigestTotals         `json:"totals"`

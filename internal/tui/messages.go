@@ -74,9 +74,13 @@ type popDetailMsg struct{}
 // inputState directly so the centralised Model.Update routes the
 // open through the shared input pipeline (snapshot/restore, focus
 // gating, render integration).
+//
+// parentShortID is the new-child form's pre-filled parent ref: when
+// non-nil, the form's Parent field is locked to this short_id so the
+// user can't change the parentage after committing the keystroke.
 type openInputMsg struct {
-	kind         inputKind
-	parentNumber *int64
+	kind          inputKind
+	parentShortID *string
 }
 
 // jumpDetailMsg asks the top-level Model to jump the detail view to
@@ -88,8 +92,12 @@ type openInputMsg struct {
 // jumpTo's `dm.gen+1` could collide with an in-flight fetch from a
 // previously-jumped issue once the user backs to the smaller-gen
 // snapshot and re-jumps.
+//
+// ref is the short_id, qualified short_id, or UID accepted by the
+// daemon's path resolver — the same wire shape that any client-side
+// fetch path uses.
 type jumpDetailMsg struct {
-	number int64
+	ref string
 }
 
 // mutationDoneMsg is the result of any single mutation (create now,
@@ -146,8 +154,9 @@ type editorReturnedMsg struct {
 }
 
 // eventReceivedMsg is the per-frame SSE message forwarded to the TEA
-// loop by startSSE. issueNumber is zero when the event has no
-// associated issue (project-level events).
+// loop by startSSE. issueShortID is empty when the event has no
+// associated issue (project-level events) and issueUID is the canonical
+// reference used for detail-pane matching.
 //
 // linksChanged is populated only for issue.links_changed events (the
 // aggregated form emitted by `kata edit`). It carries parent_set and
@@ -156,46 +165,54 @@ type editorReturnedMsg struct {
 // the old or new parent's pane would stay stale until a manual
 // refresh after a parent replace.
 type eventReceivedMsg struct {
-	eventType              string
-	projectID, issueNumber int64
-	projectUID             string
-	issueUID               string
-	relatedIssueUID        string
-	link                   *linkPayload
-	linksChanged           *linksChangedParents
+	eventType       string
+	projectID       int64
+	projectUID      string
+	issueShortID    string
+	issueUID        string
+	relatedIssueUID string
+	link            *linkPayload
+	linksChanged    *linksChangedParents
 }
 
+// linkPayload mirrors the per-link issue.linked / issue.unlinked
+// envelope. UIDs are canonical; short_ids are display snapshots that
+// may shift across a short_id cutover or federation merge. The daemon
+// emits `from_uid` / `to_uid` on link events (see queries_links.go's
+// CreateLinkAndEvent / DeleteLinkAndEvent); the issue.created path
+// builds this struct field-by-field through parentLinkFromCreatedPayload
+// so its wire shape (to_issue_uid) doesn't drive the tags here.
 type linkPayload struct {
 	Type         string `json:"type"`
-	FromNumber   int64  `json:"from_number"`
-	ToNumber     int64  `json:"to_number"`
-	FromIssueUID string `json:"from_issue_uid,omitempty"`
-	ToIssueUID   string `json:"to_issue_uid,omitempty"`
+	FromShortID  string `json:"from_short_id,omitempty"`
+	ToShortID    string `json:"to_short_id,omitempty"`
+	FromIssueUID string `json:"from_uid,omitempty"`
+	ToIssueUID   string `json:"to_uid,omitempty"`
 }
 
 // linksChangedParents holds every peer issue referenced by an
 // issue.links_changed payload. The detail-refetch logic uses RefUIDs
-// (when populated) and falls back to Refs by number to invalidate
-// panes on the OTHER end of any add/remove. UIDs are authoritative —
-// project-scoped numbers can collide across `kata reset-counter`, so
-// matching solely on number can refresh the wrong pane after a reset.
+// to invalidate panes on the OTHER end of any add/remove. UIDs are
+// authoritative; short_ids are display snapshots that may shift
+// across cutovers, so matching on short_id alone can refresh the
+// wrong pane.
 //
-// Set / Removed (and SetUID / RemovedUID) remain populated for parent
-// transitions (replace surfaces both at once) so callers that
-// specifically care about the parent slot can short-circuit without
-// scanning the full Refs slice.
+// SetUID / RemovedUID remain populated for parent transitions
+// (replace surfaces both at once) so callers that specifically care
+// about the parent slot can short-circuit without scanning the full
+// Refs slice. Set / Removed carry the parent short_id snapshot for
+// rendering when the consumer also wants the display ref.
 //
-// RefUIDs runs parallel to Refs (same length / order) when the source
-// payload carries the *_uids fields. Pre-kata#1 events lack those
-// fields; in that case RefUIDs is empty and the consumer falls back
-// to number-only matching.
+// RefUIDs and Refs run parallel (same length / order). The daemon's
+// post-kata#1 events always carry the *_uids fields so UID-keyed
+// matching is the canonical path.
 type linksChangedParents struct {
-	Set        int64    // parent_set; zero when absent
+	Set        string   // parent_set short_id; "" when absent
 	SetUID     string   // parent_set_uid; "" when absent
-	Removed    int64    // parent_removed; zero when absent
+	Removed    string   // parent_removed short_id; "" when absent
 	RemovedUID string   // parent_removed_uid; "" when absent
-	Refs       []int64  // every peer number in the payload (parents + blocks + related)
-	RefUIDs    []string // peer UIDs parallel to Refs; empty for pre-kata#1 events
+	Refs       []string // every peer short_id in the payload
+	RefUIDs    []string // peer UIDs parallel to Refs
 }
 
 // labelsFetchedMsg carries the result of an api.ListLabels call. pid

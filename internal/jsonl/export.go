@@ -117,6 +117,38 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 			return exportProjectsV4(ctx, d, enc, opts)
 		}
 	}
+	if sourceSchemaVersion < 8 {
+		return exportProjectsV7(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID        int64   `json:"id"`
+		UID       string  `json:"uid"`
+		Name      string  `json:"name"`
+		CreatedAt string  `json:"created_at"`
+		DeletedAt *string `json:"deleted_at,omitempty"`
+	}
+	query := `SELECT id, uid, name, CAST(created_at AS TEXT),
+	                 CAST(deleted_at AS TEXT) FROM projects`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export projects: %w", err)
+	}
+	return scanRecords(rows, KindProject, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.Name, &rec.CreatedAt, &rec.DeletedAt)
+		return rec, err
+	})
+}
+
+// exportProjectsV7 emits the v7 projects projection (with next_issue_number
+// and without the identity column). Used when cutting over from a v7 source.
+func exportProjectsV7(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID              int64   `json:"id"`
 		UID             string  `json:"uid"`
@@ -269,6 +301,49 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 6 {
 		return exportIssuesV2(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 8 {
+		return exportIssuesV6(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID           int64   `json:"id"`
+		UID          string  `json:"uid"`
+		ProjectID    int64   `json:"project_id"`
+		ShortID      string  `json:"short_id"`
+		Title        string  `json:"title"`
+		Body         string  `json:"body"`
+		Status       string  `json:"status"`
+		ClosedReason *string `json:"closed_reason"`
+		Owner        *string `json:"owner"`
+		Priority     *int64  `json:"priority,omitempty"`
+		Author       string  `json:"author"`
+		CreatedAt    string  `json:"created_at"`
+		UpdatedAt    string  `json:"updated_at"`
+		ClosedAt     *string `json:"closed_at"`
+		DeletedAt    *string `json:"deleted_at"`
+	}
+	query := `SELECT id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
+	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
+	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT)
+	          FROM issues`
+	where, args := issueExportWhere("issues", opts)
+	query += where + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export issues: %w", err)
+	}
+	return scanRecords(rows, KindIssue, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.ShortID, &rec.Title, &rec.Body,
+			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt)
+		return rec, err
+	})
+}
+
+// exportIssuesV6 emits the schema_version 6..7 issue projection (with priority
+// and the now-dropped number column). Cutover from a pre-short_id source DB
+// lands here; targets at v8+ derive short_ids during replay (Task 9).
+func exportIssuesV6(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID           int64   `json:"id"`
 		UID          string  `json:"uid"`
@@ -548,6 +623,72 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 3 {
 		return exportEventsV2(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
+	if sourceSchemaVersion < 8 {
+		return exportEventsV3(ctx, d, enc, opts, projectNameExpr, joinProjects)
+	}
+	type record struct {
+		ID                int64           `json:"id"`
+		UID               string          `json:"uid"`
+		OriginInstanceUID string          `json:"origin_instance_uid"`
+		ProjectID         int64           `json:"project_id"`
+		ProjectName       string          `json:"project_name"`
+		IssueID           *int64          `json:"issue_id"`
+		IssueUID          *string         `json:"issue_uid"`
+		RelatedIssueID    *int64          `json:"related_issue_id"`
+		RelatedIssueUID   *string         `json:"related_issue_uid"`
+		Type              string          `json:"type"`
+		Actor             string          `json:"actor"`
+		Payload           json.RawMessage `json:"payload"`
+		CreatedAt         string          `json:"created_at"`
+	}
+	// See exportEventsV2 for the kata#1 design call: live-only export
+	// keeps aggregated issue.links_changed events whose related_issue_id
+	// points at a now-soft-deleted peer, but the peer's row is omitted
+	// from the export — so the FK must be scrubbed at emit time so the
+	// JSONL round-trips. The payload's *_uids slices retain the orphan
+	// reference for historical context.
+	relatedIDExpr, relatedUIDExpr := "events.related_issue_id", "events.related_issue_uid"
+	if !opts.IncludeDeleted {
+		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
+		                          AND peer.deleted_at IS NOT NULL
+		                     THEN NULL
+		                     ELSE events.related_issue_id END`
+		relatedUIDExpr = `CASE WHEN events.type = 'issue.links_changed'
+		                           AND peer.deleted_at IS NOT NULL
+		                      THEN NULL
+		                      ELSE events.related_issue_uid END`
+	}
+	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.project_id, %s, events.issue_id, events.issue_uid,
+	                 `+relatedIDExpr+`, `+relatedUIDExpr+`,
+	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
+	          FROM events%s
+	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
+	where, args := eventExportWhere(opts)
+	query += where + ` ORDER BY events.id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export events: %w", err)
+	}
+	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var payload string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
+			&rec.IssueUID, &rec.RelatedIssueID, &rec.RelatedIssueUID,
+			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(payload)) {
+			return rec, fmt.Errorf("event %d payload is invalid JSON", rec.ID)
+		}
+		rec.Payload = json.RawMessage(payload)
+		return rec, nil
+	})
+}
+
+// exportEventsV3 emits the v3..v7 events projection (with the now-dropped
+// issue_number column). Cutover from a pre-short_id source DB lands here.
+func exportEventsV3(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
 	type record struct {
 		ID                int64           `json:"id"`
 		UID               string          `json:"uid"`
@@ -564,12 +705,6 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		Payload           json.RawMessage `json:"payload"`
 		CreatedAt         string          `json:"created_at"`
 	}
-	// See exportEventsV2 for the kata#1 design call: live-only export
-	// keeps aggregated issue.links_changed events whose related_issue_id
-	// points at a now-soft-deleted peer, but the peer's row is omitted
-	// from the export — so the FK must be scrubbed at emit time so the
-	// JSONL round-trips. The payload's *_uids slices retain the orphan
-	// reference for historical context.
 	relatedIDExpr, relatedUIDExpr := "events.related_issue_id", "events.related_issue_uid"
 	if !opts.IncludeDeleted {
 		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
@@ -732,6 +867,62 @@ func exportPurgeLog(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	if sourceSchemaVersion < 3 {
 		return exportPurgeLogV2(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
+	if sourceSchemaVersion < 8 {
+		return exportPurgeLogV3(ctx, d, enc, opts, projectNameExpr, joinProjects)
+	}
+	type record struct {
+		ID                     int64   `json:"id"`
+		UID                    string  `json:"uid"`
+		OriginInstanceUID      string  `json:"origin_instance_uid"`
+		ProjectID              int64   `json:"project_id"`
+		PurgedIssueID          int64   `json:"purged_issue_id"`
+		IssueUID               *string `json:"issue_uid"`
+		ProjectUID             *string `json:"project_uid"`
+		ProjectName            string  `json:"project_name"`
+		ShortID                *string `json:"short_id,omitempty"`
+		IssueTitle             string  `json:"issue_title"`
+		IssueAuthor            string  `json:"issue_author"`
+		CommentCount           int64   `json:"comment_count"`
+		LinkCount              int64   `json:"link_count"`
+		LabelCount             int64   `json:"label_count"`
+		EventCount             int64   `json:"event_count"`
+		EventsDeletedMinID     *int64  `json:"events_deleted_min_id"`
+		EventsDeletedMaxID     *int64  `json:"events_deleted_max_id"`
+		PurgeResetAfterEventID *int64  `json:"purge_reset_after_event_id"`
+		Actor                  string  `json:"actor"`
+		Reason                 *string `json:"reason"`
+		PurgedAt               string  `json:"purged_at"`
+	}
+	query := fmt.Sprintf(`SELECT purge_log.id, purge_log.uid, purge_log.origin_instance_uid, purge_log.project_id, purged_issue_id, issue_uid, project_uid,
+	                 %s, short_id, issue_title,
+	                 issue_author, comment_count, link_count, label_count, event_count,
+	                 events_deleted_min_id, events_deleted_max_id, purge_reset_after_event_id,
+	                 actor, reason, CAST(purged_at AS TEXT)
+	          FROM purge_log%s`, projectNameExpr, joinProjects)
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE purge_log.project_id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY purge_log.id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export purge_log: %w", err)
+	}
+	return scanRecords(rows, KindPurgeLog, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.PurgedIssueID, &rec.IssueUID,
+			&rec.ProjectUID, &rec.ProjectName, &rec.ShortID, &rec.IssueTitle, &rec.IssueAuthor, &rec.CommentCount,
+			&rec.LinkCount, &rec.LabelCount, &rec.EventCount, &rec.EventsDeletedMinID,
+			&rec.EventsDeletedMaxID, &rec.PurgeResetAfterEventID, &rec.Actor, &rec.Reason,
+			&rec.PurgedAt)
+		return rec, err
+	})
+}
+
+// exportPurgeLogV3 emits the v3..v7 purge_log projection (with the now-dropped
+// issue_number column). Cutover from a pre-short_id source DB lands here.
+func exportPurgeLogV3(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
 	type record struct {
 		ID                     int64   `json:"id"`
 		UID                    string  `json:"uid"`

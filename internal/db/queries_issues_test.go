@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,7 +9,7 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
-func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
+func TestCreateIssue_AllocatesShortIDAndEmitsEvent(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 
 	issue, evt, err := d.CreateIssue(ctx, db.CreateIssueParams{
@@ -18,8 +19,8 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 		Author:    "agent-1",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), issue.Number)
 	assertValidUID(t, issue.UID)
+	assert.NotEmpty(t, issue.ShortID)
 	assert.Equal(t, p.UID, issue.ProjectUID)
 	assert.Equal(t, "open", issue.Status)
 	assert.Equal(t, "agent-1", issue.Author)
@@ -28,30 +29,186 @@ func TestCreateIssue_AllocatesNumberAndEmitsEvent(t *testing.T) {
 	assert.NotNil(t, evt.IssueID)
 	require.NotNil(t, evt.IssueUID)
 	assert.Equal(t, issue.UID, *evt.IssueUID)
-	require.NotNil(t, evt.IssueNumber)
-	assert.Equal(t, int64(1), *evt.IssueNumber)
-
-	p2, err := d.ProjectByID(ctx, p.ID)
-	require.NoError(t, err)
-	assert.Equal(t, int64(2), p2.NextIssueNumber)
 }
 
-func TestCreateIssue_NumbersAreSequentialPerProject(t *testing.T) {
+func TestCreateIssue_ShortIDsAreUniquePerProject(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 
+	seen := map[string]struct{}{}
 	for i := 1; i <= 3; i++ {
 		issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
 			ProjectID: p.ID, Title: "x", Author: "a",
 		})
 		require.NoError(t, err)
-		assert.EqualValues(t, i, issue.Number)
+		_, dup := seen[issue.ShortID]
+		assert.False(t, dup, "short_id %q should be unique within the project", issue.ShortID)
+		seen[issue.ShortID] = struct{}{}
 	}
 }
 
-func TestGetIssueByNumber_NotFound(t *testing.T) {
+// TestCreateIssue_ShortIDOverridePersistsVerbatim pins spec §8.1: JSONL
+// import passes the stored short_id and CreateIssue uses it as-is, bypassing
+// auto-extend. The override must be the lowercased suffix of UID at its
+// length — anything else is a caller bug that returns an error.
+func TestCreateIssue_ShortIDOverridePersistsVerbatim(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
-	_, err := d.IssueByNumber(ctx, p.ID, 99)
+
+	issue, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       p.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		ShortIDOverride: "bcd4ex",
+		Title:           "preserved",
+		Author:          "tester",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "bcd4ex", issue.ShortID)
+}
+
+func TestCreateIssue_ShortIDOverrideRejectsMismatch(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       p.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		ShortIDOverride: "abcd", // does not match the suffix of UID at length 4
+		Title:           "bad",
+		Author:          "tester",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match")
+}
+
+func TestCreateIssue_ShortIDOverrideRejectsInvalidSyntax(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+
+	_, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID:       p.ID,
+		UID:             "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		ShortIDOverride: "AB", // too short, also uppercase
+		Title:           "bad",
+		Author:          "tester",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid short_id override")
+}
+
+// TestIssueByShortID_ReturnsLiveIssue pins that a live issue resolves by its
+// stored short_id under the default include-deleted=no filter.
+func TestIssueByShortID_ReturnsLiveIssue(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "find me",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+
+	got, err := d.IssueByShortID(ctx, p.ID, "d4ex", db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Equal(t, created.UID, got.UID)
+}
+
+// TestIssueByShortID_NotFoundForUnknownShortID pins that a short_id with no
+// matching row returns ErrNotFound rather than a zero-value Issue.
+func TestIssueByShortID_NotFoundForUnknownShortID(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	_, err := d.IssueByShortID(ctx, p.ID, "zzzz", db.IncludeDeletedNo)
 	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+// TestIssueByShortID_DefaultExcludesSoftDeleted pins spec §6: normal read
+// paths hide soft-deleted rows. The same short_id that resolved before
+// SoftDeleteIssue must return ErrNotFound after.
+func TestIssueByShortID_DefaultExcludesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "soon-gone",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, created.ID, "tester")
+	require.NoError(t, err)
+
+	_, err = d.IssueByShortID(ctx, p.ID, created.ShortID, db.IncludeDeletedNo)
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+// TestIssueByShortID_IncludeDeletedYesResolvesSoftDeleted pins the carveout
+// branch (spec §6): restore/delete/purge/idempotency-collision pass
+// IncludeDeletedYes and must see the soft-deleted row.
+func TestIssueByShortID_IncludeDeletedYesResolvesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "soon-gone",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, created.ID, "tester")
+	require.NoError(t, err)
+
+	got, err := d.IssueByShortID(ctx, p.ID, created.ShortID, db.IncludeDeletedYes)
+	require.NoError(t, err)
+	assert.Equal(t, created.UID, got.UID)
+}
+
+// TestIssueUIDPrefixMatch_DefaultExcludesSoftDeleted pins that the default
+// include-deleted=no filter mirrors IssueByUID — a soft-deleted issue must
+// not surface through the prefix-match fallback used by the daemon's global
+// /api/v1/issues/{ref} handler.
+func TestIssueUIDPrefixMatch_DefaultExcludesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "soon-gone",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, created.ID, "tester")
+	require.NoError(t, err)
+
+	matches, err := d.IssueUIDPrefixMatch(ctx, "01HZNQ7V", 20, db.IncludeDeletedNo)
+	require.NoError(t, err)
+	assert.Empty(t, matches)
+}
+
+// TestIssueUIDPrefixMatch_IncludeDeletedYesResolvesSoftDeleted pins the
+// carveout branch (spec §6): callers passing IncludeDeletedYes (restore,
+// idempotent re-delete) must see soft-deleted rows when matched by UID
+// prefix.
+func TestIssueUIDPrefixMatch_IncludeDeletedYesResolvesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "demo")
+	created, _, err := d.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "soon-gone",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+	_, _, _, err = d.SoftDeleteIssue(ctx, created.ID, "tester")
+	require.NoError(t, err)
+
+	matches, err := d.IssueUIDPrefixMatch(ctx, "01HZNQ7V", 20, db.IncludeDeletedYes)
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	assert.Equal(t, created.UID, matches[0].UID)
 }
 
 func TestListIssues_DefaultsToOpenOnlyAndExcludesDeleted(t *testing.T) {

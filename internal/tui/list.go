@@ -13,16 +13,19 @@ import (
 // Defining it as an interface (instead of taking *Client directly) lets
 // list_filter_test.go drive Update with a fake without standing up a
 // httptest server — the client tests already cover the wire format.
+//
+// ref is a short_id, qualified short_id, or 26-char ULID — the daemon's
+// path resolver accepts all three.
 type listAPI interface {
 	ListIssues(ctx context.Context, projectID int64, f ListFilter) ([]Issue, error)
 	ListAllIssues(ctx context.Context, f ListFilter) ([]Issue, error)
 	CreateIssue(
 		ctx context.Context, projectID int64, body CreateIssueBody,
 	) (*MutationResp, error)
-	Close(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
-	Reopen(ctx context.Context, projectID, number int64, actor string) (*MutationResp, error)
+	Close(ctx context.Context, projectID int64, ref, actor string) (*MutationResp, error)
+	Reopen(ctx context.Context, projectID int64, ref, actor string) (*MutationResp, error)
 	SetPriority(
-		ctx context.Context, projectID, number int64, priority *int64, actor string,
+		ctx context.Context, projectID int64, ref string, priority *int64, actor string,
 	) (*MutationResp, error)
 }
 
@@ -33,12 +36,12 @@ type listAPI interface {
 // Update; one instance keeps the help view in lockstep with what
 // handlers actually do.
 //
-// selectedNumber tracks the issue.Number under the cursor for
-// identity-based selection: when a refetch reorders rows (issues
-// are sorted by updated_at DESC, so any background mutation can
-// shuffle them), the cursor is restored onto the same issue rather
-// than the same index. Zero means "no selection" (empty list,
-// pre-fetch state).
+// selectedUID tracks the issue.UID under the cursor for identity-
+// based selection: when a refetch reorders rows (issues are sorted
+// by updated_at DESC, so any background mutation can shuffle them),
+// the cursor is restored onto the same issue rather than the same
+// index. UID is canonical and survives short_id cutovers. Empty
+// means "no selection" (empty list, pre-fetch state).
 //
 // M3.5c retired lm.search and lm.pendingTitle: the inline command
 // bar (M3a) covers search/owner; the inline new-issue row (M3.5c)
@@ -46,7 +49,7 @@ type listAPI interface {
 type listModel struct {
 	issues            []Issue
 	cursor            int
-	selectedNumber    int64
+	selectedUID       string
 	selectedProjectID int64
 	filter            ListFilter
 	expanded          expansionSet
@@ -182,7 +185,7 @@ func (lm listModel) armPendingPriority() listModel {
 		return lm
 	}
 	lm.pendingPriority = true
-	lm.status = fmt.Sprintf("set priority of #%d (0-4 to set, - to clear, esc to cancel)", iss.Number)
+	lm.status = fmt.Sprintf("set priority of #%s (0-4 to set, - to clear, esc to cancel)", iss.ShortID)
 	return lm
 }
 
@@ -225,7 +228,7 @@ func (lm listModel) dispatchListSetPriority(
 		return lm, nil
 	}
 	lm.status = ""
-	return lm, setPriorityListCmd(api, projectIDForRow(iss, sc), iss.Number, priority, lm.actor)
+	return lm, setPriorityListCmd(api, projectIDForRow(iss, sc), iss.ShortID, priority, lm.actor)
 }
 
 // dispatchListClose closes the issue under the cursor. Empty list is a
@@ -238,7 +241,7 @@ func (lm listModel) dispatchListClose(
 		return lm, nil
 	}
 	lm.status = ""
-	return lm, closeIssueCmd(api, projectIDForRow(iss, sc), iss.Number, lm.actor)
+	return lm, closeIssueCmd(api, projectIDForRow(iss, sc), iss.ShortID, lm.actor)
 }
 
 // dispatchListReopen mirrors dispatchListClose for the reopen action.
@@ -250,7 +253,7 @@ func (lm listModel) dispatchListReopen(
 		return lm, nil
 	}
 	lm.status = ""
-	return lm, reopenIssueCmd(api, projectIDForRow(iss, sc), iss.Number, lm.actor)
+	return lm, reopenIssueCmd(api, projectIDForRow(iss, sc), iss.ShortID, lm.actor)
 }
 
 // targetRow returns the currently highlighted issue, accounting for the
@@ -293,21 +296,21 @@ func projectIDForRow(iss Issue, sc scope) int64 {
 // closeIssueCmd wraps Close into a mutationDoneMsg-emitting tea.Cmd.
 // origin="list" routes the response to listModel.applyMutation even if
 // the user has switched to detail view between dispatch and arrival.
-func closeIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
+func closeIssueCmd(api listAPI, pid int64, ref, actor string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.Close(ctx, pid, num, actor)
+		resp, err := api.Close(ctx, pid, ref, actor)
 		return mutationDoneMsg{origin: "list", kind: "close", resp: resp, err: err}
 	}
 }
 
 // reopenIssueCmd is the reopen counterpart of closeIssueCmd.
-func reopenIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
+func reopenIssueCmd(api listAPI, pid int64, ref, actor string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.Reopen(ctx, pid, num, actor)
+		resp, err := api.Reopen(ctx, pid, ref, actor)
 		return mutationDoneMsg{origin: "list", kind: "reopen", resp: resp, err: err}
 	}
 }
@@ -317,7 +320,7 @@ func reopenIssueCmd(api listAPI, pid, num int64, actor string) tea.Cmd {
 // mutation-kind discriminator ("priority.set" vs "priority.clear")
 // drives the success-status template the same way the detail-side
 // dispatch does.
-func setPriorityListCmd(api listAPI, pid, num int64, priority *int64, actor string) tea.Cmd {
+func setPriorityListCmd(api listAPI, pid int64, ref string, priority *int64, actor string) tea.Cmd {
 	kind := "priority.set"
 	if priority == nil {
 		kind = "priority.clear"
@@ -325,7 +328,7 @@ func setPriorityListCmd(api listAPI, pid, num int64, priority *int64, actor stri
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resp, err := api.SetPriority(ctx, pid, num, priority, actor)
+		resp, err := api.SetPriority(ctx, pid, ref, priority, actor)
 		return mutationDoneMsg{origin: "list", kind: kind, resp: resp, err: err}
 	}
 }
@@ -359,7 +362,7 @@ func (lm listModel) applyOpenKey(
 // desync the marker from the highlighted row. lm.cursor is therefore
 // an index into lm.visibleRows().
 //
-// Each cursor change also updates lm.selectedNumber so an SSE-driven
+// Each cursor change also updates lm.selectedUID so an SSE-driven
 // refetch can put the cursor back on the same issue rather than the
 // same index — see syncSelection.
 func (lm listModel) applyCursorKey(msg tea.KeyMsg, km keymap) (listModel, bool) {
@@ -438,11 +441,11 @@ func (lm listModel) applyChildSortKey(msg tea.KeyMsg, km keymap) (listModel, boo
 }
 
 func (lm listModel) restoreCursorToSelection() listModel {
-	if lm.selectedNumber == 0 {
+	if lm.selectedUID == "" {
 		return lm
 	}
 	for i, row := range lm.visibleRows() {
-		if row.issue.Number == lm.selectedNumber &&
+		if row.issue.UID == lm.selectedUID &&
 			(lm.selectedProjectID == 0 || row.issue.ProjectID == lm.selectedProjectID) {
 			lm.cursor = i
 			return lm
@@ -466,13 +469,13 @@ func pageStep(n int) int {
 	return pageStepRows
 }
 
-// syncSelection records the issue.Number under the cursor so a later
+// syncSelection records the issue.UID under the cursor so a later
 // refetch can restore the cursor onto the same issue rather than the
-// same index. Empty filtered list zeroes selectedNumber so we don't
+// same index. Empty filtered list clears selectedUID so we don't
 // pin to a row that no longer exists.
 func (lm listModel) syncSelection(rows []queueRow) listModel {
 	if len(rows) == 0 {
-		lm.selectedNumber = 0
+		lm.selectedUID = ""
 		lm.selectedProjectID = 0
 		return lm
 	}
@@ -483,7 +486,7 @@ func (lm listModel) syncSelection(rows []queueRow) listModel {
 	if idx < 0 {
 		idx = 0
 	}
-	lm.selectedNumber = rows[idx].issue.Number
+	lm.selectedUID = rows[idx].issue.UID
 	lm.selectedProjectID = rows[idx].issue.ProjectID
 	return lm
 }
@@ -493,7 +496,7 @@ func (lm listModel) syncSelection(rows []queueRow) listModel {
 // The cursor is reset to 0 because the filtered-row count (and thus the
 // index space lm.cursor lives in) changes with every filter adjustment.
 //
-// selectedNumber is also cleared on each commit so the identity-
+// selectedUID is also cleared on each commit so the identity-
 // based restore in applyFetched (after the refetch lands) doesn't
 // fight the cursor=0 reset by jumping the cursor back to the
 // previously-selected issue if it survived the new filter. The
@@ -504,13 +507,13 @@ func (lm listModel) applyFilterKey(msg tea.KeyMsg, km keymap) (listModel, tea.Cm
 	case km.FilterStatus.matches(msg):
 		lm.filter.Status = nextStatus(lm.filter.Status)
 		lm.cursor = 0
-		lm.selectedNumber = 0
+		lm.selectedUID = ""
 		lm.status = ""
 		return lm, nil, true
 	case km.ClearFilters.matches(msg):
 		lm.filter = ListFilter{}
 		lm.cursor = 0
-		lm.selectedNumber = 0
+		lm.selectedUID = ""
 		lm.status = ""
 		return lm, nil, true
 	}
@@ -552,7 +555,7 @@ func (lm listModel) applyPromptKey(
 		if !ok {
 			return lm, nil, true
 		}
-		return lm, openNewChildInputCmd(iss.Number), true
+		return lm, openNewChildInputCmd(iss.ShortID), true
 	}
 	return lm, nil, false
 }
@@ -566,9 +569,10 @@ func openInputCmd(k inputKind) tea.Cmd {
 	return func() tea.Msg { return openInputMsg{kind: k} }
 }
 
-func openNewChildInputCmd(parentNumber int64) tea.Cmd {
+func openNewChildInputCmd(parentShortID string) tea.Cmd {
 	return func() tea.Msg {
-		return openInputMsg{kind: inputNewIssueForm, parentNumber: &parentNumber}
+		ref := parentShortID
+		return openInputMsg{kind: inputNewIssueForm, parentShortID: &ref}
 	}
 }
 
@@ -589,29 +593,29 @@ func (lm listModel) clampCursorToFilter() listModel {
 }
 
 func (lm listModel) expandAncestorsOfSelection() listModel {
-	if lm.selectedNumber == 0 {
+	if lm.selectedUID == "" {
 		return lm
 	}
 	byKey := make(map[issueKey]Issue, len(lm.issues))
 	var selectedKey issueKey
 	for _, iss := range lm.issues {
-		key := issueKey{projectID: iss.ProjectID, number: iss.Number}
+		key := issueKey{projectID: iss.ProjectID, shortID: iss.ShortID}
 		byKey[key] = iss
-		if iss.Number == lm.selectedNumber &&
+		if iss.UID == lm.selectedUID &&
 			(lm.selectedProjectID == 0 || iss.ProjectID == lm.selectedProjectID) {
 			selectedKey = key
 		}
 	}
-	if selectedKey.number == 0 {
+	if selectedKey.shortID == "" {
 		return lm
 	}
 	seen := map[issueKey]bool{selectedKey: true}
 	for key := selectedKey; ; {
 		iss := byKey[key]
-		if iss.ParentNumber == nil {
+		if iss.ParentShortID == nil {
 			return lm
 		}
-		parentKey := issueKey{projectID: iss.ProjectID, number: *iss.ParentNumber}
+		parentKey := issueKey{projectID: iss.ProjectID, shortID: *iss.ParentShortID}
 		if seen[parentKey] {
 			return lm
 		}
@@ -640,15 +644,15 @@ func nextStatus(s string) string {
 }
 
 // applyFetched stores the latest issue list and restores the cursor
-// onto the same issue (by Number) when possible — identity-based
+// onto the same issue (by UID) when possible — identity-based
 // selection. Issue lists come back sorted by updated_at DESC, so any
 // background mutation can shuffle row order under agent churn; pinning
 // to the index would silently move the highlight to a different issue.
 //
 // When the previously-selected issue is no longer visible (filtered
 // out, deleted, or scope changed), the cursor falls back to the same
-// index clamped to the new visible-row count. Empty list zeroes both
-// cursor and selectedNumber.
+// index clamped to the new visible-row count. Empty list clears both
+// cursor and selectedUID.
 func (lm listModel) applyFetched(msg tea.Msg) listModel {
 	switch m := msg.(type) {
 	case initialFetchMsg:
@@ -667,13 +671,13 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 	rows := lm.visibleRows()
 	if len(rows) == 0 {
 		lm.cursor = 0
-		lm.selectedNumber = 0
+		lm.selectedUID = ""
 		lm.selectedProjectID = 0
 		return lm
 	}
-	if lm.selectedNumber != 0 {
+	if lm.selectedUID != "" {
 		for i, row := range rows {
-			if row.issue.Number == lm.selectedNumber &&
+			if row.issue.UID == lm.selectedUID &&
 				(lm.selectedProjectID == 0 || row.issue.ProjectID == lm.selectedProjectID) {
 				lm.cursor = i
 				return lm
@@ -689,7 +693,7 @@ func (lm listModel) applyFetched(msg tea.Msg) listModel {
 	if lm.cursor < 0 {
 		lm.cursor = 0
 	}
-	lm.selectedNumber = rows[lm.cursor].issue.Number
+	lm.selectedUID = rows[lm.cursor].issue.UID
 	lm.selectedProjectID = rows[lm.cursor].issue.ProjectID
 	return lm
 }
@@ -720,13 +724,13 @@ func (lm listModel) applyMutation(
 	}
 	lm.status = listMutationSuccessText(m)
 	// On a successful create, seed selection with the new issue's
-	// number so applyFetched lands the cursor on the new row after
+	// UID so applyFetched lands the cursor on the new row after
 	// refetch instead of snapping back to whatever was selected
 	// before. Recency-sorted lists put the new issue at index 0;
 	// without this seed the cursor returns to the prior row and the
 	// just-created issue can fall off-screen — roborev #113 finding 2.
 	if m.kind == "create" && m.resp != nil && m.resp.Issue != nil {
-		lm.selectedNumber = m.resp.Issue.Number
+		lm.selectedUID = m.resp.Issue.UID
 		lm.selectedProjectID = projectIDForRow(*m.resp.Issue, sc)
 		lm.cursor = 0
 	}
@@ -734,24 +738,24 @@ func (lm listModel) applyMutation(
 }
 
 // listMutationSuccessText is the per-kind status hint after a successful
-// mutation. The number comes from m.resp.Issue when present; otherwise
-// the hint omits it so we don't print "#0".
+// mutation. The short_id comes from m.resp.Issue when present; otherwise
+// the hint omits it so we don't print "#".
 func listMutationSuccessText(m mutationDoneMsg) string {
-	num := int64(0)
+	ref := ""
 	if m.resp != nil && m.resp.Issue != nil {
-		num = m.resp.Issue.Number
+		ref = m.resp.Issue.ShortID
 	}
 	switch m.kind {
 	case "create":
-		return fmt.Sprintf("created #%d", num)
+		return fmt.Sprintf("created #%s", ref)
 	case "close":
-		return fmt.Sprintf("closed #%d", num)
+		return fmt.Sprintf("closed #%s", ref)
 	case "reopen":
-		return fmt.Sprintf("reopened #%d", num)
+		return fmt.Sprintf("reopened #%s", ref)
 	case "priority.set":
-		return fmt.Sprintf("set priority of #%d", num)
+		return fmt.Sprintf("set priority of #%s", ref)
 	case "priority.clear":
-		return fmt.Sprintf("cleared priority of #%d", num)
+		return fmt.Sprintf("cleared priority of #%s", ref)
 	}
 	return ""
 }

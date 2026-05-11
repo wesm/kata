@@ -61,7 +61,6 @@ func (d *DB) SoftDeleteIssue(ctx context.Context, issueID int64, actor string) (
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
 		Type:        "issue.soft_deleted",
 		Actor:       actor,
 		Payload:     "{}",
@@ -127,7 +126,6 @@ func (d *DB) RestoreIssue(ctx context.Context, issueID int64, actor string) (Iss
 		ProjectID:   issue.ProjectID,
 		ProjectName: projectName,
 		IssueID:     &issue.ID,
-		IssueNumber: &issue.Number,
 		Type:        "issue.restored",
 		Actor:       actor,
 		Payload:     "{}",
@@ -318,18 +316,20 @@ func purgeCascade(
 		return 0, fmt.Errorf("generate purge uid: %w", err)
 	}
 	// Step 6: write the audit row. sql.NullInt64 carries through as either
-	// INTEGER or NULL; database/sql handles the marshaling.
+	// INTEGER or NULL; database/sql handles the marshaling. short_id is
+	// snapshotted so assignShortIDIn can tombstone the slot against future
+	// creates whose ULID suffix would otherwise collide.
 	res, err := c.ExecContext(ctx,
 		`INSERT INTO purge_log(
 		   uid, origin_instance_uid,
-		   project_id, purged_issue_id, issue_uid, project_uid, project_name, issue_number,
-		   issue_title, issue_author, comment_count, link_count, label_count,
+		   project_id, purged_issue_id, issue_uid, project_uid, project_name,
+		   short_id, issue_title, issue_author, comment_count, link_count, label_count,
 		   event_count, events_deleted_min_id, events_deleted_max_id,
 		   purge_reset_after_event_id, actor, reason)
 		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		purgeUID, originInstanceUID,
-		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectName, issue.Number,
-		issue.Title, issue.Author, commentCount, linkCount, labelCount,
+		issue.ProjectID, issue.ID, issue.UID, issue.ProjectUID, projectName,
+		issue.ShortID, issue.Title, issue.Author, commentCount, linkCount, labelCount,
 		eventCount, minEventID, maxEventID, reservedCursor, actor, reason)
 	if err != nil {
 		return 0, fmt.Errorf("insert purge_log: %w", err)
@@ -385,14 +385,14 @@ func reserveEventSequence(ctx context.Context, c connExec, hadEvents bool) (sql.
 func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) {
 	const q = `
 		SELECT id, uid, origin_instance_uid, project_id, purged_issue_id, issue_uid, project_uid,
-		       project_name, issue_number, issue_title, issue_author, comment_count, link_count, label_count,
+		       project_name, short_id, issue_title, issue_author, comment_count, link_count, label_count,
 		       event_count, events_deleted_min_id, events_deleted_max_id,
 		       purge_reset_after_event_id, actor, reason, purged_at
 		FROM purge_log WHERE id = ?`
 	var pl PurgeLog
 	err := r.QueryRowContext(ctx, q, id).Scan(
 		&pl.ID, &pl.UID, &pl.OriginInstanceUID, &pl.ProjectID, &pl.PurgedIssueID, &pl.IssueUID,
-		&pl.ProjectUID, &pl.ProjectName, &pl.IssueNumber, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
+		&pl.ProjectUID, &pl.ProjectName, &pl.ShortID, &pl.IssueTitle, &pl.IssueAuthor, &pl.CommentCount,
 		&pl.LinkCount, &pl.LabelCount, &pl.EventCount,
 		&pl.EventsDeletedMinID, &pl.EventsDeletedMaxID,
 		&pl.PurgeResetAfterEventID, &pl.Actor, &pl.Reason, &pl.PurgedAt)
@@ -411,7 +411,7 @@ func scanPurgeLog(ctx context.Context, r sqlReader, id int64) (PurgeLog, error) 
 // destructive ladder verbs that need to operate on deleted issues.
 func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64) (Issue, string, error) {
 	const q = `
-		SELECT i.id, i.uid, i.project_id, p.uid, i.number, i.title, i.body, i.status,
+		SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
 		       i.closed_at, i.deleted_at, p.name
 		FROM issues i
@@ -422,7 +422,7 @@ func lookupIssueIncludingDeleted(ctx context.Context, r sqlReader, issueID int64
 		projectName string
 	)
 	err := r.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.Number, &i.Title, &i.Body, &i.Status,
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status,
 			&i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt,
 			&i.ClosedAt, &i.DeletedAt, &projectName)
 	if errors.Is(err, sql.ErrNoRows) {

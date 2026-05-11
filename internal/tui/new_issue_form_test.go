@@ -229,7 +229,7 @@ func TestNewIssueForm_CtrlSEmptyTitleSetsErrNoDispatch(t *testing.T) {
 // ctrl+s with only a Title dispatches CreateIssue with empty body,
 // nil owner, nil labels.
 func TestNewIssueForm_CtrlSTitleOnly_DispatchesWithMinimalPayload(t *testing.T) {
-	api := &fakeListAPI{createResult: &MutationResp{Issue: &Issue{Number: 99}}}
+	api := &fakeListAPI{createResult: &MutationResp{Issue: &Issue{UID: "01TEST-99zz", ShortID: "99zz"}}}
 	m := openNewIssueForm(t, newIssueFormFixture())
 	m = typeString(m, "fix bug")
 	// Drive dispatchCreateIssue directly to assert the wire shape; the
@@ -264,7 +264,7 @@ func TestNewIssueForm_CtrlSTitleOnly_DispatchesWithMinimalPayload(t *testing.T) 
 // untrimmed, owner trimmed, empty label tokens dropped, whitespace-
 // only owner omitted.
 func TestNewIssueForm_CtrlSAllFields_NormalizedPayload(t *testing.T) {
-	api := &fakeListAPI{createResult: &MutationResp{Issue: &Issue{Number: 99}}}
+	api := &fakeListAPI{createResult: &MutationResp{Issue: &Issue{UID: "01TEST-99zz", ShortID: "99zz"}}}
 	owner := "  alice  "
 	labels := normalizeLabels("bug, , prio-1 ,  , feature")
 	owned := normalizeOwner(owner)
@@ -353,10 +353,10 @@ func TestNewIssueForm_ParentBlankOmitsLink(t *testing.T) {
 	}
 }
 
-func TestNewIssueForm_ParentNumberCreatesInitialParentLink(t *testing.T) {
+func TestNewIssueForm_ParentRefCreatesInitialParentLink(t *testing.T) {
 	s := newNewIssueForm()
 	s.fields[0].input.SetValue("child issue")
-	s.fields[4].input.SetValue("#42")
+	s.fields[4].input.SetValue("#abc4")
 	body, err := newIssueBodyFromForm(s.fields, "tester")
 	if err != nil {
 		t.Fatalf("unexpected parent error: %v", err)
@@ -364,17 +364,25 @@ func TestNewIssueForm_ParentNumberCreatesInitialParentLink(t *testing.T) {
 	if len(body.Links) != 1 {
 		t.Fatalf("links len = %d, want 1: %+v", len(body.Links), body.Links)
 	}
-	if body.Links[0].Type != "parent" || body.Links[0].ToNumber != 42 {
-		t.Fatalf("link = %+v, want parent -> #42", body.Links[0])
+	if body.Links[0].Type != "parent" || body.Links[0].ToRef != "abc4" {
+		t.Fatalf("link = %+v, want parent -> #abc4", body.Links[0])
 	}
 }
 
-func TestNewIssueForm_ParentInvalidShowsError(t *testing.T) {
+// TestNewIssueForm_ParentFreeFormPassesToDaemon: short_id format
+// validation lives on the daemon. The form trims and strips "#"; any
+// non-empty value flows through as the ToRef. The daemon's 400 is the
+// canonical error path.
+func TestNewIssueForm_ParentFreeFormPassesToDaemon(t *testing.T) {
 	s := newNewIssueForm()
-	s.fields[0].input.SetValue("bad parent")
+	s.fields[0].input.SetValue("any parent")
 	s.fields[4].input.SetValue("parent-ish")
-	if _, err := newIssueBodyFromForm(s.fields, "tester"); err == nil {
-		t.Fatal("expected invalid parent to return an error")
+	body, err := newIssueBodyFromForm(s.fields, "tester")
+	if err != nil {
+		t.Fatalf("expected no client-side parent error; got %v", err)
+	}
+	if len(body.Links) != 1 || body.Links[0].ToRef != "parent-ish" {
+		t.Fatalf("link = %+v, want ToRef=parent-ish", body.Links)
 	}
 }
 
@@ -389,7 +397,7 @@ func TestList_NewChild_NoSelectionNoOp(t *testing.T) {
 
 func TestList_NewChild_PrefillsSelectedParent(t *testing.T) {
 	m := newIssueFormFixture()
-	m.list.issues = []Issue{{ProjectID: 7, Number: 42, Title: "parent", Status: "open"}}
+	m.list.issues = []Issue{{ProjectID: 7, UID: "01TEST-42aa", ShortID: "42aa", Title: "parent", Status: "open"}}
 	m, cmd := stepModel(m, runeKey('N'))
 	if cmd == nil {
 		t.Fatal("N on a selected row produced no open-input command")
@@ -400,8 +408,8 @@ func TestList_NewChild_PrefillsSelectedParent(t *testing.T) {
 		t.Fatalf("title = %q, want new child issue", m.input.title)
 	}
 	parent := m.input.fields[4]
-	if got := parent.input.Value(); got != "42" {
-		t.Fatalf("parent field = %q, want 42", got)
+	if got := parent.input.Value(); got != "42aa" {
+		t.Fatalf("parent field = %q, want 42aa", got)
 	}
 	if !parent.locked {
 		t.Fatal("prefilled child parent field must start locked")
@@ -409,16 +417,16 @@ func TestList_NewChild_PrefillsSelectedParent(t *testing.T) {
 }
 
 func TestNewChildForm_ParentPrefillIgnoresEditsUntilCleared(t *testing.T) {
-	s := newNewIssueFormWithParent(42)
+	s := newNewIssueFormWithParent("42aa")
 	s = focusNewIssueField(s, 4)
 	next, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}})
-	if got := next.fields[4].input.Value(); got != "42" {
-		t.Fatalf("locked parent accepted edit; got %q, want 42", got)
+	if got := next.fields[4].input.Value(); got != "42aa" {
+		t.Fatalf("locked parent accepted edit; got %q, want 42aa", got)
 	}
 }
 
 func TestNewChildForm_ParentPrefillBackspaceClearsAndUnlocks(t *testing.T) {
-	s := newNewIssueFormWithParent(42)
+	s := newNewIssueFormWithParent("42aa")
 	s = focusNewIssueField(s, 4)
 	next, _ := s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 	if got := next.fields[4].input.Value(); got != "" {
@@ -500,13 +508,13 @@ func TestNewIssueForm_MutationSuccessRoutesToList(t *testing.T) {
 	m.input.saving = true
 	mut := mutationDoneMsg{
 		origin: "form", kind: "create", formGen: m.input.formGen,
-		resp: &MutationResp{Issue: &Issue{Number: 99}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-99zz", ShortID: "99zz"}},
 	}
 	nm, _ := stepModel(m, mut)
 	assertInputKind(t, nm, inputNone)
-	if nm.list.selectedNumber != 99 {
-		t.Fatalf("selectedNumber = %d, want 99 (seeded by lm.applyMutation)",
-			nm.list.selectedNumber)
+	if nm.list.selectedUID != "01TEST-99zz" {
+		t.Fatalf("selectedUID = %q, want 01TEST-99zz (seeded by lm.applyMutation)",
+			nm.list.selectedUID)
 	}
 	if nm.view == viewDetail {
 		t.Fatal("view = viewDetail; new-issue form must NOT auto-open detail")
@@ -533,7 +541,7 @@ func TestSnapshot_NewIssueForm_AllFields(t *testing.T) {
 
 func TestSnapshot_NewChildForm(t *testing.T) {
 	defer snapshotInit(t)()
-	s := newNewIssueFormWithParent(42)
+	s := newNewIssueFormWithParent("42aa")
 	s.fields[0].input.SetValue("follow-up child issue")
 	s.fields[2].input.SetValue("ux")
 	got := renderCenteredForm(s, 120, 30)
@@ -565,7 +573,7 @@ func TestNewIssueForm_MutationSuccessRefreshesLabelCache(t *testing.T) {
 	primeLabelCache(&m, 7, 1)
 	mut := mutationDoneMsg{
 		origin: "form", kind: "create", formGen: m.input.formGen,
-		resp: &MutationResp{Issue: &Issue{Number: 99, ProjectID: 7}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-99zz", ShortID: "99zz", ProjectID: 7}},
 	}
 	nm, _ := stepModel(m, mut)
 	assertInputKind(t, nm, inputNone)
@@ -619,7 +627,7 @@ func TestNewIssueForm_StaleResponseFromPriorFormDropped(t *testing.T) {
 	// Stale response from form A finally lands.
 	stale := mutationDoneMsg{
 		origin: "form", kind: "create", formGen: staleGen,
-		resp: &MutationResp{Issue: &Issue{Number: 11, ProjectID: 7}},
+		resp: &MutationResp{Issue: &Issue{UID: "01TEST-11bb", ShortID: "11bb", ProjectID: 7}},
 	}
 	nm, _ := stepModel(m, stale)
 	// Form B must remain open and untouched.

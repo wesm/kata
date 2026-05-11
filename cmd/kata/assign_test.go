@@ -8,12 +8,12 @@ import (
 )
 
 func TestAssign_RoundTrip(t *testing.T) {
-	env, dir, _ := setupWorkspaceWithIssue(t, "x")
+	env, dir, _, ref := setupWorkspaceWithIssue(t, "x")
 
-	out := runCLI(t, env, dir, "assign", "1", "alice")
+	out := runCLI(t, env, dir, "assign", ref, "alice")
 	assert.True(t, strings.Contains(out, "assigned") ||
 		strings.Contains(out, "alice"))
 
-	uOut := runCLI(t, env, dir, "unassign", "1")
+	uOut := runCLI(t, env, dir, "unassign", ref)
 	assert.True(t, strings.Contains(uOut, "unassigned"))
 }

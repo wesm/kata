@@ -18,16 +18,21 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "deleteIssue",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/delete",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/delete",
 	}, func(ctx context.Context, in *api.DestructiveActionRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		if err := validateConfirm(in.Confirm, "DELETE", in.Number); err != nil {
+		// Idempotent re-delete must resolve a soft-deleted row.
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedYes)
+		if err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
-		if err != nil {
+		project, perr := cfg.DB.ProjectByID(ctx, issue.ProjectID)
+		if perr != nil {
+			return nil, api.NewError(500, "internal", perr.Error(), "", nil)
+		}
+		if err := validateConfirm(in.Confirm, "DELETE", project.Name, issue.ShortID); err != nil {
 			return nil, err
 		}
 		updated, evt, changed, err := cfg.DB.SoftDeleteIssue(ctx, issue.ID, in.Body.Actor)
@@ -51,12 +56,13 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "restoreIssue",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/restore",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/restore",
 	}, func(ctx context.Context, in *api.RestoreRequest) (*api.MutationResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		// Restore must resolve a soft-deleted row by short_id (§6).
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedYes)
 		if err != nil {
 			return nil, err
 		}
@@ -81,16 +87,22 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "purgeIssue",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/actions/purge",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/actions/purge",
 	}, func(ctx context.Context, in *api.DestructiveActionRequest) (*api.PurgeResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		if err := validateConfirm(in.Confirm, "PURGE", in.Number); err != nil {
+		// Purge resolves soft-deleted rows so an operator can still confirm
+		// the metadata before the irreversible removal.
+		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedYes)
+		if err != nil {
 			return nil, err
 		}
-		issue, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
-		if err != nil {
+		project, perr := cfg.DB.ProjectByID(ctx, issue.ProjectID)
+		if perr != nil {
+			return nil, api.NewError(500, "internal", perr.Error(), "", nil)
+		}
+		if err := validateConfirm(in.Confirm, "PURGE", project.Name, issue.ShortID); err != nil {
 			return nil, err
 		}
 		var reasonPtr *string
@@ -119,10 +131,11 @@ func registerDestructiveHandlers(humaAPI huma.API, cfg ServerConfig) {
 }
 
 // validateConfirm checks an X-Kata-Confirm header against the verb-specific
-// expected value ("DELETE #N" or "PURGE #N"). Missing header → confirm_required;
-// wrong value → confirm_mismatch.
-func validateConfirm(got, verb string, number int64) error {
-	expected := fmt.Sprintf("%s #%d", verb, number)
+// expected value ("DELETE <project>#<short_id>" or
+// "PURGE <project>#<short_id>"). Missing header → confirm_required; wrong
+// value → confirm_mismatch.
+func validateConfirm(got, verb, projectName, shortID string) error {
+	expected := fmt.Sprintf("%s %s#%s", verb, projectName, shortID)
 	if got == "" {
 		return api.NewError(412, "confirm_required",
 			"this action requires X-Kata-Confirm",

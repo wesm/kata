@@ -124,7 +124,7 @@ func fingerprintCore(title, body string, owner *string, labels []string, sortedL
 func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string, since time.Time) (*IdempotencyMatch, error) {
 	const q = `
 		SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
-		       e.issue_id, e.issue_uid, e.issue_number,
+		       e.issue_id, e.issue_uid,
 		       e.related_issue_id, e.related_issue_uid, e.type, e.actor, e.payload, e.created_at,
 		       json_extract(e.payload, '$.idempotency_fingerprint')
 		FROM events e
@@ -142,7 +142,7 @@ func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string,
 		fp  sql.NullString
 	)
 	err := row.Scan(&evt.ID, &evt.UID, &evt.OriginInstanceUID, &evt.ProjectID, &evt.ProjectUID, &evt.ProjectName,
-		&evt.IssueID, &evt.IssueUID, &evt.IssueNumber, &evt.RelatedIssueID, &evt.RelatedIssueUID, &evt.Type, &evt.Actor,
+		&evt.IssueID, &evt.IssueUID, &evt.RelatedIssueID, &evt.RelatedIssueUID, &evt.Type, &evt.Actor,
 		&evt.Payload, &evt.CreatedAt, &fp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -150,14 +150,21 @@ func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string,
 	if err != nil {
 		return nil, fmt.Errorf("lookup idempotency: %w", err)
 	}
-	if evt.IssueID == nil || evt.IssueNumber == nil {
+	if evt.IssueID == nil {
 		// Defensive: an issue.created event without an issue_id is malformed.
 		return nil, fmt.Errorf("idempotency match has no issue_id")
 	}
+	// Carveout (spec §6): idempotency-key collision detection sees the issue
+	// even if it has been soft-deleted, so it can report the right mismatch.
+	// IssueByID returns rows regardless of deleted_at, matching that intent.
+	issue, err := d.IssueByID(ctx, *evt.IssueID)
+	if err != nil {
+		return nil, fmt.Errorf("idempotency match issue: %w", err)
+	}
 	return &IdempotencyMatch{
-		IssueID:     *evt.IssueID,
-		IssueNumber: *evt.IssueNumber,
-		Fingerprint: fp.String,
-		Event:       evt,
+		IssueID:      issue.ID,
+		IssueShortID: issue.ShortID,
+		Fingerprint:  fp.String,
+		Event:        evt,
 	}, nil
 }

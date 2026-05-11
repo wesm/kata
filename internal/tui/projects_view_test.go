@@ -196,7 +196,7 @@ func TestProjectsView_EnterOnProjectTransitions(t *testing.T) {
 	)
 	// Prime the cache so isStale() can register invalidation
 	// (isStale requires cache.set==true; see cache.go:51-52).
-	m.cache.put(cacheKey{allProjects: true}, []Issue{{Number: 1}})
+	m.cache.put(cacheKey{allProjects: true}, []Issue{{UID: "01TEST-aaa1", ShortID: "aaa1"}})
 	// Cursor on the first real project (sentinel + sorted rows; see
 	// projectsRows for ordering — alpha tiebreak means 'kata' first).
 	m.projectsCursor = 1
@@ -220,7 +220,7 @@ func TestProjectsView_EnterOnSentinelTransitions(t *testing.T) {
 	)
 	// Prime the cache so isStale() can register invalidation
 	// (isStale requires cache.set==true; see cache.go:51-52).
-	m.cache.put(cacheKey{projectID: 1}, []Issue{{Number: 1}})
+	m.cache.put(cacheKey{projectID: 1}, []Issue{{UID: "01TEST-aaa1", ShortID: "aaa1"}})
 	m.projectsCursor = 0 // sentinel
 
 	out, cmd := m.routeProjectsViewKey(tea.KeyMsg{Type: tea.KeyEnter})

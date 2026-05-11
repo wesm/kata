@@ -245,7 +245,7 @@ func TestScenario_EscReturnsFromSplitDetailToList(t *testing.T) {
 func TestScenario_EscPopsSplitDetailNavStackBeforeLeavingPane(t *testing.T) {
 	m := setupDetailScenario(t, 200, 40, "parent body")
 	parent := m.detail
-	child := Issue{ProjectID: 7, Number: 2, Title: "child task", Status: "open"}
+	child := Issue{ProjectID: 7, UID: "01TEST-c002", ShortID: "c002", Title: "child task", Status: "open"}
 	m.detail = detailModel{
 		issue:    &child,
 		scopePID: 7,
@@ -261,7 +261,7 @@ func TestScenario_EscPopsSplitDetailNavStackBeforeLeavingPane(t *testing.T) {
 	if m.focus != focusDetail {
 		t.Fatalf("Esc with nav stack moved focus=%v, want focusDetail", m.focus)
 	}
-	if m.detail.issue == nil || m.detail.issue.Number != 1 {
+	if m.detail.issue == nil || m.detail.issue.ShortID != "aaa1" {
 		t.Fatalf("Esc did not pop to parent detail: issue=%+v", m.detail.issue)
 	}
 }
@@ -439,12 +439,20 @@ func TestScenario_ChildCreatedRefetchesParentDetail(t *testing.T) {
 	m := scenarioModel(t, 120, 30)
 	m.api = NewClient("http://kata.invalid", nil)
 	m = scenarioOpenDetail(t, m, "short body")
-	parentNum := m.detail.issue.Number
+	parentSID := m.detail.issue.ShortID
+	parentUID := m.detail.issue.UID
 	cmd := m.maybeRefetchOpenDetail(eventReceivedMsg{
-		eventType:   "issue.created",
-		projectID:   m.detail.scopePID,
-		issueNumber: 999,
-		link:        &linkPayload{Type: "parent", FromNumber: 999, ToNumber: parentNum},
+		eventType:    "issue.created",
+		projectID:    m.detail.scopePID,
+		issueShortID: "k9k9",
+		issueUID:     "01TEST-k9k9",
+		link: &linkPayload{
+			Type:         "parent",
+			FromShortID:  "k9k9",
+			FromIssueUID: "01TEST-k9k9",
+			ToShortID:    parentSID,
+			ToIssueUID:   parentUID,
+		},
 	})
 	if cmd == nil {
 		t.Fatal("issue.created with parent link did not dispatch parent-detail refetch")
@@ -459,7 +467,7 @@ func TestScenario_BodyScrollWorksWhileChildrenFocused(t *testing.T) {
 	body := strings.Repeat("scrollable line\n", 60) + "BODY_TAIL"
 	m := setupDetailScenario(t, 120, 30, body)
 	// Seed a child so children focus is reachable.
-	m.detail.children = []Issue{{Number: 99, Title: "child", Status: "open"}}
+	m.detail.children = []Issue{{UID: "01TEST-c099", ShortID: "c099", Title: "child", Status: "open"}}
 	// Cycle into children focus via Tab. The detail focus order is
 	// Children → Comments → Events → Links → Children, so one Tab
 	// from Comments gets us to Events, and Shift+Tab from Comments

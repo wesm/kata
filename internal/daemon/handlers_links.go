@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -24,13 +23,13 @@ func registerLinksHandlers(humaAPI huma.API, cfg ServerConfig) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "createLink",
 		Method:      "POST",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/links",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/links",
 	}, createLinkHandler(cfg))
 
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "deleteLink",
 		Method:      "DELETE",
-		Path:        "/api/v1/projects/{project_id}/issues/{number}/links/{link_id}",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/links/{link_id}",
 	}, deleteLinkHandler(cfg))
 }
 
@@ -39,17 +38,13 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		if err := validateActor(in.Body.Actor); err != nil {
 			return nil, err
 		}
-		from, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		from, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}
-		to, err := cfg.DB.IssueByNumber(ctx, in.ProjectID, in.Body.ToNumber)
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, api.NewError(404, "issue_not_found",
-				fmt.Sprintf("target issue #%d not found", in.Body.ToNumber), "", nil)
-		}
+		to, err := resolveIssueRef(ctx, cfg.DB, in.ProjectID, in.Body.ToRef, db.IncludeDeletedNo)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, err
 		}
 
 		// Reject self-link before mutating state. The DB will catch this anyway,
@@ -63,17 +58,16 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		}
 
 		// Storage endpoints: canonical (from < to) for related; otherwise as-is.
-		// canonicalFromNum/canonicalToNum match the Link row's actual columns
+		// canonicalFrom/canonicalTo match the Link row's actual columns
 		// and feed the LinkOut wire projection (so the response shows the
 		// canonical link, e.g. (3, 5) regardless of which side the user posted
-		// from). Event attribution always uses the URL issue (from), so the
-		// payload's from_number is the URL issue's number and to_number is
-		// the OTHER endpoint — even when canonicalization swapped storage.
+		// from). Event attribution always uses the URL issue (from).
 		storageFromID, storageToID := from.ID, to.ID
-		canonicalFromNum, canonicalToNum := from.Number, to.Number
+		canonicalFromPeer := api.LinkPeer{UID: from.UID, ShortID: from.ShortID}
+		canonicalToPeer := api.LinkPeer{UID: to.UID, ShortID: to.ShortID}
 		if in.Body.Type == "related" && storageFromID > storageToID {
 			storageFromID, storageToID = storageToID, storageFromID
-			canonicalFromNum, canonicalToNum = canonicalToNum, canonicalFromNum
+			canonicalFromPeer, canonicalToPeer = canonicalToPeer, canonicalFromPeer
 		}
 
 		// Parent --replace path: delete the existing parent link in its own TX
@@ -83,22 +77,22 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 			if existing, perr := cfg.DB.ParentOf(ctx, from.ID); perr == nil {
 				if existing.ToIssueID == to.ID {
 					// Replacing with the same parent is a no-op.
-					return mutationLinkResponse(from, existing, canonicalFromNum, canonicalToNum, nil, false), nil
+					return mutationLinkResponse(from, existing, canonicalFromPeer, canonicalToPeer, nil, false), nil
 				}
-				// Resolve the OLD parent's number so the issue.unlinked event
-				// payload's to_number records the parent we're actually
-				// removing — not the new parent we're about to insert.
+				// Resolve the OLD parent so the issue.unlinked event
+				// payload records the parent we're actually removing.
 				oldParentIssue, err := cfg.DB.IssueByID(ctx, existing.ToIssueID)
 				if err != nil {
 					return nil, api.NewError(500, "internal", err.Error(), "", nil)
 				}
 				unlinkEv := db.LinkEventParams{
-					EventType:        "issue.unlinked",
-					EventIssueID:     from.ID,
-					EventIssueNumber: from.Number,
-					FromNumber:       from.Number,
-					ToNumber:         oldParentIssue.Number,
-					Actor:            in.Body.Actor,
+					EventType:    "issue.unlinked",
+					EventIssueID: from.ID,
+					FromShortID:  from.ShortID,
+					FromUID:      from.UID,
+					ToShortID:    oldParentIssue.ShortID,
+					ToUID:        oldParentIssue.UID,
+					Actor:        in.Body.Actor,
 				}
 				unlinkEvt, err := cfg.DB.DeleteLinkAndEvent(ctx, existing, unlinkEv)
 				if err != nil {
@@ -114,12 +108,13 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		// Default path: insert link + emit issue.linked + touch updated_at, all
 		// in one TX. Distinct error types map to specific responses.
 		linkEv := db.LinkEventParams{
-			EventType:        "issue.linked",
-			EventIssueID:     from.ID,
-			EventIssueNumber: from.Number,
-			FromNumber:       from.Number,
-			ToNumber:         to.Number,
-			Actor:            in.Body.Actor,
+			EventType:    "issue.linked",
+			EventIssueID: from.ID,
+			FromShortID:  from.ShortID,
+			FromUID:      from.UID,
+			ToShortID:    to.ShortID,
+			ToUID:        to.UID,
+			Actor:        in.Body.Actor,
 		}
 		link, evt, err := cfg.DB.CreateLinkAndEvent(ctx, db.CreateLinkParams{
 			ProjectID:   in.ProjectID,
@@ -135,7 +130,7 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 			if lookupErr != nil {
 				return nil, api.NewError(500, "internal", lookupErr.Error(), "", nil)
 			}
-			return mutationLinkResponse(from, existing, canonicalFromNum, canonicalToNum, nil, false), nil
+			return mutationLinkResponse(from, existing, canonicalFromPeer, canonicalToPeer, nil, false), nil
 		case errors.Is(err, db.ErrParentAlreadySet):
 			return nil, api.NewError(409, "parent_already_set",
 				"this issue already has a parent", "pass replace=true to swap", nil)
@@ -153,7 +148,7 @@ func createLinkHandler(cfg ServerConfig) func(context.Context, *api.CreateLinkRe
 		}
 		cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &evt, ProjectID: in.ProjectID})
 		cfg.Hooks.Enqueue(evt)
-		return mutationLinkResponse(updatedIssue, link, canonicalFromNum, canonicalToNum, &evt, true), nil
+		return mutationLinkResponse(updatedIssue, link, canonicalFromPeer, canonicalToPeer, &evt, true), nil
 	}
 }
 
@@ -162,7 +157,7 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 		if err := validateActor(in.Actor); err != nil {
 			return nil, err
 		}
-		from, err := activeIssueByNumber(ctx, cfg.DB, in.ProjectID, in.Number)
+		from, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +177,7 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 		if link.ProjectID != in.ProjectID {
 			return nil, api.NewError(404, "link_not_found", "link not in this project", "", nil)
 		}
-		// The URL says we're operating on issue {number}'s links. Reject if
+		// The URL says we're operating on issue {ref}'s links. Reject if
 		// the link's two endpoints don't include this issue — defends against
 		// URL manipulation that would otherwise emit an event attributed to
 		// the wrong issue.
@@ -190,23 +185,33 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 			return nil, api.NewError(404, "link_not_found", "link not attached to this issue", "", nil)
 		}
 
-		// Resolve numbers for the event payload before deleting.
-		fromIssue, err := cfg.DB.IssueByID(ctx, link.FromIssueID)
+		// Resolve the link's storage endpoints so the payload carries each
+		// peer's short_id + UID. For parent/blocks links the URL issue is
+		// always the link's stored from side; for canonicalized related
+		// links the URL issue may be either endpoint. The unlink payload
+		// is always oriented from the URL issue's POV — from_* carries
+		// the URL issue, to_* carries the peer — so consumers can render
+		// "the URL issue unlinked from <peer>" regardless of which side
+		// the stored row holds.
+		linkFrom, err := cfg.DB.IssueByID(ctx, link.FromIssueID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-		toIssue, err := cfg.DB.IssueByID(ctx, link.ToIssueID)
+		linkTo, err := cfg.DB.IssueByID(ctx, link.ToIssueID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
 		}
-
+		if link.FromIssueID != from.ID {
+			linkFrom, linkTo = linkTo, linkFrom
+		}
 		ev := db.LinkEventParams{
-			EventType:        "issue.unlinked",
-			EventIssueID:     from.ID,
-			EventIssueNumber: from.Number,
-			FromNumber:       fromIssue.Number,
-			ToNumber:         toIssue.Number,
-			Actor:            in.Actor,
+			EventType:    "issue.unlinked",
+			EventIssueID: from.ID,
+			FromShortID:  linkFrom.ShortID,
+			FromUID:      linkFrom.UID,
+			ToShortID:    linkTo.ShortID,
+			ToUID:        linkTo.UID,
+			Actor:        in.Actor,
 		}
 		evt, err := cfg.DB.DeleteLinkAndEvent(ctx, link, ev)
 		if errors.Is(err, db.ErrNotFound) {
@@ -235,22 +240,20 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 }
 
 // mutationLinkResponse assembles a CreateLinkResponse from the source issue,
-// the link row, the canonical endpoint numbers, an optional event, and the
+// the link row, the canonical endpoint peers, an optional event, and the
 // changed flag. Used for both fresh inserts (event != nil, changed=true) and
 // no-op envelopes (event == nil, changed=false).
-func mutationLinkResponse(issue db.Issue, link db.Link, fromNum, toNum int64, evt *db.Event, changed bool) *api.CreateLinkResponse {
+func mutationLinkResponse(issue db.Issue, link db.Link, from, to api.LinkPeer, evt *db.Event, changed bool) *api.CreateLinkResponse {
 	out := &api.CreateLinkResponse{}
 	out.Body.Issue = issue
 	out.Body.Link = api.LinkOut{
-		ID:           link.ID,
-		ProjectID:    link.ProjectID,
-		FromNumber:   fromNum,
-		FromIssueUID: link.FromIssueUID,
-		ToNumber:     toNum,
-		ToIssueUID:   link.ToIssueUID,
-		Type:         link.Type,
-		Author:       link.Author,
-		CreatedAt:    link.CreatedAt,
+		ID:        link.ID,
+		ProjectID: link.ProjectID,
+		From:      from,
+		To:        to,
+		Type:      link.Type,
+		Author:    link.Author,
+		CreatedAt: link.CreatedAt,
 	}
 	out.Body.Event = evt
 	out.Body.Changed = changed
