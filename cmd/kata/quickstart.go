@@ -43,6 +43,7 @@ Use kata as the shared issue ledger for this workspace.
       kata close abc4 --wontfix --message "<>=60 chars of rationale>"
       kata close abc4 --audit-no-change \
                       --message "Reviewed schema and queries; no change needed." \
+                      --evidence "no-change-audit:schema unchanged after review" \
                       --reviewed internal/db/schema.sql
 
    The daemon refuses parent-close while open children remain. Reviewers

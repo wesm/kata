@@ -32,6 +32,7 @@ Other close forms:
     kata close 12 --wontfix --message "<>=60 chars of rationale>"
     kata close 12 --audit-no-change \
                   --message "Reviewed schema and queries; no change needed." \
+                  --evidence "no-change-audit:schema unchanged after review" \
                   --reviewed internal/db/schema.sql
 
 The daemon refuses parent-close while open children remain. Reviewers

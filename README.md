@@ -214,6 +214,7 @@ kata close 12 --superseded-by 18 --message "<short pointer>"
 kata close 12 --wontfix --message "<>=60 chars of rationale>"
 kata close 12 --audit-no-change \
               --message "<scope + verification of no-change conclusion>" \
+              --evidence "no-change-audit:<short rationale>" \
               --reviewed <path/to/file>
 ```
 
