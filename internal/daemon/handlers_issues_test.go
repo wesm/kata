@@ -88,6 +88,48 @@ func TestGetIssue_ULIDInWrongProjectReturns404(t *testing.T) {
 	assertAPIError(t, resp.StatusCode, bs, 404, "issue_not_found")
 }
 
+// TestGetIssue_QualifiedRefCrossProjectGuard pins the qualifier guard in
+// resolveIssueRef: when the ref qualifies a project name, that name must
+// match the URL's project_id's canonical name. Same-project qualifier
+// resolves; different-project qualifier 404s — never silently substitutes
+// a same-suffix issue in the URL project.
+func TestGetIssue_QualifiedRefCrossProjectGuard(t *testing.T) {
+	h, projectA := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	ctx := context.Background()
+	pa, err := h.DB().ProjectByID(ctx, projectA)
+	require.NoError(t, err)
+	_, err = h.DB().CreateProject(ctx, "other-project")
+	require.NoError(t, err)
+	created, _, err := h.DB().CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: projectA,
+		UID:       "01HZNQ7VFPK1XGD8R5MABCD4EX",
+		Title:     "lives in A",
+		Author:    "tester",
+	})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name      string
+		qualifier string
+		wantOK    bool
+	}{
+		{"same project qualifier resolves", pa.Name, true},
+		{"different project qualifier 404s", "other-project", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			url := "/api/v1/projects/" + strconv.FormatInt(projectA, 10) +
+				"/issues/" + tc.qualifier + "%23" + created.ShortID
+			resp, bs := getStatusBody(t, ts, url)
+			if tc.wantOK {
+				require.Equalf(t, 200, resp.StatusCode, "body: %s", string(bs))
+			} else {
+				assertAPIError(t, resp.StatusCode, bs, 404, "issue_not_found")
+			}
+		})
+	}
+}
+
 // TestGetIssue_LegacyNumberReturns404 pins that legacy /issues/<int> requests
 // (small integers below shortid.MinLength) 404. Spec §6: bare numeric refs
 // like "12" no longer resolve after the cutover.

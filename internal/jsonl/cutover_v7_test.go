@@ -67,43 +67,57 @@ func TestCutoverV7_RejectsProjectNameWithHash(t *testing.T) {
 	assert.Equal(t, 0, n, "cutover must fail before mutating target")
 }
 
+// importEventPayload runs the cutover via jsonl.Import and returns the
+// rewritten payload for the single matching event type. Each cutover
+// event-rewrite test imports a small fixture of issues + one event and
+// verifies the post-cutover payload shape.
+func importEventPayload(t *testing.T, issues []v7Issue, ev v7Event) map[string]any {
+	t.Helper()
+	ctx := context.Background()
+	target := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx,
+		strings.NewReader(buildV7FixtureWith(t, issues, []v7Event{ev})), target))
+	var payload string
+	require.NoError(t, target.QueryRowContext(ctx,
+		`SELECT payload FROM events WHERE type=?`, ev.Type).Scan(&payload))
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(payload), &got))
+	return got
+}
+
+// Shared v7 issue UIDs for the event-payload rewrite tests. The last-4
+// suffixes are unique so each issue lands at L=4 post-cutover.
+const (
+	v7UIDA = "01HZNQ7VFPK1XGD8R5MABCD4EX" // → short_id "d4ex"
+	v7UIDB = "01HZNQ7VFPK1XGD8R5MABCDXYZ" // → "dxyz"
+	v7UIDC = "01HZNQ7VFPK1XGD8R5MABCDQ99" // → "dq99"
+)
+
+func twoV7Issues() []v7Issue {
+	return []v7Issue{
+		{ProjectID: 1, ProjectName: "demo", UID: v7UIDA, Number: 1, Title: "a"},
+		{ProjectID: 1, ProjectName: "demo", UID: v7UIDB, Number: 2, Title: "b"},
+	}
+}
+
 // TestCutoverV7_RewritesLinkEventPayload pins the event-payload rewrite for
 // issue.linked / issue.unlinked. v7 events carried (from_number, to_number);
 // v8 readers expect (from_short_id, from_uid, to_short_id, to_uid). Without
 // the rewrite, post-cutover the TUI's Enter-on-event jump would silently
 // no-op because to_short_id is missing.
 func TestCutoverV7_RewritesLinkEventPayload(t *testing.T) {
-	ctx := context.Background()
-	target := openImportTargetDB(t)
-
-	// Two issues, both in project 1; their ULIDs differ so each gets a
-	// distinct length-4 short_id.
-	uidA := "01HZNQ7VFPK1XGD8R5MABCD4EX"
-	uidB := "01HZNQ7VFPK1XGD8R5MABCDXYZ"
-	jsonlInput := buildJSONL(
-		`{"kind":"meta","data":{"key":"export_version","value":"7"}}`,
-		`{"kind":"project","data":{"id":1,"uid":"01HZZZZZZZZZZZZZZZZZZZZZZZ","name":"demo","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":3}}`,
-		`{"kind":"issue","data":{"id":1,"uid":"`+uidA+`","project_id":1,"number":1,"title":"a","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
-		`{"kind":"issue","data":{"id":2,"uid":"`+uidB+`","project_id":1,"number":2,"title":"b","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:02.000Z","updated_at":"2026-05-03T00:00:02.000Z","closed_at":null,"deleted_at":null}}`,
-		`{"kind":"event","data":{"id":1,"project_id":1,"project_name":"demo","issue_id":1,"issue_uid":"`+uidA+`","related_issue_id":2,"related_issue_uid":"`+uidB+`","type":"issue.linked","actor":"tester","payload":{"link_id":42,"type":"blocks","from_number":1,"to_number":2},"created_at":"2026-05-03T00:00:03.000Z","uid":"01HZZZZZZZZZZZZZZZZZZZZZE1","origin_instance_uid":"01HZZZZZZZZZZZZZZZZZZZZZ00"}}`,
-	)
-	require.NoError(t, jsonl.Import(ctx, strings.NewReader(jsonlInput), target))
-
-	var payload string
-	require.NoError(t, target.QueryRowContext(ctx,
-		`SELECT payload FROM events WHERE type='issue.linked'`).Scan(&payload))
-	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(payload), &got))
-
+	got := importEventPayload(t, twoV7Issues(), v7Event{
+		ID: 1, ProjectID: 1, ProjectName: "demo", Type: "issue.linked",
+		IssueID: 1, IssueUID: v7UIDA,
+		PayloadJSON: `{"link_id":42,"type":"blocks","from_number":1,"to_number":2}`,
+	})
 	assert.Equal(t, "d4ex", got["from_short_id"])
-	assert.Equal(t, uidA, got["from_uid"])
+	assert.Equal(t, v7UIDA, got["from_uid"])
 	assert.Equal(t, "dxyz", got["to_short_id"])
-	assert.Equal(t, uidB, got["to_uid"])
-	_, hasFromNumber := got["from_number"]
-	assert.False(t, hasFromNumber, "legacy from_number must be stripped post-cutover")
-	_, hasToNumber := got["to_number"]
-	assert.False(t, hasToNumber, "legacy to_number must be stripped post-cutover")
-	assert.EqualValues(t, 42, got["link_id"], "link_id and type carry through")
+	assert.Equal(t, v7UIDB, got["to_uid"])
+	assert.NotContains(t, got, "from_number", "legacy from_number must be stripped")
+	assert.NotContains(t, got, "to_number", "legacy to_number must be stripped")
+	assert.EqualValues(t, 42, got["link_id"])
 	assert.Equal(t, "blocks", got["type"])
 }
 
@@ -112,72 +126,39 @@ func TestCutoverV7_RewritesLinkEventPayload(t *testing.T) {
 // entry must end up with to_short_id and to_issue_uid, with to_number
 // stripped. Other payload fields (labels, idempotency_key) are untouched.
 func TestCutoverV7_RewritesCreatedEventLinks(t *testing.T) {
-	ctx := context.Background()
-	target := openImportTargetDB(t)
-
-	uidParent := "01HZNQ7VFPK1XGD8R5MABCD4EX"
-	uidChild := "01HZNQ7VFPK1XGD8R5MABCDXYZ"
-	jsonlInput := buildJSONL(
-		`{"kind":"meta","data":{"key":"export_version","value":"7"}}`,
-		`{"kind":"project","data":{"id":1,"uid":"01HZZZZZZZZZZZZZZZZZZZZZZZ","name":"demo","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":3}}`,
-		`{"kind":"issue","data":{"id":1,"uid":"`+uidParent+`","project_id":1,"number":1,"title":"parent","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
-		`{"kind":"issue","data":{"id":2,"uid":"`+uidChild+`","project_id":1,"number":2,"title":"child","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:02.000Z","updated_at":"2026-05-03T00:00:02.000Z","closed_at":null,"deleted_at":null}}`,
-		`{"kind":"event","data":{"id":1,"project_id":1,"project_name":"demo","issue_id":2,"issue_uid":"`+uidChild+`","related_issue_id":null,"related_issue_uid":null,"type":"issue.created","actor":"tester","payload":{"labels":["bug"],"links":[{"type":"parent","to_number":1}],"idempotency_key":"k"},"created_at":"2026-05-03T00:00:02.000Z","uid":"01HZZZZZZZZZZZZZZZZZZZZZE2","origin_instance_uid":"01HZZZZZZZZZZZZZZZZZZZZZ00"}}`,
-	)
-	require.NoError(t, jsonl.Import(ctx, strings.NewReader(jsonlInput), target))
-
-	var payload string
-	require.NoError(t, target.QueryRowContext(ctx,
-		`SELECT payload FROM events WHERE type='issue.created'`).Scan(&payload))
-	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(payload), &got))
-
+	got := importEventPayload(t, twoV7Issues(), v7Event{
+		ID: 1, ProjectID: 1, ProjectName: "demo", Type: "issue.created",
+		IssueID: 2, IssueUID: v7UIDB,
+		PayloadJSON: `{"labels":["bug"],"links":[{"type":"parent","to_number":1}],"idempotency_key":"k"}`,
+	})
 	links, ok := got["links"].([]any)
 	require.True(t, ok, "links must remain an array")
 	require.Len(t, links, 1)
 	link := links[0].(map[string]any)
 	assert.Equal(t, "parent", link["type"])
 	assert.Equal(t, "d4ex", link["to_short_id"])
-	assert.Equal(t, uidParent, link["to_issue_uid"])
-	_, hasNumber := link["to_number"]
-	assert.False(t, hasNumber, "legacy to_number must be stripped from each link entry")
-
-	// Top-level fields untouched.
+	assert.Equal(t, v7UIDA, link["to_issue_uid"])
+	assert.NotContains(t, link, "to_number")
+	// Untouched top-level fields.
 	assert.Equal(t, "k", got["idempotency_key"])
-	labels, _ := got["labels"].([]any)
-	assert.Equal(t, []any{"bug"}, labels)
+	assert.Equal(t, []any{"bug"}, got["labels"])
 }
 
 // TestCutoverV7_RewritesLinksChangedPayload pins the rewrite for the
 // aggregated edit event: v7 numeric parent_set / blocks_added become v8
 // string short_ids paired with parallel *_uid / *_uids fields.
 func TestCutoverV7_RewritesLinksChangedPayload(t *testing.T) {
-	ctx := context.Background()
-	target := openImportTargetDB(t)
-
-	uidA := "01HZNQ7VFPK1XGD8R5MABCD4EX"
-	uidB := "01HZNQ7VFPK1XGD8R5MABCDXYZ"
-	uidC := "01HZNQ7VFPK1XGD8R5MABCDQ99"
-	jsonlInput := buildJSONL(
-		`{"kind":"meta","data":{"key":"export_version","value":"7"}}`,
-		`{"kind":"project","data":{"id":1,"uid":"01HZZZZZZZZZZZZZZZZZZZZZZZ","name":"demo","created_at":"2026-05-03T00:00:00.000Z","next_issue_number":4}}`,
-		`{"kind":"issue","data":{"id":1,"uid":"`+uidA+`","project_id":1,"number":1,"title":"a","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:01.000Z","updated_at":"2026-05-03T00:00:01.000Z","closed_at":null,"deleted_at":null}}`,
-		`{"kind":"issue","data":{"id":2,"uid":"`+uidB+`","project_id":1,"number":2,"title":"b","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:02.000Z","updated_at":"2026-05-03T00:00:02.000Z","closed_at":null,"deleted_at":null}}`,
-		`{"kind":"issue","data":{"id":3,"uid":"`+uidC+`","project_id":1,"number":3,"title":"c","body":"","status":"open","closed_reason":null,"owner":null,"author":"tester","created_at":"2026-05-03T00:00:03.000Z","updated_at":"2026-05-03T00:00:03.000Z","closed_at":null,"deleted_at":null}}`,
-		`{"kind":"event","data":{"id":1,"project_id":1,"project_name":"demo","issue_id":1,"issue_uid":"`+uidA+`","related_issue_id":null,"related_issue_uid":null,"type":"issue.links_changed","actor":"tester","payload":{"parent_set":2,"blocks_added":[3]},"created_at":"2026-05-03T00:00:04.000Z","uid":"01HZZZZZZZZZZZZZZZZZZZZZE3","origin_instance_uid":"01HZZZZZZZZZZZZZZZZZZZZZ00"}}`,
-	)
-	require.NoError(t, jsonl.Import(ctx, strings.NewReader(jsonlInput), target))
-
-	var payload string
-	require.NoError(t, target.QueryRowContext(ctx,
-		`SELECT payload FROM events WHERE type='issue.links_changed'`).Scan(&payload))
-	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(payload), &got))
-
+	issues := append(twoV7Issues(),
+		v7Issue{ProjectID: 1, ProjectName: "demo", UID: v7UIDC, Number: 3, Title: "c"})
+	got := importEventPayload(t, issues, v7Event{
+		ID: 1, ProjectID: 1, ProjectName: "demo", Type: "issue.links_changed",
+		IssueID: 1, IssueUID: v7UIDA,
+		PayloadJSON: `{"parent_set":2,"blocks_added":[3]}`,
+	})
 	assert.Equal(t, "dxyz", got["parent_set"])
-	assert.Equal(t, uidB, got["parent_set_uid"])
+	assert.Equal(t, v7UIDB, got["parent_set_uid"])
 	assert.Equal(t, []any{"dq99"}, got["blocks_added"])
-	assert.Equal(t, []any{uidC}, got["blocks_added_uids"])
+	assert.Equal(t, []any{v7UIDC}, got["blocks_added_uids"])
 }
 
 // TestCutover_PreservesStoredShortIDs pins spec §8.1: a round-trip on a v8

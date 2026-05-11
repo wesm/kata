@@ -102,6 +102,7 @@ func buildIssueBlock(ctx context.Context, evt db.Event, ri issueResolver, log lo
 		return nil
 	}
 	block := map[string]any{
+		"uid":      isnap.UID,
 		"short_id": isnap.ShortID,
 		"status":   isnap.Status,
 		"owner":    isnap.Owner,

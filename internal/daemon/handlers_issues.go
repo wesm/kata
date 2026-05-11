@@ -277,6 +277,14 @@ func editIssueHandler(cfg ServerConfig) func(context.Context, *api.EditIssueRequ
 			if err := fillLinksDeltaParams(ctx, cfg.DB, in.ProjectID, in.Body.LinksDelta, &params); err != nil {
 				return nil, err
 			}
+			// Re-check for add/remove conflicts on resolved issue IDs, not
+			// just raw ref strings. Catches the case where add and remove
+			// list different ref forms ("abc4" vs the issue's full ULID)
+			// that name the same issue — validateLinksDelta's string-eq
+			// can't see this.
+			if err := validateResolvedLinksDelta(&params); err != nil {
+				return nil, err
+			}
 		}
 
 		result, err := cfg.DB.EditIssueAtomic(ctx, params)
@@ -411,6 +419,47 @@ func validateLinksDelta(d *api.LinksDelta) error {
 			"", nil)
 	}
 	return nil
+}
+
+// validateResolvedLinksDelta is the canonical-ID conflict check that runs
+// after fillLinksDeltaParams. validateLinksDelta catches obvious string
+// duplicates before any DB lookup; this pass catches the harder case
+// where add and remove use different ref forms ("abc4" vs the full ULID)
+// that resolve to the same issue.
+func validateResolvedLinksDelta(p *db.EditIssueAtomicParams) error {
+	if id, ok := firstIDConflict(p.AddBlocks, p.RemoveBlocks); ok {
+		return api.NewError(400, "validation",
+			fmt.Sprintf("links_delta conflict: blocks issue id %d appears in both add_blocks and remove_blocks", id),
+			"choose one", nil)
+	}
+	if id, ok := firstIDConflict(p.AddBlockedBy, p.RemoveBlockedBy); ok {
+		return api.NewError(400, "validation",
+			fmt.Sprintf("links_delta conflict: blocked_by issue id %d appears in both add_blocked_by and remove_blocked_by", id),
+			"choose one", nil)
+	}
+	if id, ok := firstIDConflict(p.AddRelated, p.RemoveRelated); ok {
+		return api.NewError(400, "validation",
+			fmt.Sprintf("links_delta conflict: related issue id %d appears in both add_related and remove_related", id),
+			"choose one", nil)
+	}
+	return nil
+}
+
+// firstIDConflict reports the first int64 present in both slices.
+func firstIDConflict(adds, removes []int64) (int64, bool) {
+	if len(adds) == 0 || len(removes) == 0 {
+		return 0, false
+	}
+	seen := make(map[int64]struct{}, len(adds))
+	for _, n := range adds {
+		seen[n] = struct{}{}
+	}
+	for _, n := range removes {
+		if _, ok := seen[n]; ok {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // firstConflict returns the first ref present in both slices, or "" when

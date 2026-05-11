@@ -32,6 +32,7 @@ func sampleEvent(t string) db.Event {
 
 func okIssue(_ context.Context, _ int64) (IssueSnapshot, error) {
 	return IssueSnapshot{
+		UID:     "01HZNQ7VFPK1XGD8R5MABCD4EX",
 		ShortID: "abc4", Title: "fix login crash on Safari", Status: "open",
 		Labels: []string{"bug", "safari"}, Owner: "claude-4.7-wesm-laptop", Author: "claude-4.7-wesm-laptop",
 	}, nil
@@ -102,6 +103,13 @@ func TestBuildStdin_HappyPath(t *testing.T) {
 	issue := got["issue"].(map[string]any)
 	if issue["title"] != "fix login crash on Safari" {
 		t.Fatalf("issue.title: %v", issue["title"])
+	}
+	if issue["uid"] != "01HZNQ7VFPK1XGD8R5MABCD4EX" {
+		t.Fatalf("issue.uid: %v — UID must accompany short_id so hook consumers can key on stable identity",
+			issue["uid"])
+	}
+	if issue["short_id"] != "abc4" {
+		t.Fatalf("issue.short_id: %v", issue["short_id"])
 	}
 	pld := got["payload"].(map[string]any)
 	if pld["comment_body"] != "looks like a render bug" {

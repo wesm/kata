@@ -81,6 +81,17 @@ func Parse(s string) (Ref, error) {
 	if s == "" {
 		return Ref{}, ErrInvalidRef
 	}
+	// ULIDs are canonically uppercase Crockford. Users often paste them
+	// in lowercase (e.g. from a comment body or wherever the display has
+	// already been lowercased); normalize before the length check so a
+	// lowercase 26-char input is recognized as a ULID rather than mis-
+	// parsed as an unusually long short_id.
+	if len(s) == uid.EncodedLen {
+		upper := strings.ToUpper(s)
+		if uid.Valid(upper) {
+			return Ref{ULID: upper}, nil
+		}
+	}
 	if uid.Valid(s) {
 		return Ref{ULID: s}, nil
 	}

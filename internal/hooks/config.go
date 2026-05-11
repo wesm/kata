@@ -72,11 +72,12 @@ type HookJob struct {
 // the stdin payload. Read at fire time, not enqueue time.
 //
 // ShortID replaces the legacy per-project Number sequence (spec §9.7);
-// hook subscribers that need a stable reference key should consume the
-// event envelope's `issue_uid` rather than ShortID, which is a display
-// snapshot. ShortID still appears in the issue block so hooks rendering
-// "issue {short_id}: {title}" can avoid a follow-up lookup.
+// it is a display snapshot that may shift across short_id cutovers or
+// federation merges. UID is the canonical, stable issue identity —
+// hook subscribers that key on identity should consume UID, while the
+// short_id remains available for rendering "issue {short_id}: {title}".
 type IssueSnapshot struct {
+	UID     string
 	ShortID string
 	Title   string
 	Status  string

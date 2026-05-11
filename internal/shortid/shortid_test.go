@@ -71,6 +71,20 @@ func TestParseULID(t *testing.T) {
 	assert.Equal(t, "01HZNQ7VFPK1XGD8R5MABCD4EX", r.ULID)
 }
 
+func TestParseULID_NormalizesLowercaseToUppercase(t *testing.T) {
+	// ULIDs are canonically uppercase Crockford. A user pasting a
+	// lowercase 26-char ULID (e.g. from a comment body that's already
+	// been lowercased) must still resolve as a ULID ref, not a 26-char
+	// short_id — otherwise project-scoped lookup would fail because no
+	// stored short_id matches the uppercase ULID's casing.
+	r, err := shortid.Parse("01hznq7vfpk1xgd8r5mabcd4ex")
+	require.NoError(t, err)
+	assert.Empty(t, r.Project)
+	assert.Empty(t, r.ShortID)
+	assert.Equal(t, "01HZNQ7VFPK1XGD8R5MABCD4EX", r.ULID,
+		"lowercase ULID must normalize to uppercase")
+}
+
 func TestParseQualifiedWithMultipleHashes(t *testing.T) {
 	r, err := shortid.Parse("my#proj#abc4")
 	require.NoError(t, err)

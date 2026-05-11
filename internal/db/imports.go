@@ -604,26 +604,41 @@ func (d *DB) insertLinkEvent(ctx context.Context, tx *sql.Tx, p ImportBatchParam
 	if relatedID == issue.ID {
 		relatedID = link.FromIssueID
 	}
-	toShortID, err := issueShortIDByID(ctx, tx, relatedID)
+	toShortID, toUID, err := issueIdentByID(ctx, tx, relatedID)
 	if err != nil {
 		return Event{}, err
 	}
-	payload, err := json.Marshal(map[string]any{"source": p.Source, "link_id": link.ID, "type": link.Type, "from_short_id": issue.ShortID, "to_short_id": toShortID})
+	// from_uid / to_uid match the live link-event shape from
+	// queries_links.go — without them, TUI SSE refresh paths that key
+	// parent-pane invalidation on payload UIDs miss import-generated
+	// updates.
+	payload, err := json.Marshal(map[string]any{
+		"source":        p.Source,
+		"link_id":       link.ID,
+		"type":          link.Type,
+		"from_short_id": issue.ShortID,
+		"from_uid":      issue.UID,
+		"to_short_id":   toShortID,
+		"to_uid":        toUID,
+	})
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal link payload: %w", err)
 	}
 	return d.insertEventTx(ctx, tx, eventInsert{ProjectID: p.ProjectID, ProjectName: projectName, IssueID: &issue.ID, RelatedIssueID: &relatedID, Type: eventType, Actor: p.Actor, Payload: string(payload)})
 }
 
-func issueShortIDByID(ctx context.Context, tx *sql.Tx, issueID int64) (string, error) {
-	var shortID string
-	if err := tx.QueryRowContext(ctx, `SELECT short_id FROM issues WHERE id = ?`, issueID).Scan(&shortID); err != nil {
+// issueIdentByID returns the (short_id, uid) pair for an issue. Used by
+// import path so link-event payloads carry the same identity pair the
+// live daemon emits.
+func issueIdentByID(ctx context.Context, tx *sql.Tx, issueID int64) (string, string, error) {
+	var shortID, uid string
+	if err := tx.QueryRowContext(ctx, `SELECT short_id, uid FROM issues WHERE id = ?`, issueID).Scan(&shortID, &uid); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", ErrNotFound
+			return "", "", ErrNotFound
 		}
-		return "", fmt.Errorf("lookup issue short_id: %w", err)
+		return "", "", fmt.Errorf("lookup issue ident: %w", err)
 	}
-	return shortID, nil
+	return shortID, uid, nil
 }
 
 func importEventPayload(source, externalID string) (string, error) {

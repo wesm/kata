@@ -19,7 +19,11 @@ import (
 // Cross-project guard: a ULID-based GET on
 // /projects/{project_id}/issues/{ref} must still match project_id. A ULID
 // that resolves to a different project is reported as issue_not_found so
-// the URL path can't be used to fish across projects.
+// the URL path can't be used to fish across projects. The same guard
+// applies to qualified short_id refs ("other#abc4"): if the qualifier
+// names a different project than the URL's project_id, the lookup is
+// rejected — otherwise a same-suffix issue in the URL project could be
+// silently substituted for the one the qualifier intended.
 func resolveIssueRef(ctx context.Context, store *db.DB, projectID int64, ref string, include db.IncludeDeleted) (db.Issue, error) {
 	parsed, err := shortid.Parse(ref)
 	if err != nil {
@@ -38,8 +42,18 @@ func resolveIssueRef(ctx context.Context, store *db.DB, projectID int64, ref str
 		}
 		return issue, nil
 	}
-	// parsed.ShortID is set; parsed.Project is ignored here because the URL
-	// already carries the project_id.
+	if parsed.Project != "" {
+		project, err := store.ProjectByID(ctx, projectID)
+		if err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+			}
+			return db.Issue{}, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if parsed.Project != project.Name {
+			return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)
+		}
+	}
 	issue, err := store.IssueByShortID(ctx, projectID, parsed.ShortID, include)
 	if errors.Is(err, db.ErrNotFound) {
 		return db.Issue{}, api.NewError(404, "issue_not_found", "issue not found", "", nil)

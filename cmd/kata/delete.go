@@ -53,7 +53,7 @@ func newDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runDestructive(cmd, issue.RefForAPI, issue.ShortID, "delete", confirm, nil)
+			return runDestructive(cmd, baseURL, pid, issue.RefForAPI, issue.ShortID, "delete", confirm, nil)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "required to perform the soft delete")
@@ -112,21 +112,14 @@ func resolveConfirm(cmd *cobra.Command, flagVal, expected, prompt string,
 // pathRef is the literal {ref} URL path component; displayRef is the
 // short_id rendered in human-mode success lines (may differ from pathRef
 // when the user passed a ULID).
-func runDestructive(cmd *cobra.Command, pathRef, displayRef, verb, confirm string,
+//
+// pid and baseURL come from the caller's resolveIssueRefForCommand chain so
+// a qualified ref (`other#abc4` from a workspace bound to a different
+// project) targets the project the ref names rather than the workspace's
+// project.
+func runDestructive(cmd *cobra.Command, baseURL string, pid int64, pathRef, displayRef, verb, confirm string,
 	extraBody map[string]any) error {
 	ctx := cmd.Context()
-	start, err := resolveStartPath(flags.Workspace)
-	if err != nil {
-		return err
-	}
-	baseURL, err := ensureDaemon(ctx)
-	if err != nil {
-		return err
-	}
-	pid, err := resolveProjectID(ctx, baseURL, start)
-	if err != nil {
-		return err
-	}
 	actor, _ := resolveActor(flags.As, nil)
 	// Build body from extraBody first so a future caller can't overwrite the
 	// resolved actor with a stray map key.
