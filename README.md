@@ -18,8 +18,8 @@ contracts and UI details may still change before a stable release.
 
 What you can do:
 
-- Track issues separately per project, with issue numbers that restart per
-  project.
+- Track issues separately per project, with short IDs derived from each
+  issue's ULID (`kata#abc4`).
 - Create, list, edit, close, reopen, comment, label, assign, and link issues.
 - Search, idempotent-create, soft-delete, restore, and irreversibly purge.
 - Browse and triage in a TUI (`kata tui`) over the same data.
@@ -31,8 +31,9 @@ How it's built:
 - Workspace-to-project binding lives in `.kata.toml`, falling back to a git
   remote URL when no binding file exists.
 - Data lives locally in SQLite under `KATA_HOME` behind a long-running daemon.
-- Issues have stable ULID `uid` values in JSON; `#N` remains the project-scoped
-  display label.
+- Issues have stable ULID `uid` values; `short_id` (the lowercased last 4+
+  chars of the ULID) is the display label, qualified as `kata#abc4` across
+  projects.
 - `kata export` and `kata import` provide a git-friendly JSONL backup and
   schema cutover path.
 - Successful commands emit JSON for reliable parsing by agents and scripts.
@@ -94,7 +95,7 @@ authenticated server is for.
 | Storage boundary | Project-local `.beads/` Dolt database by default | User-local `KATA_HOME` SQLite database behind a daemon |
 | Repository footprint | Owns issue state near the repo by default; can sync via Dolt remotes | Repo stores only `.kata.toml` project binding |
 | Collaboration model | Dolt push/pull, Dolt server mode, federation, MCP tooling | Local daemon today; future authenticated shared server |
-| IDs | Hash-based IDs by default; counter IDs optional | Per-project sequential numbers (`#12`) |
+| IDs | Hash-based IDs by default; counter IDs optional | Short IDs derived from each issue's ULID (`kata#abc4`) |
 | Workflow shape | Rich graph tasks, priorities, claiming, messages, dependencies | Deliberately small issue ledger: status, comments, labels, owner, links, events |
 | Git relationship | Git integration is optional but first-class; commit conventions and doctor checks can connect code history to issues | Git can help identify workspaces; kata does not infer issue state from commits |
 
@@ -147,9 +148,10 @@ Create and inspect issues:
 ```sh
 kata create "fix login race" --body "Safari can double-submit the callback."
 kata list
-kata show 1
-kata comment 1 --body "Reproduced on macOS."
-kata close 1 --reason done
+# Each issue prints its short_id (e.g. abc4); use it for follow-up commands.
+kata show abc4
+kata comment abc4 --body "Reproduced on macOS."
+kata close abc4 --reason done
 ```
 
 Open the TUI for human triage:
@@ -192,23 +194,24 @@ kata edit <issue-ref> [--title TEXT] [--body TEXT] [--owner NAME]
                   [--parent <ref>] [--blocks <ref>] [--blocked-by <ref>] [--related <ref>]
                   [--remove-parent <ref>] [--remove-blocks <ref>]
                   [--remove-blocked-by <ref>] [--remove-related <ref>]
-kata comment <number> [--body TEXT | --body-file PATH | --body-stdin]
-kata close <number> [--reason done|wontfix|duplicate]
-kata reopen <number>
+kata comment <ref> [--body TEXT | --body-file PATH | --body-stdin]
+kata close <ref> [--reason done|wontfix|duplicate]
+kata reopen <ref>
 ```
 
-Refs accept `#N`, `N`, a full ULID, or an 8+ char ULID prefix. The
-relationship flags on `create`/`edit` are documented in detail in
-"Relationships ride on `kata create` and `kata edit`" below.
+Refs accept a bare short_id (`abc4`), a qualified short_id (`kata#abc4`), or
+a full 26-char ULID. The relationship flags on `create`/`edit` are
+documented in detail in "Relationships ride on `kata create` and `kata edit`"
+below.
 
 Labels, ownership, and relationships:
 
 ```sh
-kata label add <number> <label>
-kata label rm <number> <label>
+kata label add <ref> <label>
+kata label rm <ref> <label>
 kata labels
-kata assign <number> <owner>
-kata unassign <number>
+kata assign <ref> <owner>
+kata unassign <ref>
 ```
 
 Relationships ride on `kata create` and `kata edit` as repeatable flags,
@@ -216,24 +219,25 @@ all framed from the operating issue's POV:
 
 ```sh
 # Add (work on create + edit)
-kata create "..." --parent N --blocks N --blocked-by N --related N
-kata edit   <ref> --parent N --blocks N --blocked-by N --related N
+kata create "..." --parent <ref> --blocks <ref> --blocked-by <ref> --related <ref>
+kata edit   <ref> --parent <ref> --blocks <ref> --blocked-by <ref> --related <ref>
 
 # Remove (edit only)
-kata edit <ref> --remove-parent N        # strict: must equal current parent
-kata edit <ref> --remove-blocks N        # idempotent
-kata edit <ref> --remove-blocked-by N    # idempotent
-kata edit <ref> --remove-related N       # idempotent
+kata edit <ref> --remove-parent <ref>        # strict: must equal current parent
+kata edit <ref> --remove-blocks <ref>        # idempotent
+kata edit <ref> --remove-blocked-by <ref>    # idempotent
+kata edit <ref> --remove-related <ref>       # idempotent
 ```
 
 `--parent` is at-most-one and replaces any existing parent on `edit`.
-The other flags are repeatable. `--remove-parent N` is strict: it fails
-loudly if the current parent is unset or different from N (an
+The other flags are repeatable. `--remove-parent <ref>` is strict: it fails
+loudly if the current parent is unset or different from `<ref>` (an
 optimistic-concurrency check against agents acting on stale state). All
 mutations in a single `edit` call apply atomically.
 
-For `show` and the issue-ref arguments above, an issue ref can be `#N`,
-`N`, a full UID, or a unique UID prefix of at least 8 characters.
+Every `<ref>` above accepts a bare short_id (`abc4`), a qualified
+short_id (`kata#abc4`), or a 26-char ULID. Legacy numeric `#N` refs
+no longer resolve.
 
 Search, readiness, events, and project inspection:
 
@@ -254,8 +258,8 @@ kata import --input PATH --target PATH [--force]
 
 `kata digest` summarizes activity over a time window. It groups events by
 actor and lists per-issue actions (created, commented:N, closed:done,
-labeled:bug, unblocks:#7, ...) so you can see at a glance what each agent or
-person did overnight. `--since` accepts a duration (`24h`, `7d`) or an
+labeled:bug, unblocks:abc4, ...) so you can see at a glance what each agent
+or person did overnight. `--since` accepts a duration (`24h`, `7d`) or an
 RFC3339 timestamp; `--until` defaults to now. The default scope is the
 current workspace's project; pass `--all-projects` for a cross-project
 digest, or `--project-id N` for an explicit one. `--actor` is repeatable to
@@ -264,12 +268,13 @@ limit the report to one or more actors.
 Destructive operations are explicit:
 
 ```sh
-kata delete <number> --force --confirm "DELETE #<number>"
-kata restore <number>
-kata purge <number> --force --confirm "PURGE #<number>"
+kata delete <ref> --force --confirm "DELETE <qualified-id>"
+kata restore <ref>
+kata purge <ref> --force --confirm "PURGE <qualified-id>"
 ```
 
-`delete` is reversible. `purge` is not.
+The confirmation string is the issue's qualified short_id, e.g.
+`DELETE kata#abc4`. `delete` is reversible. `purge` is not.
 
 Daemon, diagnostics, and agent instructions:
 
@@ -309,7 +314,7 @@ Per-task guidelines:
 - Prefer updating existing issues over opening duplicates.
 - Close only when the work is actually complete.
 - Do not run `delete` or `purge` unless the user explicitly asks for that
-  exact destructive action and issue number.
+  exact destructive action and issue ref.
 
 Use relationships deliberately. The link types mean:
 
@@ -319,7 +324,9 @@ Use relationships deliberately. The link types mean:
 | `blocks` | The first issue must be resolved before the second can proceed. |
 | `related` | Useful context, but not ordering. |
 
-Example session:
+Example session (using `abc4` as a placeholder for the issue's actual
+short_id, which `kata create --json` and `kata search --json` both
+return):
 
 ```sh
 # Search before creating
@@ -332,13 +339,13 @@ kata create "fix login race" \
   --json
 
 # Update an existing issue rather than open a duplicate
-kata show 12 --json
-kata comment 12 --body "Found another reproduction path." --json
-kata label add 12 safari --json
-kata edit 12 --blocks 18 --json
+kata show abc4 --json
+kata comment abc4 --body "Found another reproduction path." --json
+kata label add abc4 safari --json
+kata edit abc4 --blocks d4ex --json
 
 # Close when done
-kata close 12 --reason done --json
+kata close abc4 --reason done --json
 ```
 
 For long-running agents, poll events and remember the returned cursor; resume
@@ -366,8 +373,8 @@ Today kata is local-first:
 
 Multiple checkouts or repositories can share one kata project when they use
 the same `.kata.toml` project name and run `kata init` in each checkout.
-That shares issue numbering, labels, links, and events across those workspaces
-in the same local database.
+That shares the issue ledger — short_ids, labels, links, and events —
+across those workspaces in the same local database.
 
 If a repository rename accidentally creates a second project, merge the old
 source into the surviving target, for example:
