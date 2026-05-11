@@ -54,12 +54,13 @@ func TestSmoke_FederationFoundationV3(t *testing.T) {
 	defer func() { _ = sseResp.Body.Close() }()
 	framer := newSmokeFramer(sseResp.Body)
 
-	// 5. Create two issues + a comment. Issue #1 is purged in step 7;
-	//    issue #2 survives so step 8's JSONL export still has events to
-	//    validate (a vacuous "no events left" export would pass otherwise).
-	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
-		map[string]any{"actor": "agent", "title": "v3-smoke"}))
-	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/1/comments",
+	// 5. Create two issues + a comment. The first issue is purged in step
+	//    7; the second survives so step 8's JSONL export still has events
+	//    to validate (a vacuous "no events left" export would pass
+	//    otherwise).
+	target := createIssue(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
+		map[string]any{"actor": "agent", "title": "v3-smoke"})
+	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues/"+target.ShortID+"/comments",
 		map[string]any{"actor": "agent", "body": "smoke comment"}))
 	requireOK(t, postJSON(t, env.HTTP, env.URL+"/api/v1/projects/"+pidStr+"/issues",
 		map[string]any{"actor": "agent", "title": "v3-survivor"}))
@@ -79,12 +80,12 @@ func TestSmoke_FederationFoundationV3(t *testing.T) {
 	}
 
 	// 7. Purge the issue and capture the purge_log row from the response.
-	purgeURL := env.URL + "/api/v1/projects/" + pidStr + "/issues/1/actions/purge"
+	purgeURL := env.URL + "/api/v1/projects/" + pidStr + "/issues/" + target.ShortID + "/actions/purge"
 	pReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, purgeURL,
 		strings.NewReader(`{"actor":"agent"}`))
 	require.NoError(t, err)
 	pReq.Header.Set("Content-Type", "application/json")
-	pReq.Header.Set("X-Kata-Confirm", "PURGE #1")
+	pReq.Header.Set("X-Kata-Confirm", "PURGE federation-smoke#"+target.ShortID)
 	pResp, err := env.HTTP.Do(pReq) //nolint:gosec // test loopback
 	require.NoError(t, err)
 	defer func() { _ = pResp.Body.Close() }()
