@@ -82,7 +82,7 @@ func newCreateCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		projectID, err := resolveProjectID(ctx, baseURL, start)
+		projectID, projectName, err := resolveProjectIDAndName(ctx, baseURL, start)
 		if err != nil {
 			return err
 		}
@@ -117,28 +117,28 @@ func newCreateCmd() *cobra.Command {
 		var links []map[string]any
 		var parentRef string
 		if cmd.Flags().Changed("parent") {
-			r, err := resolveSingletonRefToWire(ctx, baseURL, projectID, parentRefSlice, "--parent", false)
+			r, err := resolveSingletonRefToWire(ctx, baseURL, projectName, projectID, parentRefSlice, "--parent", false)
 			if err != nil {
 				return err
 			}
 			parentRef = r
 			links = append(links, map[string]any{"type": "parent", "to_ref": r})
 		}
-		blocksRefs, err := resolveRefSliceToWire(ctx, baseURL, projectID, blocks, "--blocks")
+		blocksRefs, err := resolveRefSliceToWire(ctx, baseURL, projectName, projectID, blocks, "--blocks")
 		if err != nil {
 			return err
 		}
 		for _, r := range blocksRefs {
 			links = append(links, map[string]any{"type": "blocks", "to_ref": r})
 		}
-		blockedByRefs, err := resolveRefSliceToWire(ctx, baseURL, projectID, blockedBy, "--blocked-by")
+		blockedByRefs, err := resolveRefSliceToWire(ctx, baseURL, projectName, projectID, blockedBy, "--blocked-by")
 		if err != nil {
 			return err
 		}
 		for _, r := range blockedByRefs {
 			links = append(links, map[string]any{"type": "blocks", "to_ref": r, "incoming": true})
 		}
-		relatedRefs, err := resolveRefSliceToWire(ctx, baseURL, projectID, related, "--related")
+		relatedRefs, err := resolveRefSliceToWire(ctx, baseURL, projectName, projectID, related, "--related")
 		if err != nil {
 			return err
 		}

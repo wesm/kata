@@ -135,6 +135,13 @@ func workspaceProjectName(startPath string) string {
 // flagName is folded into the validation error so the user knows which flag
 // failed when one of several link flags is malformed.
 //
+// currentProject is the canonical name of the project the surrounding command
+// targets (i.e. the URL issue's project for `kata edit`, or the create-time
+// project for `kata create`). A qualified ref whose project segment names a
+// different project is rejected — cross-project links require the full ULID
+// path, not a `<other>#abc4` shortcut. Pass "" to skip the cross-project
+// check (intended for callers that can't yet plumb the canonical name).
+//
 // includeDeleted=true matches the soft-delete-tolerant lookup the daemon's
 // remove paths use: the link row is real, and the user can still ask to
 // clean it up even when the peer issue has been soft-deleted. The remove
@@ -145,7 +152,7 @@ func workspaceProjectName(startPath string) string {
 // avoid hard-coding daemon internals, we send the resolved ref string and let
 // the daemon do the lookup; this helper validates the ref locally and returns
 // the literal string the wire payload should carry.
-func resolveRefToWireOpts(ctx context.Context, baseURL string, projectID int64, ref, flagName string, includeDeleted bool) (string, error) {
+func resolveRefToWireOpts(ctx context.Context, baseURL, currentProject string, projectID int64, ref, flagName string, includeDeleted bool) (string, error) {
 	_ = ctx
 	_ = baseURL
 	_ = projectID
@@ -159,9 +166,16 @@ func resolveRefToWireOpts(ctx context.Context, baseURL string, projectID int64, 
 	}
 	// Pre-flight: surface a legacy numeric ref with the documented error so
 	// users see "use a short_id" instead of a daemon-side "issue not found".
-	// We don't know workspaceProject here, but ResolveRef rejects numerics
-	// before consulting workspaceProject, so an empty string is fine.
-	parsed, err := ResolveRef(ref, "anything")
+	// Pass currentProject (when known) as the workspace fallback so bare
+	// refs validate without requiring callers to plumb their own.
+	fallbackProject := currentProject
+	if fallbackProject == "" {
+		// ResolveRef rejects numerics before consulting workspaceProject,
+		// so a placeholder is safe when the caller doesn't yet plumb
+		// the canonical name.
+		fallbackProject = "anything"
+	}
+	parsed, err := ResolveRef(ref, fallbackProject)
 	if err != nil {
 		// Surface validation errors from ResolveRef (legacy numbers, bad
 		// shortid syntax) with a flag-name prefix so the user can tell
@@ -172,31 +186,48 @@ func resolveRefToWireOpts(ctx context.Context, baseURL string, projectID int64, 
 			ExitCode: ExitValidation,
 		}
 	}
+	// A qualified ref ("other#abc4") names a project explicitly. The
+	// wire shape we hand the daemon (RefForAPI is just the short_id) is
+	// resolved against the URL issue's project, so a cross-project ref
+	// would silently target the wrong issue. Reject up front and steer
+	// the user toward the ULID form, which the daemon resolves
+	// project-independently. parsed.ProjectName matches currentProject
+	// for both bare refs (workspace fallback) and same-project qualified
+	// refs ("kata#abc4" when current project is "kata"); the inequality
+	// fires only when the ref names a different project.
+	if currentProject != "" && parsed.ProjectName != "" && parsed.ProjectName != currentProject {
+		return "", &cliError{
+			Message: fmt.Sprintf("%s: cross-project refs not supported here; pass the issue's ULID instead of %q",
+				flagName, ref),
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
 	return parsed.RefForAPI, nil
 }
 
 // resolveRefSliceToWire maps every entry of refs through resolveRefToWireOpts.
 // Returns the slice in the original order. Empty refs is OK (nil out, nil err).
-func resolveRefSliceToWire(ctx context.Context, baseURL string, projectID int64, refs []string, flagName string) ([]string, error) {
-	return resolveRefSliceToWireOpts(ctx, baseURL, projectID, refs, flagName, false, false)
+func resolveRefSliceToWire(ctx context.Context, baseURL, currentProject string, projectID int64, refs []string, flagName string) ([]string, error) {
+	return resolveRefSliceToWireOpts(ctx, baseURL, currentProject, projectID, refs, flagName, false, false)
 }
 
 // resolveRefSliceToWireIdempotentRemove is the variant the
 // idempotent --remove-blocks / --remove-blocked-by / --remove-related
 // flags use. In addition to soft-delete tolerance, it drops refs that
 // resolve to "issue not found" entirely.
-func resolveRefSliceToWireIdempotentRemove(ctx context.Context, baseURL string, projectID int64, refs []string, flagName string) ([]string, error) {
-	return resolveRefSliceToWireOpts(ctx, baseURL, projectID, refs, flagName, true, true)
+func resolveRefSliceToWireIdempotentRemove(ctx context.Context, baseURL, currentProject string, projectID int64, refs []string, flagName string) ([]string, error) {
+	return resolveRefSliceToWireOpts(ctx, baseURL, currentProject, projectID, refs, flagName, true, true)
 }
 
-func resolveRefSliceToWireOpts(ctx context.Context, baseURL string, projectID int64, refs []string, flagName string, includeDeleted, tolerateNotFound bool) ([]string, error) {
+func resolveRefSliceToWireOpts(ctx context.Context, baseURL, currentProject string, projectID int64, refs []string, flagName string, includeDeleted, tolerateNotFound bool) ([]string, error) {
 	_ = tolerateNotFound // refs are validated locally; daemon does the existence check
 	if len(refs) == 0 {
 		return nil, nil
 	}
 	out := make([]string, 0, len(refs))
 	for _, r := range refs {
-		s, err := resolveRefToWireOpts(ctx, baseURL, projectID, r, flagName, includeDeleted)
+		s, err := resolveRefToWireOpts(ctx, baseURL, currentProject, projectID, r, flagName, includeDeleted)
 		if err != nil {
 			return nil, err
 		}
@@ -210,12 +241,12 @@ func resolveRefSliceToWireOpts(ctx context.Context, baseURL string, projectID in
 // every entry resolves to. Rejects only when entries resolve to *different*
 // refs (after normalization), so equivalent forms — `abc4` and `kata#abc4`,
 // the same string twice — succeed.
-func resolveSingletonRefToWire(ctx context.Context, baseURL string, projectID int64, values []string, flagName string, includeDeleted bool) (string, error) {
+func resolveSingletonRefToWire(ctx context.Context, baseURL, currentProject string, projectID int64, values []string, flagName string, includeDeleted bool) (string, error) {
 	if len(values) == 0 {
 		return "", nil
 	}
 	first := strings.TrimSpace(values[0])
-	firstResolved, err := resolveRefToWireOpts(ctx, baseURL, projectID, first, flagName, includeDeleted)
+	firstResolved, err := resolveRefToWireOpts(ctx, baseURL, currentProject, projectID, first, flagName, includeDeleted)
 	if err != nil {
 		return "", err
 	}
@@ -224,7 +255,7 @@ func resolveSingletonRefToWire(ctx context.Context, baseURL string, projectID in
 		if trimmed == first {
 			continue
 		}
-		resolved, err := resolveRefToWireOpts(ctx, baseURL, projectID, trimmed, flagName, includeDeleted)
+		resolved, err := resolveRefToWireOpts(ctx, baseURL, currentProject, projectID, trimmed, flagName, includeDeleted)
 		if err != nil {
 			return "", err
 		}

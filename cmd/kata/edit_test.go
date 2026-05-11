@@ -221,6 +221,43 @@ func TestEdit_EquivalentParentRefsAccepted(t *testing.T) {
 	assert.True(t, sawParent, "equivalent --parent refs must reconcile to the same issue")
 }
 
+// TestEdit_CrossProjectLinkRefRejected pins that link flags refuse a
+// qualified ref naming a project other than the URL issue's project.
+// The daemon's wire shape (RefForAPI is just the short_id resolved
+// against the current project) would silently target the wrong issue;
+// the user must pass the peer's ULID for a cross-project link.
+func TestEdit_CrossProjectLinkRefRejected(t *testing.T) {
+	env, dir := setupCLIEnv(t)
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	subject := createIssue(t, env, pid, "subject")
+	peer := createIssue(t, env, pid, "peer")
+
+	_, err := runCLICapture(t, env, dir, "edit", subject, "--blocks", "other#"+peer)
+	require.Error(t, err, "cross-project qualified ref must be rejected")
+	assert.Contains(t, err.Error(), "cross-project")
+	assert.Contains(t, err.Error(), "--blocks")
+}
+
+// TestEdit_ConflictDetectedAcrossRefForms pins that the add/remove
+// conflict check normalizes refs to canonical UIDs before comparing,
+// so spelling the same target two different ways still fires the
+// validation error. Without canonicalization, `--blocks abc4
+// --remove-blocks <ULID-of-abc4>` would pass string-equality and reach
+// the daemon as a contradictory mutation.
+func TestEdit_ConflictDetectedAcrossRefForms(t *testing.T) {
+	env, dir := setupCLIEnv(t)
+	pid := resolvePIDViaHTTP(t, env.URL, dir)
+	subject := createIssue(t, env, pid, "subject")
+	target := createIssueViaHTTPFull(t, env, dir, "target")
+
+	_, err := runCLICapture(t, env, dir, "edit", subject,
+		"--blocks", target.ShortID,
+		"--remove-blocks", target.UID,
+	)
+	require.Error(t, err, "same target spelled as short_id and ULID must conflict")
+	assert.Contains(t, err.Error(), "--blocks and --remove-blocks both target")
+}
+
 // TestEdit_PriorityOnPATCH sets priority via the unified PATCH.
 func TestEdit_PriorityOnPATCH(t *testing.T) {
 	env, dir := setupCLIEnv(t)
