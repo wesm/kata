@@ -611,13 +611,14 @@ func (m Model) routeTopLevel(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		prevLayout := m.layout
 		m.width, m.height = msg.Width, msg.Height
 		m.layout = m.resolveLayout()
+		var flipCmd tea.Cmd
 		if prevLayout != m.layout {
-			m = m.handleLayoutFlip(prevLayout)
+			m, flipCmd = m.handleLayoutFlip(prevLayout)
 		}
 		// Cache the terminal/detail viewport so PgDn can clamp body
 		// scroll against the same dimensions the renderer will use.
 		m.detail = m.applyDetailViewportCache(m.detail)
-		return m, nil, true
+		return m, flipCmd, true
 	case tea.KeyMsg:
 		// Modal owns input when active. Enter the modal-specific
 		// handler before falling through to input/global routing.
@@ -1522,7 +1523,8 @@ func (m Model) routeGlobalKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		return next, cmd, true
 	}
 	if m.keymap.ToggleLayout.matches(msg) {
-		return m.toggleLayout(), nil, true
+		next, cmd := m.toggleLayout()
+		return next, cmd, true
 	}
 	if next, cmd, ok := m.routeLayoutFocusKey(msg); ok {
 		return next, cmd, true

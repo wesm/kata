@@ -491,7 +491,7 @@ func TestModel_ToggleLayout_RefreshesViewportCache(t *testing.T) {
 		t.Fatalf("setup: expected split layout cached")
 	}
 
-	m = m.toggleLayout() // split → stacked
+	m, _ = m.toggleLayout() // split → stacked
 	if m.detail.lastDetailSplit {
 		t.Fatalf("after toggle: lastDetailSplit still true; cache is stale")
 	}

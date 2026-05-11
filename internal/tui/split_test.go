@@ -137,6 +137,51 @@ func TestSplit_InitialFetchBootstrapsDetailPane(t *testing.T) {
 	}
 }
 
+// TestSplit_StackedToSplitResizeBootstrapsDetailPane covers the
+// resize/layout-toggle path: even when the initial fetch lands while
+// the terminal is still stacked, a later widen (or a manual L toggle)
+// that flips us into split must auto-populate the detail pane. Without
+// this, an agent who starts narrow then maximizes their terminal would
+// land on an empty right-hand pane.
+func TestSplit_StackedToSplitResizeBootstrapsDetailPane(t *testing.T) {
+	t.Setenv("KATA_COLOR_MODE", "none")
+	t.Setenv("NO_COLOR", "")
+	applyDefaultColorMode(io.Discard)
+	defer applyDefaultColorMode(io.Discard)
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7, projectName: "kata"}
+	// Boot stacked, then deliver the list payload while still stacked.
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	if m.layout != layoutStacked {
+		t.Fatalf("setup: layout=%v want layoutStacked", m.layout)
+	}
+	issues := snapListFixture()
+	m, _ = updateModel(m, initialFetchMsg{
+		dispatchKey: cacheKey{projectID: 7, limit: queueFetchLimit},
+		issues:      issues,
+	})
+	if m.detail.issue != nil {
+		t.Fatalf("setup: detail.issue=%+v after stacked fetch, want nil",
+			m.detail.issue)
+	}
+	// Now widen past the split breakpoint — should bootstrap detail.
+	nm, cmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if nm.layout != layoutSplit {
+		t.Fatalf("after resize: layout=%v want layoutSplit", nm.layout)
+	}
+	if nm.detail.issue == nil {
+		t.Fatal("detail.issue stayed nil after stacked→split resize")
+	}
+	if nm.detail.issue.ShortID != issues[0].ShortID {
+		t.Errorf("detail.issue.ShortID = %q, want %q",
+			nm.detail.issue.ShortID, issues[0].ShortID)
+	}
+	if cmd == nil {
+		t.Error("expected a debounce tick cmd for the bootstrap detail fetch")
+	}
+}
+
 // TestSplit_InitialFetchSkipsBootstrapInStacked: the auto-load is
 // scoped to split layout. In stacked mode the user never sees the
 // detail pane until they explicitly open an issue, so loading detail

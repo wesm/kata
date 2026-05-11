@@ -1,5 +1,7 @@
 package tui
 
+import tea "github.com/charmbracelet/bubbletea"
+
 // layoutMode discriminates between the stacked single-view layout
 // (the M1-M5 default) and the M6 split-pane layout that renders the
 // list and detail side-by-side. Re-evaluated on every WindowSizeMsg
@@ -126,7 +128,7 @@ func (m Model) resolveLayout() layoutMode {
 // rendered layout may degrade to stacked if the terminal is too
 // narrow, but preferredLayout retains the user's intent so a wider
 // resize restores the chosen split layout (roborev #17173 finding 1).
-func (m Model) toggleLayout() Model {
+func (m Model) toggleLayout() (Model, tea.Cmd) {
 	prev := m.layout
 	m.layoutLocked = true
 	if m.layout == layoutSplit {
@@ -135,8 +137,9 @@ func (m Model) toggleLayout() Model {
 		m.preferredLayout = layoutSplit
 	}
 	m.layout = m.resolveLayout()
+	var flipCmd tea.Cmd
 	if prev != m.layout {
-		m = m.handleLayoutFlip(prev)
+		m, flipCmd = m.handleLayoutFlip(prev)
 	}
 	// The layout flip changes which footer help-row table is rendered
 	// and whether the detail pane is full-width or boxed in a split
@@ -144,7 +147,7 @@ func (m Model) toggleLayout() Model {
 	// the cache so PgUp/PgDn paging and EOF clamping use the new
 	// dimensions immediately, not the stale ones from before the flip.
 	m.detail = m.applyDetailViewportCache(m.detail)
-	return m
+	return m, flipCmd
 }
 
 // handleLayoutFlip preserves selection and focus across a layout
@@ -166,7 +169,7 @@ func (m Model) toggleLayout() Model {
 // identity-based and dm.issue is a pointer the layout flip never
 // touches. Other invariants (gen counters, formGen, modal state,
 // SSE state) live on Model and are likewise untouched.
-func (m Model) handleLayoutFlip(prev layoutMode) Model {
+func (m Model) handleLayoutFlip(prev layoutMode) (Model, tea.Cmd) {
 	if prev == layoutSplit && m.layout == layoutStacked {
 		// Coming back to the stacked layout: pick the view that
 		// matches the focused pane so the user keeps seeing the
@@ -176,7 +179,7 @@ func (m Model) handleLayoutFlip(prev layoutMode) Model {
 		} else {
 			m.view = viewList
 		}
-		return m
+		return m, nil
 	}
 	if prev == layoutStacked && m.layout == layoutSplit {
 		// Entering split: derive focus from the view the user was
@@ -188,7 +191,11 @@ func (m Model) handleLayoutFlip(prev layoutMode) Model {
 		} else {
 			m.focus = focusList
 		}
-		return m
+		// Bootstrap the detail pane on the first stacked→split flip so
+		// a launch that landed before the size msg, or a runtime
+		// widen/resize/toggle, populates the right pane without
+		// requiring a j/k nudge.
+		return m.maybeBootstrapSplitDetail()
 	}
-	return m
+	return m, nil
 }
