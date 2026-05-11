@@ -135,10 +135,10 @@ type SearchCandidate struct {
 // is included so the handler can populate `original_event` in the reuse-case
 // MutationResponse without a second query.
 type IdempotencyMatch struct {
-	IssueID     int64
+	IssueID      int64
 	IssueShortID string
-	Fingerprint string
-	Event       Event
+	Fingerprint  string
+	Event        Event
 }
 
 // PurgeLog mirrors a row in purge_log. Snapshots the issue identity at purge

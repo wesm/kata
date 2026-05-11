@@ -69,7 +69,7 @@ func deriveShortIDsForIssues(envs []Envelope) error {
 		projectID int64                      // for grouping
 		raw       map[string]json.RawMessage // decoded data, mutated in place
 	}
-	var pending []pendingIssue
+	pending := []pendingIssue{}
 	for i, env := range envs {
 		if env.Kind != KindIssue {
 			continue

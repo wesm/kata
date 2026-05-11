@@ -195,9 +195,9 @@ func buildRichJSONLFixture(t *testing.T) richJSONLFixture {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType:   "issue.linked",
+		EventType:    "issue.linked",
 		EventIssueID: blocker.ID,
-		FromShortID: blocker.ShortID, FromUID: blocker.UID,
+		FromShortID:  blocker.ShortID, FromUID: blocker.UID,
 		ToShortID: login.ShortID, ToUID: login.UID,
 		Actor: "tester",
 	})

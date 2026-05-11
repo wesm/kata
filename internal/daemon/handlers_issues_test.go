@@ -1545,7 +1545,9 @@ func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
 		map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here"})
 	requireOK(t, first)
 	var firstOut struct {
-		Issue struct{ ShortID string `json:"short_id"` } `json:"issue"`
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
 	}
 	require.NoError(t, json.Unmarshal(first.body, &firstOut))
 
@@ -1553,7 +1555,9 @@ func TestCreate_ForceNewBypassesLookalike(t *testing.T) {
 		map[string]any{"actor": "agent-1", "title": "fix login crash", "body": "stack trace here", "force_new": true})
 	requireOK(t, second)
 	var out struct {
-		Issue struct{ ShortID string `json:"short_id"` } `json:"issue"`
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
 	}
 	require.NoError(t, json.Unmarshal(second.body, &out))
 	assert.NotEmpty(t, out.Issue.ShortID, "force_new response must carry a short_id")

@@ -51,10 +51,10 @@ type EditIssueAtomicParams struct {
 // carries both forms so consumers can render display strings and key on
 // UIDs for cross-cutover stability.
 type AtomicEditChanges struct {
-	ParentSet           *string `json:"parent_set,omitempty"`
-	ParentSetUID        *string `json:"parent_set_uid,omitempty"`
-	ParentRemoved       *string `json:"parent_removed,omitempty"`
-	ParentRemovedUID    *string `json:"parent_removed_uid,omitempty"`
+	ParentSet        *string `json:"parent_set,omitempty"`
+	ParentSetUID     *string `json:"parent_set_uid,omitempty"`
+	ParentRemoved    *string `json:"parent_removed,omitempty"`
+	ParentRemovedUID *string `json:"parent_removed_uid,omitempty"`
 
 	BlocksAdded     []string `json:"blocks_added,omitempty"`
 	BlocksAddedUIDs []string `json:"blocks_added_uids,omitempty"`

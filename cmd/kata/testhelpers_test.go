@@ -550,35 +550,3 @@ func fetchIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, ref string) Is
 	t.Helper()
 	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+ref)
 }
-
-// fetchDeletedIssueViaHTTP is the include_deleted=true variant. Used by
-// remove-flag tests that need to read a soft-deleted peer's UID after
-// it's already been hidden from the live-issue read path.
-func fetchDeletedIssueViaHTTP(t *testing.T, env *testenv.Env, pid int64, ref string) IssueResponse {
-	t.Helper()
-	return getJSON[IssueResponse](t, env.URL+"/api/v1/projects/"+itoa(pid)+"/issues/"+ref+"?include_deleted=true")
-}
-
-// unambiguousUIDPrefix returns the shortest prefix of target that no entry
-// in others starts with, padded to at least 8 chars (the daemon's prefix
-// floor). Used by UID-prefix CLI tests so they don't rely on a fixed
-// length that breaks when ULIDs minted in the same millisecond happen to
-// share a long random suffix.
-func unambiguousUIDPrefix(t *testing.T, target string, others []string) string {
-	t.Helper()
-	for n := 8; n <= len(target); n++ {
-		candidate := target[:n]
-		clash := false
-		for _, o := range others {
-			if o != target && strings.HasPrefix(o, candidate) {
-				clash = true
-				break
-			}
-		}
-		if !clash {
-			return candidate
-		}
-	}
-	t.Fatalf("could not find unambiguous prefix of %s among %v", target, others)
-	return ""
-}

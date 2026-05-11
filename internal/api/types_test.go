@@ -191,7 +191,7 @@ func TestLinksDeltaUsesRefStrings(t *testing.T) {
 func TestLinkChangesUsesLinkPeer(t *testing.T) {
 	typ := reflect.TypeOf(api.LinkChanges{})
 	peerType := reflect.TypeOf(api.LinkPeer{})
-	peerPtrType := reflect.PtrTo(peerType)
+	peerPtrType := reflect.PointerTo(peerType)
 	peerSliceType := reflect.SliceOf(peerType)
 
 	ptrFields := []string{"ParentSet", "ParentRemoved"}

@@ -118,9 +118,9 @@ func TestExportNoIncludeDeletedOmitsSoftDeletedIssueDependents(t *testing.T) {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType:   "issue.linked",
+		EventType:    "issue.linked",
 		EventIssueID: deleted.ID,
-		FromShortID: deleted.ShortID, FromUID: deleted.UID,
+		FromShortID:  deleted.ShortID, FromUID: deleted.UID,
 		ToShortID: kept.ShortID, ToUID: kept.UID,
 		Actor: "tester",
 	})

@@ -30,9 +30,9 @@ func TestExportImport_DeletedIssueOmitsImportMappings(t *testing.T) {
 		Type:        "blocks",
 		Author:      "tester",
 	}, db.LinkEventParams{
-		EventType:   "issue.linked",
+		EventType:    "issue.linked",
 		EventIssueID: deleted.ID,
-		FromShortID: deleted.ShortID, FromUID: deleted.UID,
+		FromShortID:  deleted.ShortID, FromUID: deleted.UID,
 		ToShortID: live.ShortID, ToUID: live.UID,
 		Actor: "tester",
 	})
