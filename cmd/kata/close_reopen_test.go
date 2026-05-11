@@ -187,6 +187,27 @@ func TestCloseCmd_AlreadyClosedIsIdempotent(t *testing.T) {
 	assert.Contains(t, show, `"status":"closed"`)
 }
 
+// TestCloseCmd_AlreadyClosed_RetryWithInvalidPayloadStillIdempotent pins
+// that the already-closed short-circuit runs BEFORE substance / evidence
+// validation. A retry that omits --message and --evidence (e.g., a
+// caller replaying a stale request after a connection drop) must still
+// surface success because the issue is already in the target state.
+// Pre-fix the validator ran first and returned 400 even though no state
+// transition was on the table.
+func TestCloseCmd_AlreadyClosed_RetryWithInvalidPayloadStillIdempotent(t *testing.T) {
+	env, dir, _, ref := setupWorkspaceWithIssue(t, "test issue")
+	runCLI(t, env, dir, "close", ref, "--done",
+		"--message", "Fixed Safari callback double-submit and ran tests.",
+		"--commit", "abc1234")
+
+	// Retry with empty message and no evidence. A first close with this
+	// payload would 400 — but the issue is already closed, so the
+	// handler must short-circuit ahead of ValidateCloseInput.
+	out := runCLI(t, env, dir, "close", ref, "--done")
+	assert.Contains(t, out, "closed",
+		"already-closed retry with invalid payload must return success envelope")
+}
+
 func TestCloseCmd_HelpBannerNamesObligation(t *testing.T) {
 	out := string(executeRoot(t, newRootCmd(), "close", "--help"))
 	assert.Contains(t, out, "asserts that the work it describes is complete")

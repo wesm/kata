@@ -40,29 +40,26 @@ func registerActionsHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if tuiClose && in.Body.Reason == "" {
 			in.Body.Reason = "done"
 		}
-		if !tuiClose {
-			if err := ValidateCloseInput(in.Body.Reason, in.Body.Message, in.Body.Evidence); err != nil {
-				return nil, api.NewError(400, "validation", err.Error(), "", nil)
-			}
-		}
 		issue, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
 		if err != nil {
 			return nil, err
 		}
 		// Already-closed short-circuit. CloseIssue itself returns
 		// changed=false for this case; short-circuiting before the
-		// guards keeps the retry idempotent (no spurious 429 from a
-		// throttle window that just happens to be hot, no 409 from a
-		// child that landed after the original close). Validation and
-		// evidence-target checks are also skipped because the issue is
-		// already in the target state — those guards exist to gate
-		// state transitions, and there is no transition here.
+		// guards (and substance / evidence validation) keeps idempotent
+		// retries from failing with 400 / 409 / 429 when the retry
+		// happens to omit fields the validator requires, when a child
+		// has landed since the original close, or when the throttle
+		// window is hot. Validation only gates real state transitions.
 		if issue.Status == "closed" {
 			out := &api.MutationResponse{}
 			out.Body.Issue = issue
 			return out, nil
 		}
 		if !tuiClose {
+			if err := ValidateCloseInput(in.Body.Reason, in.Body.Message, in.Body.Evidence); err != nil {
+				return nil, api.NewError(400, "validation", err.Error(), "", nil)
+			}
 			if err := validateEvidenceTargets(ctx, cfg.DB, in.ProjectID, issue.ShortID, in.Body.Evidence); err != nil {
 				return nil, api.NewError(400, "validation", err.Error(), "", nil)
 			}
