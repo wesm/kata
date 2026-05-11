@@ -1,117 +1,71 @@
 display_name = "kata"
 
 review_guidelines = """
-We are using the latest production version of Go.
+Latest stable Go. Be pragmatic — theoretical findings produce churn.
 
-Be pragmatic — raising theoretical or highly pedantic concerns produces
-unnecessary code churn and wasted review-fix cycles.
+## Don't assert external facts you cannot verify
 
-## Do not assert external facts you cannot verify
-
-You only see the diff. You do NOT have network access and cannot check
-upstream registries, release pages, or package indexes. Therefore:
-
-- Do NOT claim a pinned version, package name, image tag, or URL "does
-  not exist" or is "invalid". Your training data is bounded; new
-  releases happen constantly. If a maintainer pinned `v2.10.1`, assume
-  it exists. Treat unfamiliar version numbers as "unfamiliar to me",
-  not "nonexistent".
-- Do NOT recommend "fix: change to v1.x" based on a hallucinated belief
-  that the pinned version is wrong. The maintainer pinned a SHA along
-  with the version comment; that SHA pin IS the source of truth, and
-  you can see the version comment matches what the maintainer chose.
-- Do NOT claim a SHA does not match the tagged release. You cannot
-  resolve tags to SHAs without the GitHub API.
-- Do NOT flag third-party action upgrades as "downgrade" or "wrong
-  version" unless you can point to a specific breaking-change finding
-  IN THE DIFF (e.g. an input field that was removed and is still
-  referenced in the workflow).
-
-If you genuinely suspect a version is wrong, phrase it as a question
-("verify this version exists") at LOW severity, not as a Medium/High
-finding with a confident "fix".
+You see only the diff and have no network access. Don't claim a pinned
+version, SHA, or URL "doesn't exist". If a maintainer pinned `v2.10.1`
+with a SHA, that pin is the source of truth. Flag only concrete
+breaking changes visible in the diff. Otherwise phrase as a LOW-severity
+question, not a Medium/High "fix".
 
 ## Trust model — single-user local tool
 
-kata is a single-user local CLI + daemon. The daemon binds to either a
-Unix domain socket or TCP loopback (validated by `requireLoopback` in
-`internal/daemon/endpoint.go`), and the SQLite database is local. Per the
-design spec at `docs/superpowers/specs/2026-04-29-kata-design.md` line 579:
-"None. Loopback TCP / Unix socket only. The OS user is the trust boundary."
-Multi-user auth and agent tokens are explicitly listed as out of scope.
+Daemon binds to Unix socket or loopback TCP only (`requireLoopback` in
+`internal/daemon/endpoint.go`). Multi-user auth is out of scope per
+`docs/superpowers/specs/2026-04-29-kata-design.md`. The OS user IS the
+trust boundary.
 
-The following are NOT security findings — they reflect the documented trust
-model and should not be raised:
+Not findings: missing API auth, `validateActor` "not authorizing"
+(it's audit metadata), DoS via large bodies / bulk endpoints / unbounded
+loops on local input, symlink-following under the kata data dir, races
+visible only to a colocated attacker.
 
-- Missing auth or "unauthenticated destructive endpoints" on daemon API
-  (the only client is the local CLI/TUI; OS-level access control is
-  sufficient).
-- `validateActor` is **audit metadata**, not authorization — every handler
-  uses it the same way. Calling it out as a "missing auth gate" misreads
-  its purpose.
-- "DoS" from request bodies, bulk/batch endpoints (e.g. `/imports`
-  accepting many items), large comments/labels/links, or aggregate-size
-  / item-count limits on loopback. Inputs are bounded by the local
-  user's own data (their own repos, their own beads/JSONL exports) —
-  not external attackers. Do not recommend per-request item caps,
-  body-size ceilings, or memory-bound guards as security findings;
-  a single-user local tool that exhausts its own RAM is a correctness
-  bug at worst, not a vulnerability.
-- Symlink-following or local file overwrites under the kata data
-  directory (controlled by the local user).
-- "Race conditions" in CLI⇄daemon handoff visible only to a colocated
-  attacker with the same OS-user privileges (correctness concern, not
-  exploit).
+## Schema upgrades use JSONL cutover, not ALTER-TABLE migrations
 
-## Schema upgrades use JSONL cutover, NOT ALTER-TABLE migrations
+Schema lives in the embedded `internal/db/schema.sql`. There is no
+migrations directory; `db.Open` returns `ErrSchemaCutoverRequired`
+when versions mismatch, and `jsonl.AutoCutover` rebuilds the DB from
+JSONL into a fresh current-schema bootstrap.
 
-`internal/db/migrations/` is a misnomer for this codebase. There is exactly
-one file (`0001_init.sql`) that defines the **current** schema, applied
-only when initializing a fresh DB. The `migrate()` function in
-`internal/db/db.go` returns `ErrSchemaCutoverRequired` for any DB at an
-older schema version BEFORE reading migration files at all — additional
-ALTER-TABLE migration files would never be applied.
+Bumping the version: edit `schema.sql`. For shape changes (added /
+removed / retyped columns), add a version-aware exporter for the old
+shape in `internal/jsonl/export.go` and make the importer tolerant of
+the missing field. For CHECK widenings, no exporter is needed — old
+rows still satisfy the wider constraint after the rebuild.
 
-Existing older DBs are upgraded by `jsonl.AutoCutover`
-(`internal/jsonl/cutover.go`), invoked automatically from `runDaemon`
-(`cmd/kata/daemon_cmd.go`) when `PeekSchemaVersion < CurrentSchemaVersion`.
-The cutover:
+Don't flag "missing migration file" or "the existing DB keeps the old
+CHECK". No DDL script would run, and every old DB is torn down and
+rebuilt by JSONL cutover.
 
-1. Exports the old DB to JSONL via version-aware paths in
-   `internal/jsonl/export.go` (e.g. `exportProjectsV2` for v2/v3 sources
-   that lack the v4 `deleted_at` column).
-2. Imports into a fresh current-schema DB created by `0001_init.sql`.
-3. Atomic backup + rename of the old DB into place.
+## Pre-transaction close guards: accepted v1 trade-off
 
-When bumping the schema version (`currentSchemaVersion`), the correct
-pattern is:
+`CheckSiblingCloseThrottle` and `CheckRepeatedMessageGuard` in
+`internal/daemon/close_guards.go` read before `db.CloseIssue`'s write
+tx, so concurrent closes can momentarily exceed the limit by one. The
+spec documents this (anti-agent-justification §3.9); agents are
+typically serial and the next close in the window still trips the
+guard and emits `close.throttled`. Don't re-raise — if a real attack
+path exists, name it concretely.
 
-- Add the new column / index to `0001_init.sql` (it defines the current
-  schema).
-- Add a version-aware exporter for the OLD shape (e.g. `exportProjectsV2`)
-  so cutover from older DBs reads via the pre-bump column list.
-- Make the import path tolerant of the missing field (typically `*string`
-  with `omitempty` so the JSONL omission becomes SQL NULL).
+## TUI close bypass: intentional trust-on-claim
 
-Do NOT flag "missing migration file" or recommend a `0002_*.sql` ALTER
-script — that script would never run.
+`internal/daemon/handlers_actions.go` skips substance/evidence
+validation when the body has `source == "tui"`. Forging that field
+costs the same as forging evidence — adding a server-issued capability
+only inconveniences honest callers. Audit still flags `no-evidence`
+closes; structural guards still run. Don't recommend a separate
+endpoint or capability token; if you find a check that should run for
+TUI but doesn't, raise *that* check.
 
-## Project archival convention
+## Project archival
 
-Archived projects have `projects.deleted_at != NULL` (column added in v4).
-The filtering convention is intentional and asymmetric:
-
-- Surface-level read paths filter `deleted_at IS NULL` at the query
-  level. Examples: `ListProjects`, `ProjectByIdentity`, `ListAllIssues`
-  (which already joins `projects` and filters `p.deleted_at IS NULL`).
-- Callers needing archived rows use explicit `*IncludingArchived`
-  variants (e.g. `ListProjectsIncludingArchived`,
-  `ProjectByIdentityIncludingArchived`).
-- `ProjectByID` is an exception by design: it returns archived rows so
-  the merge / restore paths can see them. Surface callers (HTTP
-  handlers, CLI) inspect `DeletedAt` themselves.
-
-Do not flag `ProjectByID` for "returning archived projects" or claim
-`ListAllIssues` leaks archived data — verify the actual query and
-existing `*IncludingArchived` variants before raising.
+`projects.deleted_at != NULL` = archived. Surface reads filter at the
+query (`ListProjects`, `ListAllIssues`); callers needing archived rows
+use `*IncludingArchived` variants. `ProjectByID` returns archived rows
+on purpose so merge / restore can see them. Verify the actual query
+before flagging `ProjectByID` or claiming `ListAllIssues` leaks
+archived data.
 """
