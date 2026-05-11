@@ -186,9 +186,13 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 		}
 
 		// Resolve the link's storage endpoints so the payload carries each
-		// peer's short_id + UID. For parent/blocks links this matches the
-		// URL issue and its peer; for canonicalized related links the
-		// storage from/to may differ from the URL side.
+		// peer's short_id + UID. For parent/blocks links the URL issue is
+		// always the link's stored from side; for canonicalized related
+		// links the URL issue may be either endpoint. The unlink payload
+		// is always oriented from the URL issue's POV — from_* carries
+		// the URL issue, to_* carries the peer — so consumers can render
+		// "the URL issue unlinked from <peer>" regardless of which side
+		// the stored row holds.
 		linkFrom, err := cfg.DB.IssueByID(ctx, link.FromIssueID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
@@ -196,6 +200,9 @@ func deleteLinkHandler(cfg ServerConfig) func(context.Context, *api.DeleteLinkRe
 		linkTo, err := cfg.DB.IssueByID(ctx, link.ToIssueID)
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		if link.FromIssueID != from.ID {
+			linkFrom, linkTo = linkTo, linkFrom
 		}
 		ev := db.LinkEventParams{
 			EventType:    "issue.unlinked",

@@ -1259,7 +1259,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	var e Event
 	err = tx.QueryRowContext(ctx, eventSelectByID, id).
 		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName, &e.IssueID,
-			&e.IssueUID, &e.RelatedIssueID, &e.RelatedIssueUID,
+			&e.IssueUID, &e.IssueShortID, &e.RelatedIssueID, &e.RelatedIssueUID, &e.RelatedIssueShortID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt)
 	if err != nil {
 		return Event{}, fmt.Errorf("read event: %w", err)
@@ -1267,11 +1267,18 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	return e, nil
 }
 
+// eventSelectByID reads a single event by id with the same shape EventsAfter
+// and EventsInWindow produce — the issue and related_issue short_ids are
+// LEFT JOINed from the live `issues` table so mutation responses (which
+// scan their inserted event through this query) carry the same wire shape
+// as events streamed via poll/SSE.
 const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
-       e.issue_id, e.issue_uid, e.related_issue_id, e.related_issue_uid,
+       e.issue_id, e.issue_uid, i.short_id, e.related_issue_id, e.related_issue_uid, ri.short_id,
        e.type, e.actor, e.payload, e.created_at
   FROM events e
   JOIN projects p ON p.id = e.project_id
+  LEFT JOIN issues i ON i.id = e.issue_id
+  LEFT JOIN issues ri ON ri.id = e.related_issue_id
  WHERE e.id = ?`
 
 func stringPtrValue(s *string) any {

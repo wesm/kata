@@ -166,6 +166,35 @@ func TestIssues_UIDWireShapeAndLookup(t *testing.T) {
 	assert.Contains(t, string(badBS), `"code":"validation"`)
 }
 
+// TestCreateIssue_EventCarriesIssueShortID pins that the event returned in
+// the create response carries issue_short_id, matching the wire shape that
+// /events poll and SSE deliver. eventSelectByID must join issues to populate
+// the short_id; without that join, mutation responses would silently omit
+// the field while polled/streamed events have it.
+func TestCreateIssue_EventCarriesIssueShortID(t *testing.T) {
+	h, projectID := bootstrapProject(t)
+	ts := h.ts.(*httptest.Server)
+	resp, bs := postJSON(t, ts, issuesURL(projectID),
+		map[string]any{"actor": "agent-1", "title": "short id in event"})
+	require.Equal(t, 200, resp.StatusCode, string(bs))
+
+	var created struct {
+		Issue struct {
+			ShortID string `json:"short_id"`
+		} `json:"issue"`
+		Event struct {
+			Type         string  `json:"type"`
+			IssueShortID *string `json:"issue_short_id"`
+		} `json:"event"`
+	}
+	require.NoError(t, json.Unmarshal(bs, &created))
+	require.NotEmpty(t, created.Issue.ShortID)
+	assert.Equal(t, "issue.created", created.Event.Type)
+	require.NotNil(t, created.Event.IssueShortID,
+		"event in create response must carry issue_short_id (wire parity with poll/SSE)")
+	assert.Equal(t, created.Issue.ShortID, *created.Event.IssueShortID)
+}
+
 func TestIssues_ListAndShow(t *testing.T) {
 	h, pid := bootstrapProject(t)
 	ts := h.ts.(*httptest.Server)

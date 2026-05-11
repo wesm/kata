@@ -263,3 +263,39 @@ func TestDeleteLink_AbsentIs200NoOp(t *testing.T) {
 	assert.Nil(t, out.Event)
 	assert.False(t, out.Changed)
 }
+
+// TestDeleteLink_EventPayloadOrientsFromURLIssue pins the unlink payload
+// orientation: the URL issue (the one whose /links/{id} was DELETEd) is
+// always in from_*; the peer is in to_*. This matches createLink's
+// attribution (events always tell "the URL issue did X to its peer"),
+// regardless of which side the stored link row's columns hold.
+func TestDeleteLink_EventPayloadOrientsFromURLIssue(t *testing.T) {
+	env := testenv.New(t)
+	pid, a, b := setupTwoIssues(t, env)
+	aIss, err := env.DB.IssueByID(t.Context(), a)
+	require.NoError(t, err)
+	bIss, err := env.DB.IssueByID(t.Context(), b)
+	require.NoError(t, err)
+
+	// Create link A→B (blocks). Stored as from=A, to=B in the link row.
+	created := postLink(t, env, pid, a, "blocks", b)
+
+	// DELETE from B's URL. Even though the stored link has from=A, the
+	// event payload must orient from the URL issue (B), so:
+	//   from_short_id == B (URL)
+	//   to_short_id   == A (peer)
+	resp, _ := deleteLink(t, env, pid, b, created.Link.ID)
+	require.Equal(t, 200, resp.StatusCode)
+
+	var pl struct {
+		FromShortID string `json:"from_short_id"`
+		ToShortID   string `json:"to_short_id"`
+		FromUID     string `json:"from_uid"`
+		ToUID       string `json:"to_uid"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(lastEventPayload(t, env, pid, "issue.unlinked")), &pl))
+	assert.Equal(t, bIss.ShortID, pl.FromShortID, "from_short_id must be the URL issue (B)")
+	assert.Equal(t, aIss.ShortID, pl.ToShortID, "to_short_id must be the peer (A)")
+	assert.Equal(t, bIss.UID, pl.FromUID, "from_uid must be the URL issue (B)")
+	assert.Equal(t, aIss.UID, pl.ToUID, "to_uid must be the peer (A)")
+}
