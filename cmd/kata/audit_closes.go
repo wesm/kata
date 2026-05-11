@@ -105,7 +105,13 @@ analysis. The text output is a wide table; pass --json for tooling.`,
 }
 
 func printAuditClosesTable(cmd *cobra.Command, bs []byte) error {
-	var resp api.AuditClosesResponse
+	// huma serializes the operation's `Body` content directly onto the
+	// wire, so the response shape is {"rows":[...]} — not the doubly
+	// wrapped {"body":{"rows":[...]}} that unmarshalling into the full
+	// api.AuditClosesResponse struct would expect.
+	var resp struct {
+		Rows []api.AuditCloseRow `json:"rows"`
+	}
 	if err := json.Unmarshal(bs, &resp); err != nil {
 		return err
 	}
@@ -114,7 +120,7 @@ func printAuditClosesTable(cmd *cobra.Command, bs []byte) error {
 		"TIME", "ACTOR", "ISSUE", "PARENT", "REASON", "EVIDENCE", "FLAGS"); err != nil {
 		return err
 	}
-	for _, r := range resp.Body.Rows {
+	for _, r := range resp.Rows {
 		parent := "-"
 		if r.Parent != "" {
 			parent = r.Parent

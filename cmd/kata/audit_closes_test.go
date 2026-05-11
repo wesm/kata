@@ -32,6 +32,25 @@ func TestAuditCloses_ListsAllClosesInWindow(t *testing.T) {
 	assert.Contains(t, out, `"reason":"wontfix"`)
 }
 
+// TestAuditCloses_TextOutputRendersRows pins the non-JSON path: a row
+// per close must appear under the header. Regression test for an
+// unmarshal mismatch where the CLI decoded into the full
+// AuditClosesResponse shape (with nested Body.Rows) while huma emits
+// the body content directly, leaving Rows empty and the table blank.
+func TestAuditCloses_TextOutputRendersRows(t *testing.T) {
+	env, dir, _, ref := setupWorkspaceWithIssue(t, "issue one")
+	runCLI(t, env, dir, "close", ref, "--done",
+		"--message", "Fixed the issue and ran the auth tests thoroughly.",
+		"--commit", "abc1234")
+
+	out := runCLI(t, env, dir, "audit", "closes")
+	assert.Contains(t, out, "TIME")
+	assert.Contains(t, out, ref,
+		"text output must include the closed issue's short_id")
+	assert.Contains(t, out, "done",
+		"text output must include the close reason")
+}
+
 // TestAuditCloses_FilterByActor verifies --actor narrows results to a
 // single actor's closes.
 func TestAuditCloses_FilterByActor(t *testing.T) {
