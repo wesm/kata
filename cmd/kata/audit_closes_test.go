@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -180,6 +181,102 @@ func TestAuditCloses_ParentFrozenAtCloseTime(t *testing.T) {
 	outB := runCLI(t, env, dir, "audit", "closes", "--parent", parentB, "--json")
 	assert.NotContains(t, outB, `"issue":"`+child+`"`,
 		"audit after reparent must not migrate the historical close onto B")
+}
+
+// TestAuditCloses_ThrottledFlagDoesNotBleedAcrossReopenCycles pins
+// the single-pass marker rule: a close.throttled event marks the next
+// matching issue.closed and is then consumed. A later reopen → close
+// for the same (issue, actor) starts a fresh history and must NOT
+// inherit the prior throttle flag — otherwise an all-time audit window
+// would keep stamping "throttled" on closes that have nothing to do
+// with the original refusal.
+func TestAuditCloses_ThrottledFlagDoesNotBleedAcrossReopenCycles(t *testing.T) {
+	env, dir, pid, parent := setupWorkspaceWithIssue(t, "parent issue")
+	childA := createIssue(t, env, pid, "child a")
+	childB := createIssue(t, env, pid, "child b")
+	runCLI(t, env, dir, "edit", childA, "--parent", parent)
+	runCLI(t, env, dir, "edit", childB, "--parent", parent)
+	msg := "Verified end-to-end and confirmed no regressions in the test suite."
+	// First close cycle: A closes, B trips the repeated-message guard,
+	// then B succeeds with distinct prose. B's successful close should
+	// be flagged throttled.
+	runCLIAs(t, env, dir, "agent-a", "close", childA, "--done",
+		"--message", msg, "--commit", "abc1234")
+	_, _, _ = runCLIWithErr(t, env, dir, "close", childB, "--as", "agent-a",
+		"--done", "--message", msg, "--commit", "abc1234")
+	runCLIAs(t, env, dir, "agent-a", "close", childB, "--done",
+		"--message", "Different prose for child B; independent verification path.",
+		"--commit", "def5678")
+	// Second cycle on B: reopen, then close again with a fresh message.
+	// This close happens AFTER the prior close.throttled event in the
+	// window, but it belongs to a separate cycle and must NOT carry the
+	// throttled flag.
+	runCLIAs(t, env, dir, "agent-a", "reopen", childB)
+	runCLIAs(t, env, dir, "agent-a", "close", childB, "--done",
+		"--message", "Second close cycle on child B after reopening for cleanup.",
+		"--commit", "ff00aa1")
+
+	out := runCLI(t, env, dir, "audit", "closes", "--actor", "agent-a", "--json")
+	type row struct {
+		Issue   string   `json:"issue"`
+		Message string   `json:"message"`
+		Flags   []string `json:"flags"`
+	}
+	var got struct {
+		Rows []row `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	var seenFlagged, seenClean bool
+	for _, r := range got.Rows {
+		if r.Issue != childB {
+			continue
+		}
+		hasThrottled := false
+		for _, f := range r.Flags {
+			if f == "throttled" {
+				hasThrottled = true
+			}
+		}
+		if strings.HasPrefix(r.Message, "Different prose") {
+			seenFlagged = hasThrottled
+		}
+		if strings.HasPrefix(r.Message, "Second close cycle") {
+			seenClean = !hasThrottled
+		}
+	}
+	assert.True(t, seenFlagged,
+		"the close that retried past the throttle must carry the throttled flag")
+	assert.True(t, seenClean,
+		"a later reopen→close cycle must not inherit the prior throttle flag")
+}
+
+// TestAuditCloses_FilterByParentUID pins that --parent accepts any
+// ref form the resolver accepts (bare short_id, full UID, or
+// qualified `project#short_id`), not just the rendered short_id. A
+// caller using the parent's UID (or pasting a `kata show --json`
+// ULID) should reach the same rows as the short_id form.
+func TestAuditCloses_FilterByParentUID(t *testing.T) {
+	env, dir, pid, parent := setupWorkspaceWithIssue(t, "parent issue")
+	child := createIssue(t, env, pid, "child of parent")
+	runCLI(t, env, dir, "edit", child, "--parent", parent)
+	runCLI(t, env, dir, "close", child, "--done",
+		"--message", "Fixed the child of the parent issue and ran the unit tests.",
+		"--commit", "abc1234")
+
+	// Resolve the parent's full UID via show --json so we can drive
+	// --parent <UID>.
+	showOut := runCLI(t, env, dir, "show", parent, "--json")
+	var shown struct {
+		Issue struct {
+			UID string `json:"uid"`
+		} `json:"issue"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(showOut), &shown))
+	require.NotEmpty(t, shown.Issue.UID, "show --json must surface the parent's UID")
+
+	out := runCLI(t, env, dir, "audit", "closes", "--parent", shown.Issue.UID, "--json")
+	assert.Contains(t, out, `"issue":"`+child+`"`,
+		"--parent should accept the parent's UID and surface the close")
 }
 
 // TestAuditCloses_ThrottledFlagIgnoresLaterThrottle pins the temporal

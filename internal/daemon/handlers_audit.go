@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -122,11 +124,27 @@ type closeEventPayload struct {
 // is reflected) with parent_short_id as a fallback when the UID has
 // since been purged. Legacy events that predate both fields fall
 // back to a live links lookup — the best we can do for that subset.
+//
+// The throttled flag is decorated via a single chronological pass: a
+// close.throttled event marks the (issue, actor) pair pending, and
+// the next matching issue.closed consumes the marker and is flagged.
+// Subsequent reopen → close cycles start fresh, so the flag never
+// bleeds into closes that happened later in unrelated history.
 func buildAuditRows(
 	ctx context.Context, cfg ServerConfig,
 	in *api.AuditClosesRequest, events []db.Event,
 ) ([]api.AuditCloseRow, error) {
-	throttled := throttledIssuesByActor(events)
+	parentFilterShortID, ok, err := resolveAuditParentFilter(ctx, cfg, in.ProjectID, in.Parent)
+	if err != nil {
+		return nil, err
+	}
+	if in.Parent != "" && !ok {
+		// Filter ref didn't resolve to any issue in this project. The
+		// pre-fix code returned empty rows for a literal string miss; we
+		// preserve that observable behavior rather than surface a 404
+		// from a read endpoint.
+		return nil, nil
+	}
 	parsed := make([]closeEventPayload, len(events))
 	for i, ev := range events {
 		if ev.Type != "issue.closed" {
@@ -143,15 +161,34 @@ func buildAuditRows(
 		return nil, err
 	}
 	rows := make([]api.AuditCloseRow, 0, len(events))
+	pendingThrottle := map[string]struct{}{}
 	for i, ev := range events {
+		// close.throttled markers arm a pending flag for the next
+		// matching issue.closed; consume happens below. Skip the rest
+		// of the loop body for non-close events so the throttle path
+		// doesn't accidentally produce a row.
+		if ev.Type == "close.throttled" && ev.IssueShortID != nil {
+			pendingThrottle[throttleKey(*ev.IssueShortID, ev.Actor)] = struct{}{}
+			continue
+		}
 		if ev.Type != "issue.closed" {
 			continue
 		}
-		closeEventID := ev.ID
-		// Lenient: a malformed payload surfaces as a row with empty
-		// reason/evidence so a reviewer sees the gap rather than the
-		// audit silently dropping it.
+		// Consume any pending throttle for this (issue, actor) BEFORE
+		// applying output filters (--reason, --parent). The marker
+		// belongs to whichever close came next chronologically, even
+		// if that close is filtered out of the response — otherwise a
+		// reason-filtered query could leave a stale marker that
+		// wrongly decorates a later close in a separate cycle.
 		p := parsed[i]
+		var throttledNow bool
+		if ev.IssueShortID != nil {
+			k := throttleKey(*ev.IssueShortID, ev.Actor)
+			if _, ok := pendingThrottle[k]; ok {
+				throttledNow = true
+				delete(pendingThrottle, k)
+			}
+		}
 		if in.Reason != "" && p.Reason != in.Reason {
 			continue
 		}
@@ -187,7 +224,7 @@ func buildAuditRows(
 				row.Parent = pn
 			}
 		}
-		if in.Parent != "" && row.Parent != in.Parent {
+		if in.Parent != "" && row.Parent != parentFilterShortID {
 			continue
 		}
 		for _, e := range p.Evidence {
@@ -199,16 +236,8 @@ func buildAuditRows(
 		if len(p.Evidence) == 0 && p.Reason != "wontfix" {
 			row.Flags = append(row.Flags, "no-evidence")
 		}
-		if row.Issue != "" {
-			// Only flag closes that have a prior throttle event for the
-			// same (issue, actor). A later throttle event is a separate
-			// retry attempt against this same close and would mislead
-			// the audit reader into thinking the close itself tripped
-			// the guard. Event IDs are monotonic so the comparison is
-			// sound across the window.
-			if firstID, ok := throttled[throttleKey(row.Issue, row.Actor)]; ok && firstID < closeEventID {
-				row.Flags = append(row.Flags, "throttled")
-			}
+		if throttledNow {
+			row.Flags = append(row.Flags, "throttled")
 		}
 		if in.NoEvidence && !auditFlagsContain(row.Flags, "no-evidence") {
 			continue
@@ -218,28 +247,37 @@ func buildAuditRows(
 	return rows, nil
 }
 
-// throttledIssuesByActor builds the (issue-number, actor) -> earliest
-// throttle event id map for close.throttled events in the window.
-// Storing the earliest id (events come in ASC order) lets buildAuditRows
-// flag only closes that occurred AFTER a throttle — later throttles for
-// the same key are retry attempts against an already-recorded close and
-// must not propagate the flag back to that close.
-func throttledIssuesByActor(events []db.Event) map[string]int64 {
-	out := map[string]int64{}
-	for _, ev := range events {
-		if ev.Type != "close.throttled" || ev.IssueShortID == nil {
-			continue
-		}
-		key := throttleKey(*ev.IssueShortID, ev.Actor)
-		if _, ok := out[key]; !ok {
-			out[key] = ev.ID
-		}
-	}
-	return out
-}
-
 func throttleKey(issue, actor string) string {
 	return fmt.Sprintf("%s|%s", issue, actor)
+}
+
+// resolveAuditParentFilter turns the --parent query value into the
+// current short_id of the referenced parent, accepting any ref form
+// the issue resolver accepts (bare short_id, full UID, qualified
+// `project#short_id`). Comparing row.Parent (also a current short_id)
+// against a normalized filter value makes the audit projection
+// stable across project-merge collision rewrites: both sides reflect
+// the same post-merge short_id. ok=false signals "the filter ref did
+// not resolve to any issue in this project" and the caller short-
+// circuits to an empty response.
+func resolveAuditParentFilter(
+	ctx context.Context, cfg ServerConfig, projectID int64, parentRef string,
+) (shortID string, ok bool, err error) {
+	if parentRef == "" {
+		return "", false, nil
+	}
+	issue, rerr := activeIssueByRef(ctx, cfg.DB, projectID, parentRef, db.IncludeDeletedNo)
+	if rerr != nil {
+		// Treat a not-found ref as an empty filter match rather than
+		// surface a 404 from a read endpoint. Resolver internal errors
+		// (500-class) bubble up unchanged.
+		var apiErr *api.APIError
+		if errors.As(rerr, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return "", false, nil
+		}
+		return "", false, rerr
+	}
+	return issue.ShortID, true, nil
 }
 
 // loadLegacyParentsForCloseEvents gathers the issue ids of close events
