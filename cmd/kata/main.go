@@ -85,6 +85,7 @@ func newRootCmd() *cobra.Command {
 		newHealthCmd(),
 		newProjectsCmd(),
 		newTUICmd(),
+		newVersionCmd(),
 	}
 	cmd.AddCommand(subs...)
 	return cmd
