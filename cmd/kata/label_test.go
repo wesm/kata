@@ -51,6 +51,27 @@ func TestLabel_RejectsEmptyLabel(t *testing.T) {
 	}
 }
 
+func TestLabelAdd_WithComment_AppendsComment(t *testing.T) {
+	env, dir, pid, ref := setupWorkspaceWithIssue(t, "a")
+
+	runCLI(t, env, dir, "label", "add", ref, "flaky", "--comment", "intermittent in CI")
+
+	got := fetchIssueViaHTTPWithComments(t, env, pid, ref)
+	require.Len(t, got.Comments, 1)
+	assert.Equal(t, "intermittent in CI", got.Comments[0].Body)
+}
+
+func TestLabelRm_WithComment_AppendsComment(t *testing.T) {
+	env, dir, pid, ref := setupWorkspaceWithIssue(t, "a")
+	runCLI(t, env, dir, "label", "add", ref, "flaky")
+
+	runCLI(t, env, dir, "label", "rm", ref, "flaky", "--comment", "stable since 4.6")
+
+	got := fetchIssueViaHTTPWithComments(t, env, pid, ref)
+	require.Len(t, got.Comments, 1)
+	assert.Equal(t, "stable since 4.6", got.Comments[0].Body)
+}
+
 // TestCreate_RejectsWhitespaceLabel covers the create --label case from
 // hammer #8. Pflag's StringSliceVar drops a literal empty argument (""),
 // but a whitespace-only label like "   " makes it through and used to be

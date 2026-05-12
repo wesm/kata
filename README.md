@@ -194,11 +194,17 @@ kata edit <issue-ref> [--title TEXT] [--body TEXT] [--owner NAME]
                   [--parent <ref>] [--blocks <ref>] [--blocked-by <ref>] [--related <ref>]
                   [--remove-parent <ref>] [--remove-blocks <ref>]
                   [--remove-blocked-by <ref>] [--remove-related <ref>]
+                  [--comment TEXT]
 kata comment <ref> [--body TEXT | --body-file PATH | --body-stdin]
-kata close <ref> --done --message <text> [--commit|--pr|--test|--reviewed|--evidence]
-kata close <ref> [--wontfix|--duplicate-of <ref>|--superseded-by <ref>|--audit-no-change]
-kata reopen <ref>
+kata close <ref> --done --message <text> [--commit|--pr|--test|--reviewed|--evidence] [--comment TEXT]
+kata close <ref> [--wontfix|--duplicate-of <ref>|--superseded-by <ref>|--audit-no-change] [--comment TEXT]
+kata reopen <ref> [--comment TEXT]
 ```
+
+`--comment TEXT` is available on `close`, `reopen`, `edit`, `assign`,
+`unassign`, and `label add`/`rm`. The mutation lands first; the comment is
+appended in a follow-up call. If the comment call fails, the error names
+the issue so you can retry with `kata comment <ref> --body ...`.
 
 Refs accept a bare short_id (`abc4`), a qualified short_id (`kata#abc4`), or
 a full 26-char ULID. The relationship flags on `create`/`edit` are
@@ -244,11 +250,11 @@ closes can be undone individually with `kata reopen <ref>`.
 Labels, ownership, and relationships:
 
 ```sh
-kata label add <ref> <label>
-kata label rm <ref> <label>
+kata label add <ref> <label> [--comment TEXT]
+kata label rm <ref> <label> [--comment TEXT]
 kata labels
-kata assign <ref> <owner>
-kata unassign <ref>
+kata assign <ref> <owner> [--comment TEXT]
+kata unassign <ref> [--comment TEXT]
 ```
 
 Relationships ride on `kata create` and `kata edit` as repeatable flags,

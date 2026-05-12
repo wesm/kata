@@ -151,6 +151,7 @@ Instead, label and comment:
 	cmd.Flags().StringVar(&sugarPR, "pr", "", "sugar for --evidence pr:<url>")
 	cmd.Flags().StringVar(&sugarTest, "test", "", "sugar for --evidence test:<command>")
 	cmd.Flags().StringArrayVar(&sugarReviewed, "reviewed", nil, "sugar for --evidence reviewed-paths:<path>, repeatable")
+	addCommentFlag(cmd)
 	return cmd
 }
 
@@ -204,8 +205,13 @@ func parseEvidenceFlags(raw []string) ([]api.Evidence, error) {
 
 // runAction is shared by close and reopen. It resolves the issue reference,
 // resolves the project, merges extra fields into the request body, and calls
-// the daemon action endpoint.
+// the daemon action endpoint. If --comment was passed on the command, the
+// comment is appended in a separate POST after the action succeeds.
 func runAction(cmd *cobra.Command, raw, action string, extra map[string]any) error {
+	comment, err := commentFromFlag(cmd)
+	if err != nil {
+		return err
+	}
 	ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, raw)
 	if err != nil {
 		return err
@@ -227,6 +233,9 @@ func runAction(cmd *cobra.Command, raw, action string, extra map[string]any) err
 	}
 	if status >= 400 {
 		return apiErrFromBody(status, bs)
+	}
+	if err := postFollowupComment(ctx, client, baseURL, pid, issue.RefForAPI, actor, comment); err != nil {
+		return err
 	}
 	return printMutation(cmd, bs)
 }

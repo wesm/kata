@@ -291,3 +291,15 @@ func TestEdit_EmptyTitle_ValidatedClientSide(t *testing.T) {
 			"validation message should explain the failure for %q", blank)
 	}
 }
+
+func TestEdit_WithComment_AppendsComment(t *testing.T) {
+	env, dir, pid, ref := setupWorkspaceWithIssue(t, "subject")
+
+	runCLI(t, env, dir, "edit", ref, "--priority", "1", "--comment", "bumping for incident")
+
+	got := fetchIssueViaHTTPWithComments(t, env, pid, ref)
+	require.Len(t, got.Comments, 1)
+	assert.Equal(t, "bumping for incident", got.Comments[0].Body)
+	require.NotNil(t, got.Issue.Priority)
+	assert.Equal(t, int64(1), *got.Issue.Priority)
+}

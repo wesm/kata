@@ -326,3 +326,45 @@ func TestReopen_SingleRefWorks(t *testing.T) {
 	show := runCLI(t, env, dir, "show", ref, "--json")
 	assert.Contains(t, show, `"status":"open"`)
 }
+
+func TestClose_WithComment_AppendsComment(t *testing.T) {
+	env, dir, pid, ref := setupWorkspaceWithIssue(t, "test issue")
+
+	runCLI(t, env, dir, "close", ref,
+		"--done",
+		"--message", "Fixed Safari callback double-submit and ran tests.",
+		"--commit", "abc1234",
+		"--comment", "fixed in abc1234")
+
+	got := fetchIssueViaHTTPWithComments(t, env, pid, ref)
+	require.Len(t, got.Comments, 1, "close --comment must append exactly one comment")
+	assert.Equal(t, "fixed in abc1234", got.Comments[0].Body)
+	assert.Equal(t, "closed", got.Issue.Status)
+}
+
+func TestReopen_WithComment_AppendsComment(t *testing.T) {
+	env, dir, pid, ref := setupWorkspaceWithIssue(t, "test issue")
+	runCLI(t, env, dir, "close", ref,
+		"--done",
+		"--message", "Fixed Safari callback double-submit and ran tests.",
+		"--commit", "abc1234")
+
+	runCLI(t, env, dir, "reopen", ref, "--comment", "regressed")
+
+	got := fetchIssueViaHTTPWithComments(t, env, pid, ref)
+	require.Len(t, got.Comments, 1)
+	assert.Equal(t, "regressed", got.Comments[0].Body)
+	assert.Equal(t, "open", got.Issue.Status)
+}
+
+func TestClose_EmptyComment_Rejected(t *testing.T) {
+	env, dir := setupCLIEnv(t)
+	ref := createIssueViaHTTP(t, env, dir, "x")
+
+	_, err := runCLICapture(t, env, dir, "close", ref,
+		"--done",
+		"--message", "Fixed Safari callback double-submit and ran tests.",
+		"--commit", "abc1234",
+		"--comment", "   ")
+	_ = requireCLIError(t, err, ExitValidation)
+}

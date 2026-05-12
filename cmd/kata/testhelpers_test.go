@@ -490,6 +490,7 @@ type IssueResponse struct {
 		Title    string  `json:"title"`
 		Owner    *string `json:"owner"`
 		Priority *int64  `json:"priority"`
+		Status   string  `json:"status"`
 	} `json:"issue"`
 	Labels []struct {
 		Label string `json:"label"`
@@ -499,6 +500,18 @@ type IssueResponse struct {
 		From linkPeerTest `json:"from"`
 		To   linkPeerTest `json:"to"`
 	} `json:"links"`
+	Comments []struct {
+		Author string `json:"author"`
+		Body   string `json:"body"`
+	} `json:"comments"`
+}
+
+// fetchIssueViaHTTPWithComments is fetchIssueViaHTTP — it already returns the
+// Comments field on IssueResponse — kept as a named alias so tests reading
+// comments document their intent and survive future shape changes.
+func fetchIssueViaHTTPWithComments(t *testing.T, env *testenv.Env, pid int64, ref string) IssueResponse {
+	t.Helper()
+	return fetchIssueViaHTTP(t, env, pid, ref)
 }
 
 // safeBuffer is a mutex-protected bytes.Buffer used by streaming/tail tests so

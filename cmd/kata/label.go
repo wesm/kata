@@ -22,7 +22,7 @@ func newLabelCmd() *cobra.Command {
 }
 
 func labelAddCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "add <issue-ref> <label>",
 		Short: "attach a label to an issue",
 		Args:  cobra.ExactArgs(2),
@@ -30,6 +30,10 @@ func labelAddCmd() *cobra.Command {
 			label := args[1]
 			if strings.TrimSpace(label) == "" {
 				return &cliError{Message: "label must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
+			}
+			comment, err := commentFromFlag(cmd)
+			if err != nil {
+				return err
 			}
 			ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, args[0])
 			if err != nil {
@@ -49,13 +53,18 @@ func labelAddCmd() *cobra.Command {
 			if status >= 400 {
 				return apiErrFromBody(status, bs)
 			}
+			if err := postFollowupComment(ctx, client, baseURL, pid, issue.RefForAPI, actor, comment); err != nil {
+				return err
+			}
 			return printLabelMutation(cmd, bs)
 		},
 	}
+	addCommentFlag(cmd)
+	return cmd
 }
 
 func labelRmCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "rm <issue-ref> <label>",
 		Short: "detach a label from an issue",
 		Args:  cobra.ExactArgs(2),
@@ -67,6 +76,10 @@ func labelRmCmd() *cobra.Command {
 			// meaningful message — hammer-test finding #8.
 			if strings.TrimSpace(label) == "" {
 				return &cliError{Message: "label must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
+			}
+			comment, err := commentFromFlag(cmd)
+			if err != nil {
+				return err
 			}
 			ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, args[0])
 			if err != nil {
@@ -86,9 +99,14 @@ func labelRmCmd() *cobra.Command {
 			if status >= 400 {
 				return apiErrFromBody(status, bs)
 			}
+			if err := postFollowupComment(ctx, client, baseURL, pid, issue.RefForAPI, actor, comment); err != nil {
+				return err
+			}
 			return printLabelRemoved(cmd, bs, issue.RefForAPI, label)
 		},
 	}
+	addCommentFlag(cmd)
+	return cmd
 }
 
 func newLabelsCmd() *cobra.Command {

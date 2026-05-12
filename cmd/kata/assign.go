@@ -11,7 +11,7 @@ import (
 )
 
 func newAssignCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "assign <issue-ref> <owner>",
 		Short: "set the owner of an issue",
 		Args:  cobra.ExactArgs(2),
@@ -19,10 +19,12 @@ func newAssignCmd() *cobra.Command {
 			return runAssign(cmd, args[0], args[1], false)
 		},
 	}
+	addCommentFlag(cmd)
+	return cmd
 }
 
 func newUnassignCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "unassign <issue-ref>",
 		Short: "clear the owner of an issue",
 		Args:  cobra.ExactArgs(1),
@@ -30,9 +32,15 @@ func newUnassignCmd() *cobra.Command {
 			return runAssign(cmd, args[0], "", true)
 		},
 	}
+	addCommentFlag(cmd)
+	return cmd
 }
 
 func runAssign(cmd *cobra.Command, raw, owner string, unassign bool) error {
+	comment, err := commentFromFlag(cmd)
+	if err != nil {
+		return err
+	}
 	ctx, baseURL, pid, issue, err := resolveIssueRefForCommand(cmd, raw)
 	if err != nil {
 		return err
@@ -55,6 +63,9 @@ func runAssign(cmd *cobra.Command, raw, owner string, unassign bool) error {
 	}
 	if status >= 400 {
 		return apiErrFromBody(status, bs)
+	}
+	if err := postFollowupComment(ctx, client, baseURL, pid, issue.RefForAPI, actor, comment); err != nil {
+		return err
 	}
 	return printAssignMutation(cmd, bs, unassign)
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAssign_RoundTrip(t *testing.T) {
@@ -16,4 +17,25 @@ func TestAssign_RoundTrip(t *testing.T) {
 
 	uOut := runCLI(t, env, dir, "unassign", ref)
 	assert.True(t, strings.Contains(uOut, "unassigned"))
+}
+
+func TestAssign_WithComment_AppendsComment(t *testing.T) {
+	env, dir, pid, ref := setupWorkspaceWithIssue(t, "x")
+
+	runCLI(t, env, dir, "assign", ref, "alice", "--comment", "owns the auth area")
+
+	got := fetchIssueViaHTTPWithComments(t, env, pid, ref)
+	require.Len(t, got.Comments, 1)
+	assert.Equal(t, "owns the auth area", got.Comments[0].Body)
+}
+
+func TestUnassign_WithComment_AppendsComment(t *testing.T) {
+	env, dir, pid, ref := setupWorkspaceWithIssue(t, "x")
+	runCLI(t, env, dir, "assign", ref, "alice")
+
+	runCLI(t, env, dir, "unassign", ref, "--comment", "rolling off")
+
+	got := fetchIssueViaHTTPWithComments(t, env, pid, ref)
+	require.Len(t, got.Comments, 1)
+	assert.Equal(t, "rolling off", got.Comments[0].Body)
 }

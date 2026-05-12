@@ -58,9 +58,14 @@ func newEditCmd() *cobra.Command {
 		"remove blocked-by←<ref> (idempotent; repeatable)")
 	cmd.Flags().Var(newRefSliceValue(&removeRelated), "remove-related",
 		"remove related↔<ref> (idempotent; repeatable)")
+	addCommentFlag(cmd)
 
 	// RunE is set after flag registration so we can reference cmd.Flags().Changed.
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		comment, err := commentFromFlag(cmd)
+		if err != nil {
+			return err
+		}
 		payload := map[string]any{}
 		if cmd.Flags().Changed("title") {
 			if strings.TrimSpace(title) == "" {
@@ -157,6 +162,10 @@ func newEditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			actor, _ := resolveActor(flags.As, nil)
+			if err := postFollowupComment(ctx, client, baseURL, pid, issue.RefForAPI, actor, comment); err != nil {
+				return err
+			}
 			return printMutation(cmd, syntheticNoopFromShow(bs))
 		}
 
@@ -187,6 +196,9 @@ func newEditCmd() *cobra.Command {
 		}
 		if status >= 400 {
 			return apiErrFromBody(status, bs)
+		}
+		if err := postFollowupComment(ctx, client, baseURL, pid, issue.RefForAPI, actor, comment); err != nil {
+			return err
 		}
 		return printMutation(cmd, bs)
 	}

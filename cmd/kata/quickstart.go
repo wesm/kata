@@ -90,7 +90,13 @@ Use kata as the shared issue ledger for this workspace.
    fail loudly. Read parent before asserting a removal. The other
    --remove-* flags are idempotent (no-op when the link is already gone).
 
-7. Do not run delete or purge unless the user explicitly asks for that exact
+7. To leave context alongside a mutation, pass --comment TEXT on
+   close, reopen, edit, assign, unassign, or label add/rm. The
+   mutation lands first; the comment is appended in a follow-up call.
+   If the comment call fails, the error names the issue so you can
+   retry with kata comment <ref> --body ...
+
+8. Do not run delete or purge unless the user explicitly asks for that exact
    destructive action and issue ref.
 
 For long-running agents, poll events:
