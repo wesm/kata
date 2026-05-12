@@ -132,7 +132,11 @@ Instead, label and comment:
 		"one of: done, wontfix, duplicate, superseded, audit-no-change")
 	cmd.Flags().StringVar(&message, "message", "",
 		"substantive message describing scope and verification")
-	cmd.Flags().StringSliceVar(&evidence, "evidence", nil,
+	// StringArrayVar (not StringSliceVar) so commas inside a single
+	// --evidence value survive intact: no-change-audit:<text> and
+	// test:<cmd> often carry prose or shell snippets with commas, and
+	// StringSliceVar would shred them into broken sub-items.
+	cmd.Flags().StringArrayVar(&evidence, "evidence", nil,
 		"typed evidence, repeatable: commit:<sha>, pr:<url>, test:<cmd>, "+
 			"reviewed-paths:<path>, no-change-audit:<text>, duplicate-of:<N>, superseded-by:<N>")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
@@ -146,7 +150,7 @@ Instead, label and comment:
 	cmd.Flags().StringVar(&sugarCommit, "commit", "", "sugar for --evidence commit:<sha>")
 	cmd.Flags().StringVar(&sugarPR, "pr", "", "sugar for --evidence pr:<url>")
 	cmd.Flags().StringVar(&sugarTest, "test", "", "sugar for --evidence test:<command>")
-	cmd.Flags().StringSliceVar(&sugarReviewed, "reviewed", nil, "sugar for --evidence reviewed-paths:<path>, repeatable")
+	cmd.Flags().StringArrayVar(&sugarReviewed, "reviewed", nil, "sugar for --evidence reviewed-paths:<path>, repeatable")
 	return cmd
 }
 

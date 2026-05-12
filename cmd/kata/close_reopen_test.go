@@ -137,6 +137,24 @@ func TestCloseCmd_SugarReviewedAndCanonicalReviewedPathConflict(t *testing.T) {
 	assert.Contains(t, stderr, "duplicate path")
 }
 
+// TestCloseCmd_EvidenceValueWithCommaIsPreserved pins that --evidence
+// values containing commas survive cobra's flag parser intact. cobra's
+// StringSliceVar would split "no-change-audit:Reviewed schemas, queries,
+// and migrations" into three broken evidence items; the audit row's
+// stored evidence must reflect the original prose.
+func TestCloseCmd_EvidenceValueWithCommaIsPreserved(t *testing.T) {
+	env, dir, _, ref := setupWorkspaceWithIssue(t, "test issue")
+	runCLI(t, env, dir,
+		"close", ref,
+		"--audit-no-change",
+		"--message", "Reviewed; comma-laden rationale should round-trip cleanly through cobra parsing.",
+		"--evidence", "no-change-audit:Reviewed schemas, queries, and migrations")
+
+	show := runCLI(t, env, dir, "show", ref, "--json")
+	assert.Contains(t, show, `"status":"closed"`,
+		"comma-bearing --evidence value must not be split into invalid sub-items")
+}
+
 func TestCloseCmd_DryRunDoesNotMutate(t *testing.T) {
 	env, dir, _, ref := setupWorkspaceWithIssue(t, "test issue")
 	out := runCLI(t, env, dir,
