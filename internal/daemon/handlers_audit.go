@@ -11,6 +11,7 @@ import (
 
 	"github.com/wesm/kata/internal/api"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/shortid"
 )
 
 // registerAuditHandlers installs /api/v1/audit/closes, a read-only
@@ -46,13 +47,17 @@ func doAuditCloses(
 	if err != nil {
 		return nil, err
 	}
+	// --actor is intentionally NOT pushed down to EventsInWindow. The
+	// throttle-marker pass needs to observe every close of the issue
+	// to end a cycle: if agent-b closes the issue between agent-a's
+	// throttle event and agent-a's later close, agent-b's close ends
+	// the cycle and agent-a's later close starts fresh. Filtering at
+	// SQL would hide agent-b's close and incorrectly carry the marker
+	// forward. The actor filter is applied at row-emit time below.
 	params := db.EventsInWindowParams{
 		ProjectID: in.ProjectID,
 		Since:     since,
 		Until:     until,
-	}
-	if in.Actor != "" {
-		params.Actors = []string{in.Actor}
 	}
 	events, err := cfg.DB.EventsInWindow(ctx, params)
 	if err != nil {
@@ -134,15 +139,9 @@ func buildAuditRows(
 	ctx context.Context, cfg ServerConfig,
 	in *api.AuditClosesRequest, events []db.Event,
 ) ([]api.AuditCloseRow, error) {
-	parentFilterShortID, parentFilterRaw, hasParentFilter, err :=
-		resolveAuditParentFilter(ctx, cfg, in.ProjectID, in.Parent)
+	parentFilter, err := resolveAuditParentFilter(ctx, cfg, in.ProjectID, in.Parent)
 	if err != nil {
 		return nil, err
-	}
-	if in.Parent != "" && !hasParentFilter {
-		// Filter ref didn't resolve and we also have no raw fallback
-		// (caller passed an empty string). Empty rows.
-		return nil, nil
 	}
 	parsed := make([]closeEventPayload, len(events))
 	for i, ev := range events {
@@ -196,6 +195,9 @@ func buildAuditRows(
 				delete(pendingThrottle, *ev.IssueShortID)
 			}
 		}
+		if in.Actor != "" && ev.Actor != in.Actor {
+			continue
+		}
 		if in.Reason != "" && p.Reason != in.Reason {
 			continue
 		}
@@ -231,7 +233,7 @@ func buildAuditRows(
 				row.Parent = pn
 			}
 		}
-		if in.Parent != "" && !auditParentMatches(row.Parent, parentFilterShortID, parentFilterRaw) {
+		if parentFilter.has && !parentFilter.matches(row.Parent, p.ParentUID) {
 			continue
 		}
 		for _, e := range p.Evidence {
@@ -254,45 +256,68 @@ func buildAuditRows(
 	return rows, nil
 }
 
-// resolveAuditParentFilter turns the --parent query value into the
-// current short_id of the referenced parent, accepting any ref form
-// the issue resolver accepts (bare short_id, full UID, qualified
-// `project#short_id`). Soft-deleted parents resolve through
-// IncludeDeletedYes — audit is a historical view and a close of a
-// child whose parent was later soft-deleted is still a real audit
-// row. The raw value is returned alongside as a last-resort fallback
-// so a fully purged parent (no row remains) still matches stored
-// parent_short_id values from legacy or modern payloads via raw
-// string compare. has=false signals the caller passed no filter.
-func resolveAuditParentFilter(
-	ctx context.Context, cfg ServerConfig, projectID int64, parentRef string,
-) (shortID, raw string, has bool, err error) {
-	if parentRef == "" {
-		return "", "", false, nil
-	}
-	issue, rerr := activeIssueByRef(ctx, cfg.DB, projectID, parentRef, db.IncludeDeletedYes)
-	if rerr != nil {
-		var apiErr *api.APIError
-		if errors.As(rerr, &apiErr) && apiErr.Status == http.StatusNotFound {
-			// Purged parents have no live row to resolve. Fall through
-			// with empty shortID and the raw value so the matcher can
-			// still hit stored parent_short_id snapshots in payloads.
-			return "", parentRef, true, nil
-		}
-		return "", "", false, rerr
-	}
-	return issue.ShortID, parentRef, true, nil
+// auditParentFilter holds the multiple identities we'll compare each
+// row against. resolvedShortID is the parent's CURRENT short_id from
+// a live (IncludeDeletedYes) lookup; parsedShortID and parsedUID
+// come from running the raw ref through shortid.Parse so a purged
+// parent referenced as `project#short` or by full UID still matches
+// stored snapshots in close payloads. raw preserves the literal
+// fallback for any odd form Parse rejected.
+type auditParentFilter struct {
+	resolvedShortID string
+	parsedShortID   string
+	parsedUID       string
+	raw             string
+	has             bool
 }
 
-// auditParentMatches accepts a row.Parent if it equals the resolved
-// current short_id OR the raw filter value. The raw fallback keeps
-// the prior literal-string behavior alive for purged parents where
-// the only handle is the close-time short_id snapshot.
-func auditParentMatches(rowParent, resolvedShortID, raw string) bool {
-	if resolvedShortID != "" && rowParent == resolvedShortID {
+// resolveAuditParentFilter turns the --parent query value into an
+// auditParentFilter, accepting any ref form the issue resolver
+// accepts. Soft-deleted parents resolve through IncludeDeletedYes —
+// audit is a historical view and a close of a child whose parent was
+// later soft-deleted is still a real audit row. Purged parents (no
+// row remains) fall through; the matcher uses parsed/raw values to
+// hit stored parent_uid and parent_short_id snapshots in payloads.
+func resolveAuditParentFilter(
+	ctx context.Context, cfg ServerConfig, projectID int64, parentRef string,
+) (auditParentFilter, error) {
+	if parentRef == "" {
+		return auditParentFilter{}, nil
+	}
+	f := auditParentFilter{raw: parentRef, has: true}
+	if parsed, perr := shortid.Parse(parentRef); perr == nil {
+		f.parsedShortID = parsed.ShortID
+		f.parsedUID = parsed.ULID
+	}
+	issue, rerr := activeIssueByRef(ctx, cfg.DB, projectID, parentRef, db.IncludeDeletedYes)
+	if rerr == nil {
+		f.resolvedShortID = issue.ShortID
+		return f, nil
+	}
+	var apiErr *api.APIError
+	if errors.As(rerr, &apiErr) && apiErr.Status == http.StatusNotFound {
+		// Purged parent: no live row. Parsed/raw fields are the only
+		// handles left for matching stored snapshots.
+		return f, nil
+	}
+	return auditParentFilter{}, rerr
+}
+
+// matches reports whether a close event's row.Parent (current display
+// short_id) and payloadParentUID (frozen close-time UID, may be nil
+// for legacy events) line up with the filter under any of the
+// accepted ref forms.
+func (f auditParentFilter) matches(rowParent string, payloadParentUID *string) bool {
+	if f.resolvedShortID != "" && rowParent == f.resolvedShortID {
 		return true
 	}
-	if raw != "" && rowParent == raw {
+	if f.parsedShortID != "" && rowParent == f.parsedShortID {
+		return true
+	}
+	if f.parsedUID != "" && payloadParentUID != nil && *payloadParentUID == f.parsedUID {
+		return true
+	}
+	if f.raw != "" && rowParent == f.raw {
 		return true
 	}
 	return false

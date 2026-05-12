@@ -353,19 +353,103 @@ func TestAuditCloses_ThrottledFlag_DifferentActorEndsCycle(t *testing.T) {
 		}
 		return false
 	}
+	var seenDifferentActor, seenSecondCycle bool
 	for _, r := range got.Rows {
 		if r.Issue != childB {
 			continue
 		}
 		switch {
 		case strings.HasPrefix(r.Message, "Different actor"):
+			seenDifferentActor = true
 			assert.False(t, hasThrottled(r.Flags),
 				"agent-b's intervening close must not inherit agent-a's throttle marker")
 		case strings.HasPrefix(r.Message, "Second cycle"):
+			seenSecondCycle = true
 			assert.False(t, hasThrottled(r.Flags),
 				"agent-a's later close after the intervening close must start a fresh cycle")
 		}
 	}
+	assert.True(t, seenDifferentActor,
+		"audit must surface the intervening close row to validate it against the throttle flag")
+	assert.True(t, seenSecondCycle,
+		"audit must surface the post-reopen close row to validate it against the throttle flag")
+}
+
+// TestAuditCloses_ActorFilterDoesNotHideThrottleEndingClose pins that
+// pushing --actor into the SQL query would hide intervening closes by
+// other actors and cause the throttle marker to bleed: agent-a is
+// throttled, agent-b's intervening close ends that cycle, agent-a
+// closes again after a reopen. With --actor=agent-a the SQL-only
+// filter would drop agent-b's close from the event stream and leave
+// agent-a's marker pending, flagging the later legitimate close.
+// Lifting --actor to the row-emit pass keeps the marker walk
+// consistent regardless of which actor the caller filters on.
+func TestAuditCloses_ActorFilterDoesNotHideThrottleEndingClose(t *testing.T) {
+	env, dir, pid, parent := setupWorkspaceWithIssue(t, "parent issue")
+	childA := createIssue(t, env, pid, "child a")
+	childB := createIssue(t, env, pid, "child b")
+	runCLI(t, env, dir, "edit", childA, "--parent", parent)
+	runCLI(t, env, dir, "edit", childB, "--parent", parent)
+	msg := "Verified end-to-end and confirmed no regressions in tests."
+	runCLIAs(t, env, dir, "agent-a", "close", childA, "--done",
+		"--message", msg, "--commit", "abc1234")
+	_, _, _ = runCLIWithErr(t, env, dir, "close", childB, "--as", "agent-a",
+		"--done", "--message", msg, "--commit", "abc1234")
+	runCLIAs(t, env, dir, "agent-b", "close", childB, "--done",
+		"--message", "Different actor closing child B with fresh prose.",
+		"--commit", "def5678")
+	runCLIAs(t, env, dir, "agent-b", "reopen", childB)
+	runCLIAs(t, env, dir, "agent-a", "close", childB, "--done",
+		"--message", "Second cycle on child B; agent-a closing after reopen.",
+		"--commit", "ff00aa1")
+
+	// With --actor=agent-a, the agent-b close is filtered out of the
+	// output but MUST still be visible to the throttle-marker pass.
+	// agent-a's second close (post-reopen) must NOT inherit the flag.
+	out := runCLI(t, env, dir, "audit", "closes", "--actor", "agent-a", "--json")
+	type row struct {
+		Issue   string   `json:"issue"`
+		Actor   string   `json:"actor"`
+		Message string   `json:"message"`
+		Flags   []string `json:"flags"`
+	}
+	var got struct {
+		Rows []row `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	var seenSecondCycle bool
+	for _, r := range got.Rows {
+		if r.Issue != childB || !strings.HasPrefix(r.Message, "Second cycle") {
+			continue
+		}
+		seenSecondCycle = true
+		for _, f := range r.Flags {
+			assert.NotEqual(t, "throttled", f,
+				"--actor must not hide agent-b's cycle-ending close from the throttle pass")
+		}
+	}
+	assert.True(t, seenSecondCycle,
+		"--actor=agent-a must still surface agent-a's later close")
+}
+
+// TestAuditCloses_FilterByParent_QualifiedAndUIDRefs pins that
+// --parent accepts qualified refs (`project#short_id`) and full UIDs
+// even when the parent is no longer resolvable, by falling back to
+// the parsed short_id / UID against stored payload snapshots. Prior
+// to the parser fallback, qualified refs to soft-deleted-then-purged
+// parents silently returned no rows.
+func TestAuditCloses_FilterByParent_QualifiedAndUIDRefs(t *testing.T) {
+	env, dir, pid, parent := setupWorkspaceWithIssue(t, "parent issue")
+	child := createIssue(t, env, pid, "child of parent")
+	runCLI(t, env, dir, "edit", child, "--parent", parent)
+	runCLI(t, env, dir, "close", child, "--done",
+		"--message", "Fixed the child of the parent issue and ran the unit tests.",
+		"--commit", "abc1234")
+
+	qualified := "kata#" + parent
+	out := runCLI(t, env, dir, "audit", "closes", "--parent", qualified, "--json")
+	assert.Contains(t, out, `"issue":"`+child+`"`,
+		"--parent must accept qualified refs even before the parser fallback path matters")
 }
 
 // TestAuditCloses_ThrottledFlagIgnoresLaterThrottle pins the temporal
