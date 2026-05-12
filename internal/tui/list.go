@@ -842,8 +842,10 @@ func filteredIssues(issues []Issue, f ListFilter) []Issue {
 
 // matchesFilter reports whether iss satisfies the client-side filters.
 // Owner is *string on the wire, so a nil pointer never matches a set
-// owner. Search is case-insensitive over Title — body search would need
-// the detail fetch and is out of scope for the list view.
+// owner. Search is case-insensitive contains over Title, ShortID, and
+// QualifiedID so users can paste an id (`abc4` or `kata#abc4`) into the
+// `/` search and find the issue without having to remember the title.
+// Body search is out of scope: the list rows don't carry the body.
 //
 // Labels use any-of semantics: a non-empty filter Labels slice matches
 // when at least one of the filter's labels is attached to the issue. An
@@ -861,17 +863,32 @@ func matchesFilter(iss Issue, f ListFilter) bool {
 	if f.Author != "" && iss.Author != f.Author {
 		return false
 	}
-	if f.Search != "" {
-		if !strings.Contains(
-			strings.ToLower(iss.Title), strings.ToLower(f.Search),
-		) {
-			return false
-		}
+	if f.Search != "" && !matchesSearchTerm(iss, f.Search) {
+		return false
 	}
 	if len(f.Labels) > 0 && !labelsAnyOf(iss.Labels, f.Labels) {
 		return false
 	}
 	return true
+}
+
+// matchesSearchTerm runs the `/` filter as case-insensitive contains
+// across the issue's user-visible identifiers: title, short_id, and
+// the qualified `<project>#<short_id>` form. Returning true on any
+// match keeps the search forgiving — pasting a bare or qualified id
+// surfaces the issue without forcing users to know which form the
+// list row currently displays.
+func matchesSearchTerm(iss Issue, term string) bool {
+	needle := strings.ToLower(term)
+	for _, field := range [...]string{iss.Title, iss.ShortID, iss.QualifiedID} {
+		if field == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(field), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // labelsAnyOf reports whether any of want is present in have. Used by

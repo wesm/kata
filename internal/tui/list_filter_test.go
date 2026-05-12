@@ -1004,3 +1004,53 @@ func TestList_Close_EmptyListNoOp(t *testing.T) {
 		t.Fatalf("closeCalls = %d, want 0", api.closeCalls)
 	}
 }
+
+// TestMatchesFilter_SearchAcrossIDs: the `/` search box should match an
+// issue when the term appears in its title, its bare short_id, or its
+// qualified `<project>#<short_id>` form. Title-only search forced users
+// to remember exact wording when they only had the id at hand.
+func TestMatchesFilter_SearchAcrossIDs(t *testing.T) {
+	iss := Issue{
+		UID:         "01TEST-aaa1",
+		ShortID:     "abc4",
+		QualifiedID: "kata#abc4",
+		Title:       "fix login race",
+	}
+	cases := []struct {
+		name   string
+		search string
+		want   bool
+	}{
+		{"title substring", "login", true},
+		{"title case-insensitive", "LOGIN", true},
+		{"bare short_id", "abc4", true},
+		{"bare short_id case-insensitive", "ABC4", true},
+		{"short_id prefix", "abc", true},
+		{"qualified ref", "kata#abc4", true},
+		{"project prefix", "kata#", true},
+		{"no match", "ZZZZ", false},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			f := ListFilter{Search: c.search}
+			got := matchesFilter(iss, f)
+			if got != c.want {
+				t.Errorf("matchesFilter(search=%q) = %v, want %v", c.search, got, c.want)
+			}
+		})
+	}
+}
+
+// TestMatchesFilter_SearchEmptyIdentifiers: an issue that has no
+// short_id or qualified_id populated (older fixtures, partial decode)
+// must still pass title-only searches without panicking.
+func TestMatchesFilter_SearchEmptyIdentifiers(t *testing.T) {
+	iss := Issue{Title: "hello world"}
+	if !matchesFilter(iss, ListFilter{Search: "hello"}) {
+		t.Fatal("title-only issue must still match a title-substring search")
+	}
+	if matchesFilter(iss, ListFilter{Search: "abc4"}) {
+		t.Fatal("missing identifiers must not match an id-shaped search")
+	}
+}
