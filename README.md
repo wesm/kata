@@ -607,8 +607,10 @@ What does **not** work today:
 - Re-importing a snapshot on top of itself to refresh it incrementally.
 
 For multi-project backups, take the full-database snapshot shown above
-instead of one file per project. A per-project merge import is planned;
-the project tracks it as a kata issue.
+instead of one file per project. A per-project merge import (apply one
+project's snapshot to an existing database without disturbing other
+projects) is planned — tracked in
+[wesm/kata#42](https://github.com/wesm/kata/issues/42).
 
 ## Configuration
 
