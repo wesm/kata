@@ -452,6 +452,32 @@ func TestAuditCloses_FilterByParent_QualifiedAndUIDRefs(t *testing.T) {
 		"--parent must accept qualified refs even before the parser fallback path matters")
 }
 
+// TestAuditCloses_FilterByParent_CrossProjectQualifierMatchesNothing
+// pins that a qualified ref naming a different project than the
+// audit's scoped project must NOT match same-suffix issues in the
+// scoped project. The resolver-404 fallback previously kept
+// parsedShortID from `other#abc4`, so an audit for project=kata
+// with `--parent other#abc4` would surface closes under kata#abc4.
+func TestAuditCloses_FilterByParent_CrossProjectQualifierMatchesNothing(t *testing.T) {
+	env, dir, pid, parent := setupWorkspaceWithIssue(t, "parent issue")
+	child := createIssue(t, env, pid, "child of parent")
+	runCLI(t, env, dir, "edit", child, "--parent", parent)
+	runCLI(t, env, dir, "close", child, "--done",
+		"--message", "Fixed the child of the parent issue and ran the unit tests.",
+		"--commit", "abc1234")
+
+	// Qualified ref naming a project that doesn't exist (or any
+	// project other than the scoped one) must return zero rows —
+	// the matching short_id suffix in the scoped project is
+	// coincidental, not what the user asked for.
+	mismatchedRef := "other-project#" + parent
+	out := runCLI(t, env, dir, "audit", "closes", "--parent", mismatchedRef, "--json")
+	assert.NotContains(t, out, `"issue":"`+child+`"`,
+		"--parent <other-project>#<short> must not match same-suffix closes in the scoped project")
+	assert.Contains(t, out, `"rows":[]`,
+		"cross-project qualified ref must return an empty rows list")
+}
+
 // TestAuditCloses_ThrottledFlagIgnoresLaterThrottle pins the temporal
 // rule: a close.throttled event whose id is GREATER than the successful
 // close it could naively be matched against must not flag that close.

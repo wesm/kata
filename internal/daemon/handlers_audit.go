@@ -285,7 +285,8 @@ func resolveAuditParentFilter(
 		return auditParentFilter{}, nil
 	}
 	f := auditParentFilter{raw: parentRef, has: true}
-	if parsed, perr := shortid.Parse(parentRef); perr == nil {
+	parsed, perr := shortid.Parse(parentRef)
+	if perr == nil {
 		f.parsedShortID = parsed.ShortID
 		f.parsedUID = parsed.ULID
 	}
@@ -295,12 +296,27 @@ func resolveAuditParentFilter(
 		return f, nil
 	}
 	var apiErr *api.APIError
-	if errors.As(rerr, &apiErr) && apiErr.Status == http.StatusNotFound {
-		// Purged parent: no live row. Parsed/raw fields are the only
-		// handles left for matching stored snapshots.
-		return f, nil
+	if !errors.As(rerr, &apiErr) || apiErr.Status != http.StatusNotFound {
+		return auditParentFilter{}, rerr
 	}
-	return auditParentFilter{}, rerr
+	// Resolver 404 covers two cases: a purged parent in THIS project
+	// (we want the parsed/raw fallback to hit stored snapshots), or a
+	// qualified ref pointing at a different project (we must NOT let
+	// parsedShortID match same-suffix issues in the scoped project).
+	// Distinguish by re-checking the parsed qualifier against the
+	// scoped project's name. Mismatched qualifiers clear the parsed
+	// short_id so only the raw form remains as a fallback, and the raw
+	// form ("other#abc4") never matches a bare row.Parent.
+	if perr == nil && parsed.Project != "" {
+		project, projErr := cfg.DB.ProjectByID(ctx, projectID)
+		if projErr != nil {
+			return auditParentFilter{}, api.NewError(500, "internal", projErr.Error(), "", nil)
+		}
+		if parsed.Project != project.Name {
+			f.parsedShortID = ""
+		}
+	}
+	return f, nil
 }
 
 // matches reports whether a close event's row.Parent (current display
