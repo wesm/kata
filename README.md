@@ -525,6 +525,53 @@ There is no authentication in this mode — network ACLs (firewall, VPN,
 tailnet) are the access boundary. Default behavior (no flag, no env, no local
 file) is unchanged: a local Unix-socket daemon is auto-started on demand.
 
+## Backup and restore
+
+`kata export` writes the entire local database as JSONL; `kata import`
+rebuilds a database from that file. Together they cover backups, machine
+moves, and migrations between schema versions.
+
+Back up the local database:
+
+```sh
+kata daemon stop
+kata export --output backups/kata-$(date -u +%Y%m%d).jsonl
+kata daemon start
+```
+
+Without `--output`, `kata export` writes a timestamped file
+(`kata-export-YYYYMMDDTHHMMSSZ.jsonl`) in the current directory. Add
+`--project-id N` to export only one project. Export refuses to run while
+a daemon holds the database open; pass `--allow-running-daemon` to take a
+best-effort snapshot on a host where you cannot stop the daemon.
+
+Restore into a fresh database file:
+
+```sh
+kata import --input backups/kata-20260512.jsonl --target ~/.kata/restored.db
+```
+
+Add `--force` to overwrite an existing target. To activate a restored
+database, point `KATA_DB` at it (or move it into `KATA_HOME` as
+`kata.db`) and restart the daemon.
+
+JSONL is plain text and diffs cleanly, so a simple versioned-backup setup
+is to keep snapshots in a git repository:
+
+```sh
+mkdir -p ~/kata-backups && cd ~/kata-backups
+git init -q
+kata daemon stop
+kata export --output snapshot.jsonl
+kata daemon start
+git add snapshot.jsonl
+git commit -q -m "snapshot $(date -u +%FT%TZ)"
+```
+
+Run that on a schedule (cron, launchd, systemd timer) and you have
+point-in-time recovery without operating a backup service. Push the repo
+to a private remote if you want off-host storage.
+
 ## Configuration
 
 Useful environment variables:
