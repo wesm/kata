@@ -196,6 +196,136 @@ func eventDescription(e EventLogEntry) string {
 	return strings.TrimPrefix(e.Type, "issue.")
 }
 
+// eventChunkLines renders one event into the lines of its events-tab
+// chunk. Most events are single-line: "[type] time actor — description".
+// issue.closed events additionally emit indented continuation lines
+// surfacing the close message and each evidence item so reviewers can
+// audit closures directly from the events tab.
+func eventChunkLines(e EventLogEntry, isCursor bool) []string {
+	// Type is daemon-authored; Actor and description interpolate
+	// agent-authored payload fields — sanitize both.
+	head := fmt.Sprintf("[%s] %s %s — %s",
+		e.Type, fmtTime(e.CreatedAt),
+		sanitizeForDisplay(e.Actor),
+		sanitizeForDisplay(eventDescription(e)))
+	lines := []string{applyActivityCursor(head, isCursor)}
+	if e.Type == "issue.closed" {
+		lines = append(lines, closeDetailLines(e)...)
+	}
+	return lines
+}
+
+// closeDetailLines returns the indented "message:" and "evidence:" rows
+// that hang under an issue.closed header. Empty fields are skipped so a
+// minimal close (e.g. TUI bypass with no message and no evidence) still
+// renders cleanly as a single header line.
+func closeDetailLines(e EventLogEntry) []string {
+	var out []string
+	if msg := payloadString(e, "message"); msg != "" {
+		out = append(out, "  message: "+sanitizeForDisplay(msg))
+	}
+	for _, line := range closeEvidenceSummaries(e) {
+		out = append(out, "  evidence: "+sanitizeForDisplay(line))
+	}
+	return out
+}
+
+// closeEvidenceSummaries extracts the evidence array from an
+// issue.closed event payload and returns one short label per item
+// (e.g. "commit a1b2c3d", "reviewed-paths internal/db/queries.go").
+// Missing or malformed evidence returns nil.
+func closeEvidenceSummaries(e EventLogEntry) []string {
+	if e.Payload == nil {
+		return nil
+	}
+	raw, ok := e.Payload["evidence"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, formatEvidenceItem(m))
+	}
+	return out
+}
+
+// formatEvidenceItem renders one evidence map from the close payload
+// (matching api.Evidence wire shape) into a short human label. The
+// switch mirrors the EvidenceType union in internal/api/evidence.go;
+// unknown types fall back to the raw type tag so future additions don't
+// disappear silently.
+func formatEvidenceItem(m map[string]any) string {
+	t, _ := m["type"].(string)
+	switch t {
+	case "commit":
+		return evidenceLabel(t, stringField(m, "sha"))
+	case "pr":
+		return evidenceLabel(t, stringField(m, "url"))
+	case "test":
+		return evidenceLabel(t, stringField(m, "command"))
+	case "no-change-audit":
+		return evidenceLabel(t, stringField(m, "rationale"))
+	case "duplicate-of", "superseded-by":
+		return evidenceLabel(t, stringField(m, "issue_ref"))
+	case "reviewed-paths":
+		return evidenceLabel(t, joinStringArray(m, "paths"))
+	}
+	if t == "" {
+		return "?"
+	}
+	return t
+}
+
+// evidenceLabel joins a type tag with its payload value, dropping the
+// trailing space when the value is empty so a malformed item renders as
+// "commit" instead of "commit ".
+func evidenceLabel(kind, value string) string {
+	if value == "" {
+		return kind
+	}
+	return kind + " " + value
+}
+
+// stringField reads a string field out of a generic map, returning ""
+// for missing keys or non-string values.
+func stringField(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// joinStringArray returns the comma-separated string-array field at key.
+// Missing keys, non-array values, and arrays with no usable strings all
+// return "".
+func joinStringArray(m map[string]any, key string) string {
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(arr))
+	for _, v := range arr {
+		if s, ok := v.(string); ok && s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 // reasonSuffix renders " (reason)" for closed events that carry one.
 func reasonSuffix(e EventLogEntry) string {
 	if r := payloadString(e, "reason"); r != "" {

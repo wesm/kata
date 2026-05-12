@@ -41,26 +41,20 @@ func commentChunks(cs []CommentEntry, width, cursor int, ts tabState) []entryChu
 	return chunks
 }
 
-// eventChunks builds one single-line chunk per event:
-// "[type] timestamp actor — description". The description is type-
-// specific (e.g., "labeled bug", "linked #7").
+// eventChunks builds the chunk slice for the events tab. Most events
+// produce a single-line chunk:
+// "[type] timestamp actor — description". issue.closed events expand
+// to additional indented lines surfacing the close message and each
+// evidence item so reviewers can audit the close from the events tab
+// without dropping to `kata audit closes`.
 func eventChunks(es []EventLogEntry, width, cursor int, ts tabState) []entryChunk {
-	_ = width // single-line entries; width clipping happens at render time
+	_ = width // clipping happens at render time
 	if placeholder := tabPlaceholder(ts, "events", "(no events yet)", len(es)); placeholder != nil {
 		return []entryChunk{*placeholder}
 	}
 	chunks := make([]entryChunk, 0, len(es))
 	for i, e := range es {
-		// Type is daemon-authored, but Actor and the description (which
-		// can interpolate payload strings like labels and reasons) are
-		// agent-authored — sanitize both.
-		line := fmt.Sprintf("[%s] %s %s — %s",
-			e.Type, fmtTime(e.CreatedAt),
-			sanitizeForDisplay(e.Actor),
-			sanitizeForDisplay(eventDescription(e)))
-		chunks = append(chunks, entryChunk{lines: []string{
-			applyActivityCursor(line, i == cursor),
-		}})
+		chunks = append(chunks, entryChunk{lines: eventChunkLines(e, i == cursor)})
 	}
 	return chunks
 }
