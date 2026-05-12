@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // eventDescriber returns the human-readable description for an event of
@@ -201,7 +203,7 @@ func eventDescription(e EventLogEntry) string {
 // issue.closed events additionally emit indented continuation lines
 // surfacing the close message and each evidence item so reviewers can
 // audit closures directly from the events tab.
-func eventChunkLines(e EventLogEntry, isCursor bool) []string {
+func eventChunkLines(e EventLogEntry, width int, isCursor bool) []string {
 	// Type is daemon-authored; Actor and description interpolate
 	// agent-authored payload fields — sanitize both.
 	head := fmt.Sprintf("[%s] %s %s — %s",
@@ -210,7 +212,7 @@ func eventChunkLines(e EventLogEntry, isCursor bool) []string {
 		sanitizeForDisplay(eventDescription(e)))
 	lines := []string{applyActivityCursor(head, isCursor)}
 	if e.Type == "issue.closed" {
-		lines = append(lines, closeDetailLines(e)...)
+		lines = append(lines, closeDetailLines(e, width)...)
 	}
 	return lines
 }
@@ -219,13 +221,48 @@ func eventChunkLines(e EventLogEntry, isCursor bool) []string {
 // that hang under an issue.closed header. Empty fields are skipped so a
 // minimal close (e.g. TUI bypass with no message and no evidence) still
 // renders cleanly as a single header line.
-func closeDetailLines(e EventLogEntry) []string {
+//
+// Values are sanitized with sanitizeForLine (not sanitizeForDisplay) so
+// embedded newlines render as the literal escape "\n" instead of
+// spilling into extra physical rows that bypass chunk line-counting and
+// cursor anchoring. Long values are then wrapped to width with a hanging
+// indent so the events tab surfaces the full message on a narrow pane
+// instead of clipping it with an ellipsis.
+func closeDetailLines(e EventLogEntry, width int) []string {
 	var out []string
 	if msg := payloadString(e, "message"); msg != "" {
-		out = append(out, "  message: "+sanitizeForDisplay(msg))
+		out = append(out, wrapDetailRow("  message: ", sanitizeForLine(msg), width)...)
 	}
 	for _, line := range closeEvidenceSummaries(e) {
-		out = append(out, "  evidence: "+sanitizeForDisplay(line))
+		out = append(out, wrapDetailRow("  evidence: ", sanitizeForLine(line), width)...)
+	}
+	return out
+}
+
+// wrapDetailRow renders one labeled detail row across as many physical
+// rows as it takes to fit value into width. The first row carries
+// prefix + the value head; continuation rows carry a hanging indent of
+// the same display width so the value column stays vertically aligned.
+// width <= 0 returns the row unwrapped so callers that don't yet know
+// the pane width still emit readable output.
+func wrapDetailRow(prefix, value string, width int) []string {
+	if width <= 0 {
+		return []string{prefix + value}
+	}
+	prefixW := runewidth.StringWidth(prefix)
+	budget := width - prefixW
+	if budget < 1 {
+		budget = 1
+	}
+	parts := hardWrap(value, budget)
+	if len(parts) == 0 {
+		return []string{prefix}
+	}
+	out := make([]string, 0, len(parts))
+	out = append(out, prefix+parts[0])
+	hang := strings.Repeat(" ", prefixW)
+	for _, p := range parts[1:] {
+		out = append(out, hang+p)
 	}
 	return out
 }

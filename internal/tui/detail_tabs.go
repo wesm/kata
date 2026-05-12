@@ -48,13 +48,12 @@ func commentChunks(cs []CommentEntry, width, cursor int, ts tabState) []entryChu
 // evidence item so reviewers can audit the close from the events tab
 // without dropping to `kata audit closes`.
 func eventChunks(es []EventLogEntry, width, cursor int, ts tabState) []entryChunk {
-	_ = width // clipping happens at render time
 	if placeholder := tabPlaceholder(ts, "events", "(no events yet)", len(es)); placeholder != nil {
 		return []entryChunk{*placeholder}
 	}
 	chunks := make([]entryChunk, 0, len(es))
 	for i, e := range es {
-		chunks = append(chunks, entryChunk{lines: eventChunkLines(e, i == cursor)})
+		chunks = append(chunks, entryChunk{lines: eventChunkLines(e, width, i == cursor)})
 	}
 	return chunks
 }
