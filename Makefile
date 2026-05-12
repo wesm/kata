@@ -2,12 +2,13 @@
 
 GOFLAGS_TEST := -shuffle=on
 GOBIN ?= $(HOME)/.local/bin
+export GOBIN
 
 build:
 	go build -o kata ./cmd/kata
 
 install:
-	GOBIN=$(GOBIN) go install ./cmd/kata
+	go install ./cmd/kata
 
 test:
 	go test $(GOFLAGS_TEST) ./...
