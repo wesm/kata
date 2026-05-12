@@ -146,8 +146,6 @@ directory to your `PATH`.
 ### Build from a clone (macOS / Linux)
 
 ```sh
-git clone https://github.com/wesm/kata.git
-cd kata
 make install
 ```
 
@@ -159,8 +157,6 @@ isn't already.
 PowerShell or cmd.exe:
 
 ```powershell
-git clone https://github.com/wesm/kata.git
-cd kata
 go build -o kata.exe ./cmd/kata
 # Move kata.exe to a directory on your PATH, e.g. %USERPROFILE%\.local\bin
 ```
