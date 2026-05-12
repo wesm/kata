@@ -14,6 +14,24 @@ same local daemon and SQLite database.
 Status: early public preview. The CLI, daemon, and TUI are usable, but command
 contracts and UI details may still change before a stable release.
 
+## Quick Start
+
+```sh
+go install github.com/wesm/kata/cmd/kata@latest   # or see Install for other options
+
+cd your-repo
+kata init                                         # bind this workspace to a kata project
+kata create "fix login race"                      # returns the issue's short_id, e.g. abc4
+kata list                                         # list open issues
+kata show abc4                                    # inspect by short_id
+kata close abc4 --done --message "Fixed; tests green." --commit <sha>
+kata tui                                          # browse and triage interactively
+```
+
+See [Install](#install) for `go install`, build-from-source, and Windows
+instructions; see [Working with kata](#working-with-kata) for a longer
+walkthrough.
+
 ## What kata does today
 
 What you can do:
@@ -110,24 +128,50 @@ carries the issue state.
 
 ## Install
 
-kata is built with Go. To build from source you need Go 1.26 or later and a
-clone of this repository:
+kata is a single Go binary with no runtime dependencies and builds on macOS,
+Linux, and Windows. Pre-built release binaries are not published yet; install
+from source using one of the options below. All paths require **Go 1.26 or
+later** (<https://go.dev/dl/>).
+
+### `go install` (any platform)
 
 ```sh
-make build
-make install
+go install github.com/wesm/kata/cmd/kata@latest
 ```
 
-`make install` places `kata` in `~/.local/bin`. Make sure that directory is on
-your `PATH`.
+Go places `kata` in `$(go env GOBIN)`, falling back to `$(go env GOPATH)/bin`
+(typically `~/go/bin` on Unix, `%USERPROFILE%\go\bin` on Windows). Add that
+directory to your `PATH`.
 
-For development:
+### Build from a clone (macOS / Linux)
 
 ```sh
-make test
+make install                            # installs to ~/.local/bin
+make install GOBIN=/usr/local/bin       # or set GOBIN to install elsewhere
 ```
 
-## Quick Start
+Add the install directory to your `PATH` if it isn't already. `GOBIN` from the
+environment is also honored (`export GOBIN=/opt/bin && make install`).
+
+### Build from a clone (Windows)
+
+PowerShell or cmd.exe:
+
+```powershell
+go build -o kata.exe ./cmd/kata
+# Move kata.exe to a directory on your PATH, e.g. %USERPROFILE%\.local\bin
+```
+
+The `go install` command above also works on Windows and is usually simpler.
+
+### Development
+
+```sh
+make test          # run the test suite
+make lint          # run golangci-lint
+```
+
+## Working with kata
 
 Initialize kata in a workspace:
 
