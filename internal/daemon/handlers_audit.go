@@ -313,7 +313,13 @@ func resolveAuditParentFilter(
 			return auditParentFilter{}, api.NewError(500, "internal", projErr.Error(), "", nil)
 		}
 		if parsed.Project != project.Name {
+			// Clear every parsed identifier, not just parsedShortID, so a
+			// mismatched qualifier is a "match nothing" filter regardless
+			// of parser shape. Today shortid.Parse never sets both Project
+			// and ULID, but keeping the clear local makes the invariant
+			// obvious here.
 			f.parsedShortID = ""
+			f.parsedUID = ""
 		}
 	}
 	return f, nil
