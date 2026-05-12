@@ -339,7 +339,7 @@ kata projects list
 kata projects show <project>
 kata projects rename <project> <name>
 kata projects merge <source> <target> [--rename-target NAME]
-kata export [--output PATH]
+kata export [--project NAME] [--output PATH]
 kata import --input PATH --target PATH [--force]
 ```
 
@@ -527,9 +527,9 @@ file) is unchanged: a local Unix-socket daemon is auto-started on demand.
 
 ## Backup and restore
 
-`kata export` writes the entire local database as JSONL; `kata import`
-rebuilds a database from that file. Together they cover backups, machine
-moves, and migrations between schema versions.
+`kata export` writes the local database as JSONL; `kata import` rebuilds
+a database from that file. Together they cover backups, machine moves,
+and migrations between schema versions.
 
 Back up the local database:
 
@@ -540,10 +540,10 @@ kata daemon start
 ```
 
 Without `--output`, `kata export` writes a timestamped file
-(`kata-export-YYYYMMDDTHHMMSSZ.jsonl`) in the current directory. Add
-`--project-id N` to export only one project. Export refuses to run while
-a daemon holds the database open; pass `--allow-running-daemon` to take a
-best-effort snapshot on a host where you cannot stop the daemon.
+(`kata-export-YYYYMMDDTHHMMSSZ.jsonl`) in the current directory. Export
+refuses to run while a daemon holds the database open; pass
+`--allow-running-daemon` to take a best-effort snapshot on a host where
+you cannot stop the daemon.
 
 Restore into a fresh database file:
 
@@ -551,12 +551,14 @@ Restore into a fresh database file:
 kata import --input backups/kata-20260512.jsonl --target ~/.kata/restored.db
 ```
 
-Add `--force` to overwrite an existing target. To activate a restored
-database, point `KATA_DB` at it (or move it into `KATA_HOME` as
-`kata.db`) and restart the daemon.
+`kata import` always creates a brand-new database. The target must not
+exist; `--force` deletes it first. There is no merge mode today — see
+"Exporting a single project" below for what that means in practice. To
+activate a restored database, point `KATA_DB` at it (or move it into
+`KATA_HOME` as `kata.db`) and restart the daemon.
 
-JSONL is plain text and diffs cleanly, so a simple versioned-backup setup
-is to keep snapshots in a git repository:
+JSONL is plain text and diffs cleanly, so a simple versioned-backup
+setup is to keep snapshots in a git repository:
 
 ```sh
 mkdir -p ~/kata-backups && cd ~/kata-backups
@@ -571,6 +573,42 @@ git commit -q -m "snapshot $(date -u +%FT%TZ)"
 Run that on a schedule (cron, launchd, systemd timer) and you have
 point-in-time recovery without operating a backup service. Push the repo
 to a private remote if you want off-host storage.
+
+### Exporting a single project
+
+Use the global `--project NAME` flag to scope an export to one project:
+
+```sh
+kata daemon stop
+kata --project myproj export --output backups/myproj.jsonl
+kata daemon start
+```
+
+`--project-id N` works too if you prefer the numeric id from
+`kata projects list --json`.
+
+A single-project export round-trips into a **fresh** database that
+contains only that project:
+
+```sh
+kata import --input backups/myproj.jsonl --target /tmp/myproj-only.db
+```
+
+This is useful for archiving one project before deleting it, handing a
+project's full history to a collaborator who'll set up a fresh kata
+install, or moving a project to a different host.
+
+What does **not** work today:
+
+- Importing a per-project snapshot **into an existing populated
+  database**. `kata import` always wipes the target first; there is no
+  merge or "add this project" mode. So you cannot use per-project files
+  as building blocks to stitch a multi-project database together.
+- Re-importing a snapshot on top of itself to refresh it incrementally.
+
+For multi-project backups, take the full-database snapshot shown above
+instead of one file per project. A per-project merge import is planned;
+the project tracks it as a kata issue.
 
 ## Configuration
 

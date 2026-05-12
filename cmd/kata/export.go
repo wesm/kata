@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,6 +44,10 @@ func newExportCmd() *cobra.Command {
 				return err
 			}
 			defer func() { _ = d.Close() }()
+			projectID, err = resolveExportProject(ctx, d, projectID)
+			if err != nil {
+				return err
+			}
 			f, err := os.OpenFile(output, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) //nolint:gosec // output path is user-supplied via --output CLI flag
 			if err != nil {
 				return fmt.Errorf("open export output: %w", err)
@@ -77,6 +83,37 @@ func newExportCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&includeDeleted, "include-deleted", true, "include soft-deleted rows")
 	cmd.Flags().BoolVar(&allowRunningDaemon, "allow-running-daemon", false, "export even if a daemon is running")
 	return cmd
+}
+
+// resolveExportProject reconciles the global --project NAME flag with the
+// local --project-id N flag. NAME is looked up against the projects table
+// since export reads the database directly (the daemon must be stopped).
+// Conflicts and unknown names surface as validation errors so scripts get
+// a clean failure rather than a silent full-DB export.
+func resolveExportProject(ctx context.Context, d *db.DB, projectID int64) (int64, error) {
+	name := strings.TrimSpace(flags.Project)
+	if name == "" {
+		return projectID, nil
+	}
+	p, err := d.ProjectByName(ctx, name)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return 0, &cliError{
+				Message:  fmt.Sprintf("project %q not found", name),
+				Kind:     kindNotFound,
+				ExitCode: ExitNotFound,
+			}
+		}
+		return 0, fmt.Errorf("resolve --project: %w", err)
+	}
+	if projectID != 0 && projectID != p.ID {
+		return 0, &cliError{
+			Message:  fmt.Sprintf("--project %q resolves to id %d, conflicts with --project-id %d", name, p.ID, projectID),
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
+	return p.ID, nil
 }
 
 func refuseRunningDaemon(ctx context.Context) error {
