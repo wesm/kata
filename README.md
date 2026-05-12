@@ -473,8 +473,7 @@ url = "http://100.64.0.5:7777"
 
 There is no authentication in this mode — network ACLs (firewall, VPN,
 tailnet) are the access boundary. Default behavior (no flag, no env, no local
-file) is unchanged: a local Unix-socket daemon is auto-started on demand. See
-`docs/superpowers/specs/2026-05-04-kata-remote-client-design.md`.
+file) is unchanged: a local Unix-socket daemon is auto-started on demand.
 
 ## Configuration
 
