@@ -146,11 +146,12 @@ directory to your `PATH`.
 ### Build from a clone (macOS / Linux)
 
 ```sh
-make install
+make install                            # installs to ~/.local/bin
+make install GOBIN=/usr/local/bin       # or set GOBIN to install elsewhere
 ```
 
-`make install` places `kata` in `~/.local/bin`; add it to your `PATH` if it
-isn't already.
+Add the install directory to your `PATH` if it isn't already. `GOBIN` from the
+environment is also honored (`export GOBIN=/opt/bin && make install`).
 
 ### Build from a clone (Windows)
 

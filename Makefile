@@ -1,12 +1,13 @@
 .PHONY: build install test test-short lint vet clean fmt nilaway tui tui-demo
 
 GOFLAGS_TEST := -shuffle=on
+GOBIN ?= $(HOME)/.local/bin
 
 build:
 	go build -o kata ./cmd/kata
 
 install:
-	GOBIN=$${HOME}/.local/bin go install ./cmd/kata
+	GOBIN=$(GOBIN) go install ./cmd/kata
 
 test:
 	go test $(GOFLAGS_TEST) ./...
