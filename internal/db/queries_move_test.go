@@ -114,3 +114,107 @@ func TestMoveIssueProject_RefusesSameProject(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "same")
 }
+
+func TestMoveIssueProject_RefusesSoftDeleted(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	src, _ := d.CreateProject(ctx, "src")
+	tgt, _ := d.CreateProject(ctx, "tgt")
+	iss := seedIssueInProject(t, d, src.ID, "bye", "tester")
+
+	// Soft-delete the issue.
+	_, _, _, err := d.SoftDeleteIssue(ctx, iss.ID, "tester")
+	require.NoError(t, err)
+
+	// Move should fail: soft-deleted issue is not "in" the project.
+	_, err = d.MoveIssueProject(ctx, db.MoveIssueProjectIn{
+		IssueID: iss.ID, FromProjectID: src.ID, ToProjectID: tgt.ID,
+		IfMatchRev: 1, Actor: "tester",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in project")
+}
+
+func TestMoveIssueProject_RehomesImportMappings(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	src, _ := d.CreateProject(ctx, "src")
+	tgt, _ := d.CreateProject(ctx, "tgt")
+	iss := seedIssueInProject(t, d, src.ID, "mappable", "tester")
+
+	// Seed an import_mapping for the issue in the source project.
+	issID := iss.ID
+	_, err := d.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source:     "gh",
+		ExternalID: "ext-42",
+		ObjectType: "issue",
+		ProjectID:  src.ID,
+		IssueID:    &issID,
+	})
+	require.NoError(t, err)
+
+	// Move the issue.
+	_, err = d.MoveIssueProject(ctx, db.MoveIssueProjectIn{
+		IssueID: iss.ID, FromProjectID: src.ID, ToProjectID: tgt.ID,
+		IfMatchRev: 1, Actor: "tester",
+	})
+	require.NoError(t, err)
+
+	// The mapping must now point at the target project.
+	got, err := d.ImportMappingBySource(ctx, tgt.ID, "gh", "issue", "ext-42")
+	require.NoError(t, err)
+	assert.Equal(t, tgt.ID, got.ProjectID)
+	assert.Equal(t, &iss.ID, got.IssueID)
+
+	// The old mapping in src must be gone.
+	_, err = d.ImportMappingBySource(ctx, src.ID, "gh", "issue", "ext-42")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestMoveIssueProject_RehomesImportMappings_SkipsCollisions(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	src, _ := d.CreateProject(ctx, "src")
+	tgt, _ := d.CreateProject(ctx, "tgt")
+	iss := seedIssueInProject(t, d, src.ID, "collision", "tester")
+	tgtIss := seedIssueInProject(t, d, tgt.ID, "existing", "tester")
+
+	issID := iss.ID
+
+	// Mapping in src for this issue.
+	_, err := d.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source:     "gh",
+		ExternalID: "ext-99",
+		ObjectType: "issue",
+		ProjectID:  src.ID,
+		IssueID:    &issID,
+	})
+	require.NoError(t, err)
+
+	// A pre-existing mapping in tgt with the same (source, external_id, object_type).
+	tgtIssID := tgtIss.ID
+	_, err = d.UpsertImportMapping(ctx, db.ImportMappingParams{
+		Source:     "gh",
+		ExternalID: "ext-99",
+		ObjectType: "issue",
+		ProjectID:  tgt.ID,
+		IssueID:    &tgtIssID,
+	})
+	require.NoError(t, err)
+
+	// Move should succeed — the colliding src row is dropped, tgt mapping is kept.
+	_, err = d.MoveIssueProject(ctx, db.MoveIssueProjectIn{
+		IssueID: iss.ID, FromProjectID: src.ID, ToProjectID: tgt.ID,
+		IfMatchRev: 1, Actor: "tester",
+	})
+	require.NoError(t, err)
+
+	// Target mapping is untouched (still points at tgtIss).
+	got, err := d.ImportMappingBySource(ctx, tgt.ID, "gh", "issue", "ext-99")
+	require.NoError(t, err)
+	assert.Equal(t, &tgtIssID, got.IssueID)
+
+	// Source mapping is gone (was the colliding row we dropped).
+	_, err = d.ImportMappingBySource(ctx, src.ID, "gh", "issue", "ext-99")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}

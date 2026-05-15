@@ -92,7 +92,7 @@ func (d *DB) MoveIssueProject(ctx context.Context, in MoveIssueProjectIn) (MoveI
 	if err := tx.QueryRowContext(ctx, `
 		SELECT i.revision, i.short_id, i.recurrence_id, i.uid, p.uid
 		  FROM issues i JOIN projects p ON p.id = i.project_id
-		 WHERE i.id = ? AND i.project_id = ?`,
+		 WHERE i.id = ? AND i.project_id = ? AND i.deleted_at IS NULL`,
 		in.IssueID, in.FromProjectID,
 	).Scan(&curRev, &curShortID, &recurrenceID, &issueUID, &fromProjectUID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -147,6 +147,60 @@ func (d *DB) MoveIssueProject(ctx context.Context, in MoveIssueProjectIn) (MoveI
 		in.ToProjectID, newShortID, newRev, in.IssueID,
 	); err != nil {
 		return out, err
+	}
+
+	// Rehome import_mappings rows for the moved issue. The UNIQUE constraint on
+	// import_mappings is (source, external_id, object_type, project_id). If the
+	// target project already has a row for the same (source, external_id,
+	// object_type), the UPDATE would violate UNIQUE — collect the colliding IDs
+	// and delete them first (the target mapping is already authoritative).
+	type collisionKey struct {
+		source, externalID, objectType string
+	}
+	collisionRows, err := tx.QueryContext(ctx, `
+		SELECT m.id, m.source, m.external_id, m.object_type
+		  FROM import_mappings m
+		 WHERE m.issue_id = ? AND m.project_id = ?
+		   AND EXISTS (
+		       SELECT 1 FROM import_mappings t
+		        WHERE t.project_id  = ?
+		          AND t.source      = m.source
+		          AND t.external_id = m.external_id
+		          AND t.object_type = m.object_type
+		   )`,
+		in.IssueID, in.FromProjectID, in.ToProjectID,
+	)
+	if err != nil {
+		return out, fmt.Errorf("find colliding import_mappings: %w", err)
+	}
+	var collidingIDs []int64
+	for collisionRows.Next() {
+		var id int64
+		var k collisionKey
+		if err := collisionRows.Scan(&id, &k.source, &k.externalID, &k.objectType); err != nil {
+			_ = collisionRows.Close()
+			return out, fmt.Errorf("scan colliding import_mappings: %w", err)
+		}
+		collidingIDs = append(collidingIDs, id)
+	}
+	if err := collisionRows.Close(); err != nil {
+		return out, fmt.Errorf("close collision rows: %w", err)
+	}
+	if err := collisionRows.Err(); err != nil {
+		return out, fmt.Errorf("iterate collision rows: %w", err)
+	}
+	for _, id := range collidingIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM import_mappings WHERE id = ?`, id); err != nil {
+			return out, fmt.Errorf("drop colliding import_mapping %d: %w", id, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE import_mappings
+		   SET project_id = ?
+		 WHERE issue_id = ? AND project_id = ?`,
+		in.ToProjectID, in.IssueID, in.FromProjectID,
+	); err != nil {
+		return out, fmt.Errorf("rehome import_mappings: %w", err)
 	}
 
 	payload, _ := json.Marshal(map[string]string{
