@@ -1136,6 +1136,11 @@ func linkExportWhere(opts ExportOptions) (string, []any) {
 	return whereClause(clauses), args
 }
 
+// eventExportWhereClauses returns the individual WHERE clauses (not a joined
+// string like its issueExportWhere / linkExportWhere siblings) so callers can
+// prepend the JOIN-dependent subject_issue orphan filter before assembling
+// the final WHERE. The clauses below cover the soft-delete dimension; orphan
+// filtering rides on the subject_issue / peer LEFT JOINs in each variant.
 func eventExportWhereClauses(opts ExportOptions) ([]string, []any) {
 	clauses := []string{}
 	args := []any{}
