@@ -240,6 +240,24 @@ func seedIssueInProject(t *testing.T, d *db.DB, projectID int64, title, author s
 	return issue
 }
 
+// seedRecurrenceInstance creates an issue and directly UPDATEs it to link to
+// a recurrence with the given occurrence_key. Returns the issue's row id and
+// UID. Mirrors the raw-UPDATE pattern used in jsonl roundtrip tests.
+func seedRecurrenceInstance(
+	t *testing.T, d *db.DB, projectID, recurrenceID int64, occurrenceKey, title string,
+) (int64, string) {
+	t.Helper()
+	iss, _, err := d.CreateIssue(context.Background(), db.CreateIssueParams{
+		ProjectID: projectID, Title: title, Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.ExecContext(context.Background(),
+		`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+		recurrenceID, occurrenceKey, iss.ID)
+	require.NoError(t, err)
+	return iss.ID, iss.UID
+}
+
 // seedLink creates a directed link of the given type between fromID and toID
 // under projectID, authored by the given actor.
 func seedLink(t *testing.T, d *db.DB, projectID, fromID, toID int64, linkType, actor string) {

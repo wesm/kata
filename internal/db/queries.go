@@ -1057,6 +1057,12 @@ func (d *DB) CloseIssue(
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
+	if reason == "done" && issue.RecurrenceID != nil && issue.OccurrenceKey != nil {
+		if _, err := d.MaterializeNext(ctx, tx, *issue.RecurrenceID,
+			*issue.OccurrenceKey, actor); err != nil {
+			return Issue{}, nil, false, fmt.Errorf("materialize next recurrence: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return Issue{}, nil, false, err
 	}

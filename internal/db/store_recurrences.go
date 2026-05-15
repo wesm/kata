@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wesm/kata/internal/recurrence"
+	"github.com/wesm/kata/internal/shortid"
 	katauid "github.com/wesm/kata/internal/uid"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // RecurrenceTemplate carries the issue-template fields for a recurrence row.
@@ -423,4 +426,313 @@ func (d *DB) ListRecurrencesByProject(ctx context.Context, projectID int64) ([]R
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// MaterializeNextOut carries the results of a successful MaterializeNext call.
+type MaterializeNextOut struct {
+	// NewIssueID is the row id of the newly inserted issue (zero when Skipped).
+	NewIssueID int64
+	// NewIssueUID is the UID of the inserted or already-existing issue.
+	NewIssueUID string
+	// OccurrenceKey is the occurrence date that was materialized.
+	OccurrenceKey string
+	// Skipped is true when the occurrence already existed (race with another writer).
+	Skipped bool
+}
+
+// MaterializeNext walks the recurrence's RRULE past afterKey, inserts the next
+// issue instance in the same tx (seeded from the template), and emits
+// issue.created + recurrence.materialized events. If the new issue's
+// (recurrence_id, occurrence_key) collides with an existing row (race with
+// another writer), it emits recurrence.materialization_skipped instead and
+// advances next_occurrence_key one step past the duplicate so future
+// materializations don't loop on the same key. When the rule is exhausted on
+// transition, emits recurrence.exhausted.
+func (d *DB) MaterializeNext(
+	ctx context.Context, tx *sql.Tx, recurrenceID int64, afterKey, actor string,
+) (MaterializeNextOut, error) {
+	var out MaterializeNextOut
+
+	var (
+		r           Recurrence
+		projectName string
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT r.id, r.uid, r.project_id, p.name,
+		       r.rrule, r.dtstart, r.timezone,
+		       r.template_title, r.template_body, r.template_owner, r.template_priority,
+		       r.template_labels, r.template_metadata, r.next_occurrence_key,
+		       r.last_materialized_uid, r.author, r.revision,
+		       r.created_at, r.updated_at, r.deleted_at
+		  FROM recurrences r JOIN projects p ON p.id = r.project_id
+		 WHERE r.id = ?`, recurrenceID,
+	).Scan(&r.ID, &r.UID, &r.ProjectID, &projectName,
+		&r.RRule, &r.DTStart, &r.Timezone,
+		&r.TemplateTitle, &r.TemplateBody, &r.TemplateOwner, &r.TemplatePriority,
+		&r.TemplateLabels, &r.TemplateMetadata, &r.NextOccurrenceKey,
+		&r.LastMaterializedUID, &r.Author, &r.Revision,
+		&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt)
+	if err != nil {
+		return out, err
+	}
+	if r.DeletedAt != nil {
+		return out, nil
+	}
+
+	next, err := recurrence.Walk(r.RRule, r.DTStart, r.Timezone, afterKey)
+	if err != nil {
+		return out, fmt.Errorf("walk rrule: %w", err)
+	}
+
+	if next == nil {
+		// Exhausted — emit transition event only when previously non-empty.
+		if r.NextOccurrenceKey != nil && *r.NextOccurrenceKey != "" {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE recurrences
+				    SET next_occurrence_key = NULL,
+				        revision             = revision + 1,
+				        updated_at           = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				  WHERE id = ?`, recurrenceID,
+			); err != nil {
+				return out, err
+			}
+			payload, mErr := json.Marshal(map[string]string{"recurrence_uid": r.UID})
+			if mErr != nil {
+				return out, fmt.Errorf("marshal exhausted payload: %w", mErr)
+			}
+			if _, err := d.insertEventTx(ctx, tx, eventInsert{
+				ProjectID:   r.ProjectID,
+				ProjectName: projectName,
+				Type:        "recurrence.exhausted",
+				Actor:       actor,
+				Payload:     string(payload),
+			}); err != nil {
+				return out, err
+			}
+		}
+		return out, nil
+	}
+	nextKey := *next
+
+	// Compose new issue metadata: template_metadata merged with scheduled_on.
+	var tmplMeta map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(r.TemplateMetadata), &tmplMeta); err != nil {
+		return out, fmt.Errorf("parse template_metadata: %w", err)
+	}
+	if tmplMeta == nil {
+		tmplMeta = map[string]json.RawMessage{}
+	}
+	scheduledJSON, _ := json.Marshal(nextKey)
+	tmplMeta["scheduled_on"] = scheduledJSON
+	issueMetadata, err := json.Marshal(tmplMeta)
+	if err != nil {
+		return out, fmt.Errorf("marshal issue metadata: %w", err)
+	}
+
+	newUID, err := katauid.New()
+	if err != nil {
+		return out, fmt.Errorf("generate uid: %w", err)
+	}
+	newShortID, err := assignShortIDIn(ctx, tx, []int64{r.ProjectID}, newUID, shortid.MinLength)
+	if err != nil {
+		return out, fmt.Errorf("assign short_id: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO issues
+		  (uid, project_id, short_id, title, body, status,
+		   owner, priority, author, metadata, revision,
+		   recurrence_id, occurrence_key, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, 1, ?, ?,
+		        strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+		        strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+		newUID, r.ProjectID, newShortID, r.TemplateTitle, r.TemplateBody,
+		r.TemplateOwner, r.TemplatePriority, actor, string(issueMetadata),
+		r.ID, nextKey,
+	)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return d.handleMaterializeCollision(ctx, tx, r, projectName, nextKey, actor)
+		}
+		return out, err
+	}
+
+	var newIssueID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM issues WHERE uid = ?`, newUID,
+	).Scan(&newIssueID); err != nil {
+		return out, err
+	}
+
+	// Seed labels from template_labels.
+	var labels []string
+	_ = json.Unmarshal([]byte(r.TemplateLabels), &labels)
+	for _, lbl := range labels {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO issue_labels (issue_id, label, author) VALUES (?, ?, ?)`,
+			newIssueID, lbl, actor,
+		); err != nil {
+			return out, err
+		}
+	}
+
+	// Advance recurrence cursor to the key strictly after nextKey.
+	afterNext, err := recurrence.Walk(r.RRule, r.DTStart, r.Timezone, nextKey)
+	if err != nil {
+		return out, fmt.Errorf("walk after next: %w", err)
+	}
+	var nextNext *string
+	if afterNext != nil {
+		v := *afterNext
+		nextNext = &v
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE recurrences
+		    SET next_occurrence_key   = ?,
+		        last_materialized_uid = ?,
+		        revision              = revision + 1,
+		        updated_at            = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		  WHERE id = ?`,
+		nextNext, newUID, r.ID,
+	); err != nil {
+		return out, err
+	}
+
+	// Emit issue.created (with recurrence linkage) and recurrence.materialized.
+	issueCreatedPayload, err := json.Marshal(map[string]any{
+		"title":          r.TemplateTitle,
+		"body":           r.TemplateBody,
+		"recurrence_uid": r.UID,
+		"occurrence_key": nextKey,
+		"labels":         labels,
+	})
+	if err != nil {
+		return out, fmt.Errorf("marshal issue.created payload: %w", err)
+	}
+	if _, err := d.insertEventTx(ctx, tx, eventInsert{
+		ProjectID:   r.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &newIssueID,
+		IssueUID:    &newUID,
+		Type:        "issue.created",
+		Actor:       actor,
+		Payload:     string(issueCreatedPayload),
+	}); err != nil {
+		return out, err
+	}
+
+	matPayload, err := json.Marshal(map[string]string{
+		"recurrence_uid": r.UID,
+		"occurrence_key": nextKey,
+		"issue_uid":      newUID,
+	})
+	if err != nil {
+		return out, fmt.Errorf("marshal materialized payload: %w", err)
+	}
+	if _, err := d.insertEventTx(ctx, tx, eventInsert{
+		ProjectID:   r.ProjectID,
+		ProjectName: projectName,
+		IssueID:     &newIssueID,
+		IssueUID:    &newUID,
+		Type:        "recurrence.materialized",
+		Actor:       actor,
+		Payload:     string(matPayload),
+	}); err != nil {
+		return out, err
+	}
+
+	out.NewIssueID = newIssueID
+	out.NewIssueUID = newUID
+	out.OccurrenceKey = nextKey
+	return out, nil
+}
+
+// handleMaterializeCollision handles the race where (recurrence_id, occurrence_key)
+// already exists. It advances next_occurrence_key one step past the duplicate,
+// emits recurrence.materialization_skipped, and (if exhausted) recurrence.exhausted.
+// Returns a MaterializeNextOut with Skipped=true, or an error.
+func (d *DB) handleMaterializeCollision(
+	ctx context.Context, tx *sql.Tx, r Recurrence, projectName, nextKey, actor string,
+) (MaterializeNextOut, error) {
+	var out MaterializeNextOut
+
+	var existingUID string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT uid FROM issues WHERE recurrence_id = ? AND occurrence_key = ?`,
+		r.ID, nextKey,
+	).Scan(&existingUID); err != nil {
+		return out, err
+	}
+
+	// Advance cursor PAST nextKey so future materializations don't loop on the
+	// duplicate. If afterNext is nil (exhausted), set NULL.
+	afterNext, err := recurrence.Walk(r.RRule, r.DTStart, r.Timezone, nextKey)
+	if err != nil {
+		return out, fmt.Errorf("walk after conflict: %w", err)
+	}
+	var nextNext *string
+	if afterNext != nil {
+		v := *afterNext
+		nextNext = &v
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE recurrences
+		    SET last_materialized_uid = ?,
+		        next_occurrence_key   = ?,
+		        revision              = revision + 1,
+		        updated_at            = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		  WHERE id = ?`,
+		existingUID, nextNext, r.ID,
+	); err != nil {
+		return out, err
+	}
+
+	skipPayload, mErr := json.Marshal(map[string]string{
+		"recurrence_uid":     r.UID,
+		"occurrence_key":     nextKey,
+		"existing_issue_uid": existingUID,
+		"reason":             "already_exists",
+	})
+	if mErr != nil {
+		return out, fmt.Errorf("marshal skipped payload: %w", mErr)
+	}
+	if _, err := d.insertEventTx(ctx, tx, eventInsert{
+		ProjectID:   r.ProjectID,
+		ProjectName: projectName,
+		Type:        "recurrence.materialization_skipped",
+		Actor:       actor,
+		Payload:     string(skipPayload),
+	}); err != nil {
+		return out, err
+	}
+
+	if afterNext == nil {
+		exhPayload, mErr := json.Marshal(map[string]string{"recurrence_uid": r.UID})
+		if mErr != nil {
+			return out, fmt.Errorf("marshal exhausted payload: %w", mErr)
+		}
+		if _, err := d.insertEventTx(ctx, tx, eventInsert{
+			ProjectID:   r.ProjectID,
+			ProjectName: projectName,
+			Type:        "recurrence.exhausted",
+			Actor:       actor,
+			Payload:     string(exhPayload),
+		}); err != nil {
+			return out, err
+		}
+	}
+
+	out.Skipped = true
+	out.OccurrenceKey = nextKey
+	out.NewIssueUID = existingUID
+	return out, nil
+}
+
+// isUniqueConstraint reports whether err is a SQLite UNIQUE constraint violation.
+func isUniqueConstraint(err error) bool {
+	var coded sqliteCodeError
+	if !errors.As(err, &coded) {
+		return false
+	}
+	return coded.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
