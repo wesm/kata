@@ -228,6 +228,50 @@ func insertLegacyEvent(ctx context.Context, t *testing.T, d *db.DB, p db.Project
 // string parameter (e.g. issue owner) by address.
 func strPtr(s string) *string { return &s }
 
+// seedIssueInProject creates an issue in projectID with the given title and
+// author, returning the created issue. Mirrors makeIssue but uses t as the
+// first parameter to match the plan's helper signature.
+func seedIssueInProject(t *testing.T, d *db.DB, projectID int64, title, author string) db.Issue {
+	t.Helper()
+	issue, _, err := d.CreateIssue(context.Background(), db.CreateIssueParams{
+		ProjectID: projectID, Title: title, Author: author,
+	})
+	require.NoError(t, err)
+	return issue
+}
+
+// seedLink creates a directed link of the given type between fromID and toID
+// under projectID, authored by the given actor.
+func seedLink(t *testing.T, d *db.DB, projectID, fromID, toID int64, linkType, actor string) {
+	t.Helper()
+	_, err := d.CreateLink(context.Background(), db.CreateLinkParams{
+		ProjectID:   projectID,
+		FromIssueID: fromID,
+		ToIssueID:   toID,
+		Type:        linkType,
+		Author:      actor,
+	})
+	require.NoError(t, err)
+}
+
+// seedRecurrence inserts a recurrences row directly via SQL and returns its id.
+// Each test that calls seedRecurrence opens a fresh DB via openTestDB, so the
+// hardcoded UID does not collide across test runs.
+func seedRecurrence(t *testing.T, d *db.DB, projectID int64, rule, dtstart, tz, title string) int64 {
+	t.Helper()
+	res, err := d.ExecContext(context.Background(), `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"REC00000000000000000000001", projectID, rule, dtstart, tz, title, "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	rid, err := res.LastInsertId()
+	require.NoError(t, err)
+	return rid
+}
+
 // injectIdempotencyKey rewrites the issue.created event payload for issueID
 // to include the given idempotency key and fingerprint. Used by
 // LookupIdempotency tests to seed idempotency state directly, in isolation

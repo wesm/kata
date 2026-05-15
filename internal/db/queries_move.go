@@ -1,0 +1,210 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/wesm/kata/internal/shortid"
+)
+
+// CrossProjectLinksError is returned by MoveIssueProject when the issue
+// has one or more links that would become cross-project after the move.
+type CrossProjectLinksError struct {
+	Blockers []LinkBlocker
+}
+
+func (e *CrossProjectLinksError) Error() string {
+	return fmt.Sprintf("cannot move: %d cross-project link(s) anchored in source project",
+		len(e.Blockers))
+}
+
+// LinkBlocker identifies one link that prevents a project move.
+type LinkBlocker struct {
+	LinkID  int64  `json:"link_id"`
+	PeerUID string `json:"peer_uid"`
+	Type    string `json:"type"`
+}
+
+// RecurrencePinnedError is returned by MoveIssueProject when the issue
+// is part of a recurrence series (recurrence_id IS NOT NULL).
+type RecurrencePinnedError struct{}
+
+func (e *RecurrencePinnedError) Error() string {
+	return "cannot move: issue is part of a recurrence series"
+}
+
+// RevisionConflictError is returned by MoveIssueProject when the caller's
+// IfMatchRev does not match the issue's current revision.
+type RevisionConflictError struct {
+	CurrentRevision int64
+}
+
+func (e *RevisionConflictError) Error() string {
+	return fmt.Sprintf("revision conflict: current revision is %d", e.CurrentRevision)
+}
+
+// MoveIssueProjectIn carries inputs for MoveIssueProject.
+type MoveIssueProjectIn struct {
+	IssueID       int64
+	FromProjectID int64
+	ToProjectID   int64
+	IfMatchRev    int64
+	Actor         string
+}
+
+// MoveIssueProjectOut carries results from a successful MoveIssueProject call.
+type MoveIssueProjectOut struct {
+	Issue       Issue
+	EventID     int64
+	NewShortID  string
+	NewRevision int64
+}
+
+// MoveIssueProject moves an issue from one project to another within the same
+// database, allocating a fresh short_id in the target project and emitting an
+// issue.moved event. It refuses if:
+//   - source and target projects are the same
+//   - IfMatchRev does not match the current revision (RevisionConflictError)
+//   - the issue belongs to a recurrence series (RecurrencePinnedError)
+//   - any link is anchored on the issue (CrossProjectLinksError)
+func (d *DB) MoveIssueProject(ctx context.Context, in MoveIssueProjectIn) (MoveIssueProjectOut, error) {
+	var out MoveIssueProjectOut
+	if in.FromProjectID == in.ToProjectID {
+		return out, fmt.Errorf("source and target projects are the same")
+	}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		curRev         int64
+		curShortID     string
+		recurrenceID   *int64
+		issueUID       string
+		fromProjectUID string
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT i.revision, i.short_id, i.recurrence_id, i.uid, p.uid
+		  FROM issues i JOIN projects p ON p.id = i.project_id
+		 WHERE i.id = ? AND i.project_id = ?`,
+		in.IssueID, in.FromProjectID,
+	).Scan(&curRev, &curShortID, &recurrenceID, &issueUID, &fromProjectUID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return out, fmt.Errorf("issue %d not in project %d", in.IssueID, in.FromProjectID)
+		}
+		return out, err
+	}
+	if in.IfMatchRev != curRev {
+		return out, &RevisionConflictError{CurrentRevision: curRev}
+	}
+	if recurrenceID != nil {
+		return out, &RecurrencePinnedError{}
+	}
+
+	blockers, err := d.findLinksTx(ctx, tx, in.IssueID)
+	if err != nil {
+		return out, err
+	}
+	if len(blockers) > 0 {
+		return out, &CrossProjectLinksError{Blockers: blockers}
+	}
+
+	var (
+		toProjectUID  string
+		toProjectName string
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT uid, name FROM projects WHERE id = ? AND deleted_at IS NULL`,
+		in.ToProjectID,
+	).Scan(&toProjectUID, &toProjectName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return out, fmt.Errorf("target project %d not found", in.ToProjectID)
+		}
+		return out, err
+	}
+
+	newShortID, err := assignShortIDIn(ctx, tx,
+		[]int64{in.ToProjectID}, issueUID, shortid.MinLength,
+	)
+	if err != nil {
+		return out, fmt.Errorf("allocate short_id in target: %w", err)
+	}
+
+	newRev := curRev + 1
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE issues
+		   SET project_id = ?,
+		       short_id   = ?,
+		       revision   = ?,
+		       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE id = ?`,
+		in.ToProjectID, newShortID, newRev, in.IssueID,
+	); err != nil {
+		return out, err
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"issue_uid":        issueUID,
+		"from_project_uid": fromProjectUID,
+		"from_short_id":    curShortID,
+		"to_project_uid":   toProjectUID,
+		"to_short_id":      newShortID,
+	})
+	ev, err := d.insertEventTx(ctx, tx, eventInsert{
+		ProjectID:   in.ToProjectID,
+		ProjectName: toProjectName,
+		IssueID:     &in.IssueID,
+		IssueUID:    &issueUID,
+		Type:        "issue.moved",
+		Actor:       in.Actor,
+		Payload:     string(payload),
+	})
+	if err != nil {
+		return out, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return out, err
+	}
+
+	issue, err := d.IssueByID(ctx, in.IssueID)
+	if err != nil {
+		return out, err
+	}
+	out.Issue = issue
+	out.EventID = ev.ID
+	out.NewShortID = newShortID
+	out.NewRevision = newRev
+	return out, nil
+}
+
+// findLinksTx returns all links involving issueID (as either endpoint),
+// used to detect anchored links that would become cross-project after a move.
+func (d *DB) findLinksTx(ctx context.Context, tx *sql.Tx, issueID int64) ([]LinkBlocker, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT l.id, l.type,
+		       CASE WHEN l.from_issue_id = ? THEN l.to_issue_uid ELSE l.from_issue_uid END AS peer_uid
+		  FROM links l
+		 WHERE l.from_issue_id = ? OR l.to_issue_id = ?`,
+		issueID, issueID, issueID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []LinkBlocker
+	for rows.Next() {
+		var b LinkBlocker
+		if err := rows.Scan(&b.LinkID, &b.Type, &b.PeerUID); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
