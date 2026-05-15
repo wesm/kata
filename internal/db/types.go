@@ -78,6 +78,7 @@ type Event struct {
 	ID                  int64     `json:"id"`
 	UID                 string    `json:"uid"`
 	OriginInstanceUID   string    `json:"origin_instance_uid"`
+	OriginSeq           *int64    `json:"origin_seq,omitempty"`
 	ProjectID           int64     `json:"project_id"`
 	ProjectUID          string    `json:"project_uid"`
 	ProjectName         string    `json:"project_name"`

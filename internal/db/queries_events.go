@@ -53,7 +53,7 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 		conds = append(conds, "e.id <= ?")
 		args = append(args, p.ThroughID)
 	}
-	q := `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
+	q := `SELECT e.id, e.uid, e.origin_instance_uid, e.origin_seq, e.project_id, p.uid, e.project_name,
 	             e.issue_id, e.issue_uid, i.short_id, e.related_issue_id, e.related_issue_uid, ri.short_id,
 	             e.type, e.actor, e.payload, e.created_at
 	      FROM events e
@@ -70,7 +70,7 @@ func (d *DB) EventsAfter(ctx context.Context, p EventsAfterParams) ([]Event, err
 	var out []Event
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName,
+		if err := rows.Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.OriginSeq, &e.ProjectID, &e.ProjectUID, &e.ProjectName,
 			&e.IssueID, &e.IssueUID, &e.IssueShortID,
 			&e.RelatedIssueID, &e.RelatedIssueUID, &e.RelatedIssueShortID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {

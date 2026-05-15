@@ -123,7 +123,7 @@ func fingerprintCore(title, body string, owner *string, labels []string, sortedL
 // idx_events_idempotency declared in 0001_init.sql.
 func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string, since time.Time) (*IdempotencyMatch, error) {
 	const q = `
-		SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
+		SELECT e.id, e.uid, e.origin_instance_uid, e.origin_seq, e.project_id, p.uid, e.project_name,
 		       e.issue_id, e.issue_uid,
 		       e.related_issue_id, e.related_issue_uid, e.type, e.actor, e.payload, e.created_at,
 		       json_extract(e.payload, '$.idempotency_fingerprint')
@@ -141,7 +141,7 @@ func (d *DB) LookupIdempotency(ctx context.Context, projectID int64, key string,
 		evt Event
 		fp  sql.NullString
 	)
-	err := row.Scan(&evt.ID, &evt.UID, &evt.OriginInstanceUID, &evt.ProjectID, &evt.ProjectUID, &evt.ProjectName,
+	err := row.Scan(&evt.ID, &evt.UID, &evt.OriginInstanceUID, &evt.OriginSeq, &evt.ProjectID, &evt.ProjectUID, &evt.ProjectName,
 		&evt.IssueID, &evt.IssueUID, &evt.RelatedIssueID, &evt.RelatedIssueUID, &evt.Type, &evt.Actor,
 		&evt.Payload, &evt.CreatedAt, &fp)
 	if errors.Is(err, sql.ErrNoRows) {

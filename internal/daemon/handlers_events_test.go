@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -638,4 +639,59 @@ func TestSSE_LiveHeartbeatKeepsConnectionAlive(t *testing.T) {
 	// No frames should arrive in 100ms with an empty DB.
 	frames := readSSEFramesUntilN(t, resp.Body, 1, 100*time.Millisecond)
 	assert.Len(t, frames, 0)
+}
+
+// TestPollEvents_ReturnsOriginSeq pins the poll-wire shape: every event row
+// emitted by the polling endpoint carries an origin_seq equal to its event_id
+// for locally-originated events. The Event struct uses *int64, so the field
+// either appears as a JSON integer or is omitted when NULL — a regression
+// that scans NULL via sql.NullInt64 would surface here as a nil pointer
+// despite the daemon stamping the value on insert.
+func TestPollEvents_ReturnsOriginSeq(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	mkIssue(t, env, pid, "first")
+	mkIssue(t, env, pid, "second")
+
+	var b struct {
+		Events []struct {
+			EventID   int64  `json:"event_id"`
+			OriginSeq *int64 `json:"origin_seq"`
+		} `json:"events"`
+	}
+	envGetJSON(t, env, "/api/v1/events?after_id=0&limit=10", &b)
+	require.NotEmpty(t, b.Events)
+	for _, ev := range b.Events {
+		require.NotNilf(t, ev.OriginSeq,
+			"poll responses must carry origin_seq for locally-originated event %d", ev.EventID)
+		assert.Equalf(t, ev.EventID, *ev.OriginSeq,
+			"origin_seq must equal event_id for locally-originated event %d", ev.EventID)
+	}
+}
+
+// TestSSE_EventFrameCarriesOriginSeq mirrors TestPollEvents_ReturnsOriginSeq on
+// the SSE wire: a drained event frame's data payload must include origin_seq
+// equal to event_id. The drain path is the same eventToEnvelope mapper used by
+// poll, but reading it via SSE catches any framing-side regression that strips
+// fields before flush.
+func TestSSE_EventFrameCarriesOriginSeq(t *testing.T) {
+	env := testenv.New(t)
+	pid := mkProject(t, env, "github.com/test/a", "a")
+	mkIssue(t, env, pid, "first")
+
+	resp := openSSE(t, env, "after_id=0", nil)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, 200, resp.StatusCode)
+
+	frames := readSSEFramesUntilN(t, resp.Body, 1, 2*time.Second)
+	require.Len(t, frames, 1)
+	require.Equal(t, "issue.created", frames[0].event)
+
+	var envBody struct {
+		EventID   int64  `json:"event_id"`
+		OriginSeq *int64 `json:"origin_seq"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(frames[0].data), &envBody))
+	require.NotNil(t, envBody.OriginSeq, "SSE frame must carry origin_seq")
+	assert.Equal(t, envBody.EventID, *envBody.OriginSeq)
 }

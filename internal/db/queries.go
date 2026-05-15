@@ -1441,9 +1441,17 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 	if err != nil {
 		return Event{}, err
 	}
+	// Stamp origin_seq = id inside the same tx so locally-originated events
+	// always carry origin_seq == id, while the transient NULL between INSERT
+	// and this UPDATE never collides on the partial unique index.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE events SET origin_seq = id WHERE id = ?`, id,
+	); err != nil {
+		return Event{}, fmt.Errorf("set origin_seq: %w", err)
+	}
 	var e Event
 	err = tx.QueryRowContext(ctx, eventSelectByID, id).
-		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.ProjectID, &e.ProjectUID, &e.ProjectName, &e.IssueID,
+		Scan(&e.ID, &e.UID, &e.OriginInstanceUID, &e.OriginSeq, &e.ProjectID, &e.ProjectUID, &e.ProjectName, &e.IssueID,
 			&e.IssueUID, &e.IssueShortID, &e.RelatedIssueID, &e.RelatedIssueUID, &e.RelatedIssueShortID,
 			&e.Type, &e.Actor, &e.Payload, &e.CreatedAt)
 	if err != nil {
@@ -1457,7 +1465,7 @@ func (d *DB) insertEventTx(ctx context.Context, tx *sql.Tx, in eventInsert) (Eve
 // LEFT JOINed from the live `issues` table so mutation responses (which
 // scan their inserted event through this query) carry the same wire shape
 // as events streamed via poll/SSE.
-const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.project_id, p.uid, e.project_name,
+const eventSelectByID = `SELECT e.id, e.uid, e.origin_instance_uid, e.origin_seq, e.project_id, p.uid, e.project_name,
        e.issue_id, e.issue_uid, i.short_id, e.related_issue_id, e.related_issue_uid, ri.short_id,
        e.type, e.actor, e.payload, e.created_at
   FROM events e
