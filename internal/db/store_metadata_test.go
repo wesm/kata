@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -85,6 +86,70 @@ func TestPatchIssueMetadata_InvalidKeyValueRejected(t *testing.T) {
 		},
 	})
 	require.Error(t, err)
+}
+
+func TestPatchProjectMetadata_HappyPath(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	res, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+		ProjectID: p.ID, IfMatchRev: p.Revision, Actor: "tester",
+		Patch: map[string]json.RawMessage{
+			"area": json.RawMessage(`"Personal"`),
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, res.Changed)
+	assert.Equal(t, p.Revision+1, res.NewRevision)
+	assert.Contains(t, string(res.Project.Metadata), `"area":"Personal"`)
+	assert.NotZero(t, res.Event.ID)
+	assert.Equal(t, "project.metadata_updated", res.Event.Type)
+}
+
+func TestPatchProjectMetadata_StaleRevisionReturns409(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p")
+	_, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+		ProjectID: p.ID, IfMatchRev: 99, Actor: "tester",
+		Patch: map[string]json.RawMessage{"area": json.RawMessage(`"X"`)},
+	})
+	var conflict *db.RevisionConflictError
+	require.ErrorAs(t, err, &conflict)
+}
+
+func TestPatchProjectMetadata_UnknownKeyRejected(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p")
+	_, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+		ProjectID: p.ID, IfMatchRev: p.Revision, Actor: "tester",
+		Patch: map[string]json.RawMessage{"banana": json.RawMessage(`"yellow"`)},
+	})
+	require.Error(t, err)
+}
+
+func TestPatchProjectMetadata_EmptyDiffNoEvent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p")
+
+	res1, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+		ProjectID: p.ID, IfMatchRev: p.Revision, Actor: "tester",
+		Patch: map[string]json.RawMessage{"area": json.RawMessage(`"X"`)},
+	})
+	require.NoError(t, err)
+
+	res2, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+		ProjectID: p.ID, IfMatchRev: res1.NewRevision, Actor: "tester",
+		Patch: map[string]json.RawMessage{"area": json.RawMessage(`"X"`)},
+	})
+	require.NoError(t, err)
+	assert.False(t, res2.Changed)
+	assert.Zero(t, res2.Event.ID)
+	assert.Equal(t, res1.NewRevision, res2.NewRevision)
 }
 
 func TestPatchIssueMetadata_ClearKeyWithNull(t *testing.T) {
