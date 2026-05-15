@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"testing"
 
@@ -219,4 +220,50 @@ func TestRoundtrip_ProjectPreservesMetadataAndRevision(t *testing.T) {
 	).Scan(&meta, &rev))
 	assert.JSONEq(t, `{"area":"Personal","sidebar_order":2}`, meta)
 	assert.Equal(t, int64(4), rev)
+}
+
+func TestRoundtrip_EventsPreserveOriginSeq(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	_, _, err = srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err) // produces an issue.created event
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var minSeq sql.NullInt64
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT MIN(origin_seq) FROM events`).Scan(&minSeq))
+	assert.True(t, minSeq.Valid && minSeq.Int64 > 0)
+}
+
+func TestImport_OldExportWithoutOriginSeq_LeavesNullOrDefaults(t *testing.T) {
+	dstDB := openImportTargetDB(t)
+	body := bytes.NewBufferString("")
+	body.WriteString(`{"kind":"meta","data":{"key":"export_version","value":"10"}}` + "\n")
+	body.WriteString(`{"kind":"meta","data":{"key":"instance_uid","value":"FEDORIGIN0000000000000000A"}}` + "\n")
+	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":"{}","revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS0000000000000000000000A","project_id":1,"short_id":"000a","title":"t","body":"","status":"open","author":"t","metadata":"{}","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"event","data":{"id":1,"uid":"EVT0000000000000000000000A","origin_instance_uid":"FEDORIGIN0000000000000000A","project_id":1,"project_name":"p","issue_id":1,"issue_uid":"ISS0000000000000000000000A","type":"issue.created","actor":"t","payload":"{}","created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+
+	require.NoError(t, jsonl.Import(context.Background(), body, dstDB))
+
+	var origSeq sql.NullInt64
+	require.NoError(t, dstDB.QueryRow(
+		`SELECT origin_seq FROM events LIMIT 1`).Scan(&origSeq))
+	// Older exports omit the field; import should leave it NULL (partial
+	// unique index allows that), OR default to event_id. Either is acceptable
+	// per spec — verify whichever the implementation chooses.
+	if origSeq.Valid {
+		var id int64
+		require.NoError(t, dstDB.QueryRow(`SELECT id FROM events LIMIT 1`).Scan(&id))
+		assert.Equal(t, id, origSeq.Int64,
+			"if origin_seq is stamped on import, it must equal event id")
+	}
 }

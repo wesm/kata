@@ -652,6 +652,7 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		ID                int64           `json:"id"`
 		UID               string          `json:"uid"`
 		OriginInstanceUID string          `json:"origin_instance_uid"`
+		OriginSeq         *int64          `json:"origin_seq,omitempty"`
 		ProjectID         int64           `json:"project_id"`
 		ProjectName       string          `json:"project_name"`
 		IssueID           *int64          `json:"issue_id"`
@@ -681,7 +682,7 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	}
 	relatedIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_id END`
 	relatedUIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_uid END`
-	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.project_id, %s, events.issue_id, events.issue_uid,
+	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.origin_seq, events.project_id, %s, events.issue_id, events.issue_uid,
 	                 `+relatedIDExpr+`, `+relatedUIDExpr+`,
 	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
 	          FROM events%s
@@ -697,7 +698,7 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
 		var payload string
-		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.OriginSeq, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
 			&rec.IssueUID, &rec.RelatedIssueID, &rec.RelatedIssueUID,
 			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
 		if err != nil {
