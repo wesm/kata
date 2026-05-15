@@ -77,6 +77,17 @@ func TestDiffEmptyBlobsNoOp(t *testing.T) {
 	assert.Empty(t, d)
 }
 
+func TestDiff_NullToValueNormalizesFromAsNil(t *testing.T) {
+	old := json.RawMessage(`{"k":null}`)
+	newBlob := json.RawMessage(`{"k":"v"}`)
+	diff, err := Diff(old, newBlob)
+	require.NoError(t, err)
+	kd, ok := diff["k"]
+	require.True(t, ok)
+	assert.Nil(t, kd.From, "From must be nil when the prior value was JSON null")
+	assert.JSONEq(t, `"v"`, string(kd.To))
+}
+
 func TestDiffMultipleKeys(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":"2026-05-01","someday":true}`)
 	newBlob := json.RawMessage(`{"scheduled_on":"2026-06-01","deadline_on":"2026-07-01"}`)

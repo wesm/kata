@@ -12,6 +12,9 @@ import (
 // ErrUnknownKey is returned when a key is not present in the registry.
 var ErrUnknownKey = errors.New("unknown metadata key")
 
+// ErrInvalidValue is returned when a value fails type-specific validation.
+var ErrInvalidValue = errors.New("invalid value")
+
 // reULID matches a 26-character Crockford base32 ULID.
 var reULID = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 
@@ -99,20 +102,24 @@ func validateInt(raw json.RawMessage) error {
 type checklistItem struct {
 	ID   string  `json:"id"`
 	Text *string `json:"text"`
-	Done bool    `json:"done"`
+	Done *bool   `json:"done"`
 }
 
 func validateChecklist(raw json.RawMessage) error {
 	var items []checklistItem
 	if err := json.Unmarshal(raw, &items); err != nil {
-		return fmt.Errorf("checklist must be a JSON array: %w", err)
+		return fmt.Errorf("%w: checklist must be an array of items: %v", ErrInvalidValue, err)
 	}
-	for i, item := range items {
-		if !reULID.MatchString(item.ID) {
-			return fmt.Errorf("checklist[%d].id %q is not a valid 26-char ULID", i, item.ID)
+	for i, it := range items {
+		if !reULID.MatchString(it.ID) {
+			return fmt.Errorf("%w: item[%d].id must be a 26-char ULID, got %q",
+				ErrInvalidValue, i, it.ID)
 		}
-		if item.Text == nil {
-			return fmt.Errorf("checklist[%d].text is required", i)
+		if it.Text == nil {
+			return fmt.Errorf("%w: item[%d].text required", ErrInvalidValue, i)
+		}
+		if it.Done == nil {
+			return fmt.Errorf("%w: item[%d].done required", ErrInvalidValue, i)
 		}
 	}
 	return nil

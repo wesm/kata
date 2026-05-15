@@ -41,7 +41,13 @@ func Diff(oldBlob, newBlob json.RawMessage) (map[string]KeyDiff, error) {
 			continue
 		}
 		if !bytes.Equal(normalizeJSON(oldVal), normalizeJSON(newVal)) {
-			result[k] = KeyDiff{From: oldVal, To: newVal}
+			// Normalize null From to nil: contract says From==nil means
+			// "was absent or null", so raw `null` bytes must not leak out.
+			var from json.RawMessage
+			if !isNull(oldVal) {
+				from = oldVal
+			}
+			result[k] = KeyDiff{From: from, To: newVal}
 		}
 	}
 

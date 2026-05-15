@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // 26-char ULIDs from the Crockford alphabet.
@@ -43,6 +44,15 @@ func TestValidateChecklist(t *testing.T) {
 
 	missingText := json.RawMessage(fmt.Sprintf(`[{"id":%q,"done":false}]`, goodULID1))
 	assert.Error(t, Validate(IssueRegistry, "checklist", missingText))
+}
+
+func TestValidateChecklist_MissingDoneRejected(t *testing.T) {
+	// Item has id and text but no "done" field — must be rejected.
+	noDone := json.RawMessage(fmt.Sprintf(`[{"id":%q,"text":"x"}]`, goodULID1))
+	err := Validate(IssueRegistry, "checklist", noDone)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidValue)
+	assert.Contains(t, err.Error(), "done required")
 }
 
 func TestValidateTimezone(t *testing.T) {
