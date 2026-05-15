@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -483,4 +484,72 @@ func TestExport_SoftDeletedRecurrenceWithNoLiveIssues_Excluded(t *testing.T) {
 		jsonl.ExportOptions{IncludeDeleted: false}))
 	assert.NotContains(t, buf.String(), `"kind":"recurrence"`,
 		"soft-deleted recurrence with no live referrer must be excluded")
+}
+
+// TestRoundtrip_NewEventPayloadBytesAreExact locks in that the JSONL pipeline
+// preserves event payload bytes verbatim — key order, whitespace, the lot.
+// New event types (issue.metadata_updated, issue.moved, recurrence.materialized)
+// rely on this so consumers reading raw payloads see exactly what the producer
+// wrote. The guarantee depends on the export-side eventRecord using
+// json.RawMessage (not interface{} / map[string]any, which would re-marshal
+// and reorder keys).
+func TestRoundtrip_NewEventPayloadBytesAreExact(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// Inject events with specific payloads. We're testing the JSONL layer, not
+	// the producer code paths (§C / §F), so raw SQL is fine — the schema check
+	// is json_valid only and the importer passes payload bytes through.
+	cases := []struct {
+		eventType string
+		payload   string
+	}{
+		{
+			"issue.metadata_updated",
+			`{"diff":{"scheduled_on":{"from":null,"to":"2026-05-20"},"someday":{"from":null,"to":true}},"revision_new":2}`,
+		},
+		{
+			"issue.moved",
+			`{"from_project_id":1,"to_project_id":2,"new_short_id":"abc"}`,
+		},
+		{
+			"recurrence.materialized",
+			`{"recurrence_uid":"REC00000000000000000000001","occurrence_key":"2026-05-18","new_issue_uid":"ISS00000000000000000000A00"}`,
+		},
+	}
+	for i, c := range cases {
+		eventUID := fmt.Sprintf("EVT0000000000000000000%03d0", i+1)
+		require.Equal(t, 26, len(eventUID), "test fixture event UID must be 26 chars")
+		_, err := srcDB.ExecContext(ctx, `
+			INSERT INTO events
+			  (uid, origin_instance_uid, origin_seq, project_id, project_name,
+			   issue_id, issue_uid, type, actor, payload)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			eventUID, srcDB.InstanceUID(), int64(100+i), p.ID, "p",
+			iss.ID, iss.UID, c.eventType, "tester", c.payload)
+		require.NoError(t, err)
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	// Byte-exact equality (not JSONEq) — key reordering would cause a
+	// mismatch, which is the regression we're guarding against.
+	for _, c := range cases {
+		var gotPayload string
+		require.NoError(t, dstDB.QueryRowContext(ctx,
+			`SELECT payload FROM events WHERE type = ? LIMIT 1`, c.eventType,
+		).Scan(&gotPayload))
+		assert.Equal(t, c.payload, gotPayload,
+			"payload bytes for %s must roundtrip exactly (key order, whitespace preserved)", c.eventType)
+	}
 }
