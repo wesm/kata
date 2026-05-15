@@ -197,6 +197,7 @@ func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerDestructive(humaAPI, cfg)
 	registerRecurrences(humaAPI, cfg)
 	registerMetadata(humaAPI, cfg)
+	registerMove(humaAPI, cfg)
 	registerEventsHandlers(humaAPI, mux, cfg)
 	registerDigestHandlers(humaAPI, cfg)
 	registerAuditHandlers(humaAPI, cfg)
@@ -270,6 +271,11 @@ func registerRecurrences(humaAPI huma.API, cfg ServerConfig) {
 // registerMetadata registers metadata patch routes.
 func registerMetadata(humaAPI huma.API, cfg ServerConfig) {
 	registerMetadataHandlers(humaAPI, cfg)
+}
+
+// registerMove registers the cross-project issue move action route.
+func registerMove(humaAPI huma.API, cfg ServerConfig) {
+	registerMoveHandlers(humaAPI, cfg)
 }
 
 // validateActor returns a 400 validation error when actor is empty after

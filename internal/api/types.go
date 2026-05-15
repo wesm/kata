@@ -1018,6 +1018,35 @@ type PatchProjectMetadataResponse struct {
 	}
 }
 
+// MoveIssueRequest is POST /api/v1/projects/{project_id}/issues/{ref}/actions/move.
+// project_id names the source project; the target project is identified by
+// its stable UID in the body. The If-Match header carries the issue's
+// expected revision in the standard `"rev-N"` form.
+type MoveIssueRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
+	IfMatch   string `header:"If-Match"`
+	Body      struct {
+		Actor        string `json:"actor" required:"true"`
+		ToProjectUID string `json:"to_project_uid" required:"true"`
+	}
+}
+
+// MoveIssueResponse is the response for the move action. ETag carries the
+// new revision in the standard `"rev-N"` form. NewShortID surfaces the
+// short_id freshly allocated in the target project (which may differ from
+// the issue's previous short_id when the two projects collide on
+// numbering).
+type MoveIssueResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Issue      db.Issue `json:"issue"`
+		EventID    int64    `json:"event_id"`
+		NewShortID string   `json:"new_short_id"`
+		Changed    bool     `json:"changed"`
+	}
+}
+
 // Whitelisted issue metadata keys (mirrors internal/metadata.IssueRegistry).
 const (
 	MetadataKeyScheduledOn = "scheduled_on"

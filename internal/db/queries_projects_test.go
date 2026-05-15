@@ -39,6 +39,24 @@ func TestProjectByName_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, db.ErrNotFound)
 }
 
+func TestProjectByUID_RoundTrips(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p := createProject(ctx, t, d, "byuid")
+
+	got, err := d.ProjectByUID(ctx, p.UID)
+	require.NoError(t, err)
+	assert.Equal(t, p.ID, got.ID)
+	assert.Equal(t, p.Name, got.Name)
+	assert.Equal(t, p.UID, got.UID)
+}
+
+func TestProjectByUID_NotFound(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.ProjectByUID(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
 func TestCreateProject_DuplicateName(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

@@ -68,6 +68,15 @@ func (d *DB) ProjectByNameIncludingArchived(ctx context.Context, name string) (P
 	return scanProject(row)
 }
 
+// ProjectByUID fetches one project by its stable UID. Archived
+// (deleted_at != NULL) projects are returned as-is so callers can decide
+// how to surface the archived state; surface-level handlers should
+// inspect DeletedAt themselves. Returns ErrNotFound when no row matches.
+func (d *DB) ProjectByUID(ctx context.Context, uid string) (Project, error) {
+	row := d.QueryRowContext(ctx, projectSelect+` WHERE uid = ?`, uid)
+	return scanProject(row)
+}
+
 // RenameProject updates a project's canonical name without changing aliases or
 // issue numbering.
 func (d *DB) RenameProject(ctx context.Context, id int64, name string) (Project, error) {
