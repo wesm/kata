@@ -114,8 +114,32 @@ each row `(child_table, rowid, parent_table, fkid)`:
    name in the child table. Caching the lookup per table is a small
    optimization but worth doing — the orphan list could be long.
 2. Classify the violation against the known-orphan-class table
-   below. Increment the per-class counter in `OrphanReport`, or
-   append to `UnknownViolations` if no class matches.
+   below. Each class has an explicit disposition (drop or
+   NULL-scrub); increment the counter on the matching disposition
+   bucket in `OrphanReport`. If no class matches, append to
+   `UnknownViolations`.
+
+The report keeps drops and scrubs in separate buckets:
+
+```go
+type OrphanReport struct {
+    DroppedByTable    map[string]int   // events, comments, links, issue_labels
+    ScrubbedByTable   map[string]int   // events (related_issue_id only, today)
+    UnknownViolations []FKViolation    // empty in the happy path
+}
+type FKViolation struct {
+    Table       string
+    RowID       int64
+    ParentTable string
+    Column      string  // resolved via foreign_key_list(<table>)[fkid].from
+}
+```
+
+Drops are data loss; scrubs preserve the row with NULL FKs. Lumping
+them in one counter would mislead the operator about what they lost.
+The stderr summary (below) consumes only `DroppedByTable`. A future
+change could surface `ScrubbedByTable` separately if needed; this
+spec does not.
 
 **Known orphan classes** (these ones cutover handles via export):
 
@@ -127,6 +151,18 @@ each row `(child_table, rowid, parent_table, fkid)`:
 | `issue_labels`  | `issue_id`        | issues | drop entire row            |
 | `events`        | `issue_id`        | issues | drop entire event          |
 | `events`        | `related_issue_id`| issues | NULL-scrub, preserve event |
+
+Anything else — including any `import_mappings.*` orphan — is
+**unknown** and falls through to the hard-fail path below.
+`import_mappings` declares `ON DELETE CASCADE` on every FK column
+(`project_id`, `issue_id`, `comment_id`, `link_id`); an orphan there
+means the cascade was bypassed (e.g. direct manipulation with FKs
+off), which is corruption deeper than the kind cutover is designed
+to absorb. Note also that `exportImportMappings` always runs with
+`IncludeDeleted: true` during cutover, so its live-only `EXISTS`
+filter is not in play — orphans would round-trip directly into the
+importer's FK check. We deliberately do not add a silent scrub for
+this class; the operator should see and acknowledge it.
 
 If `len(UnknownViolations) > 0`: return an error wrapping the list.
 The error message names every violation (capped at 20 rows per child
@@ -148,10 +184,12 @@ Change `exportEvents` (the schema_version >= 8 path,
 (`exportEventsV1` / `V2` / `V3`) to:
 
 1. **Drop events whose `issue_id` is an orphan.** Add
-   `LEFT JOIN issues primary ON primary.id = events.issue_id` and
-   filter with `WHERE events.issue_id IS NULL OR primary.id IS NOT NULL`.
+   `LEFT JOIN issues subject_issue ON subject_issue.id = events.issue_id`
+   and filter with
+   `WHERE events.issue_id IS NULL OR subject_issue.id IS NOT NULL`.
    Keeps project-level events (NULL `issue_id`) unchanged; drops
-   events whose `issue_id` references a now-missing issue.
+   events whose `issue_id` references a now-missing issue. (Avoid
+   the alias `primary` — it is a reserved SQLite keyword.)
 2. **NULL-scrub `events.related_issue_id` for any orphan peer**, not
    just the `issue.links_changed` + soft-deleted-peer case. The
    existing `LEFT JOIN issues peer ON peer.id = events.related_issue_id`
@@ -238,9 +276,12 @@ test ergonomics for one print statement.
 
 ## Tests
 
-Test selection follows the bug report — all four known orphan
-classes appeared together in the wedged DB, so the happy-path
-cutover test seeds all four, not just events.
+Test selection extends the bug report. The reported DB had three
+orphan classes (events, links, comments). `issue_labels` is not in
+the report but is a valid additional compatibility case under the
+same export-side INNER JOIN precedent, so the happy-path cutover
+test seeds all four to lock in coverage for the full known-class
+table above.
 
 1. **`TestAutoCutover_DropsAllKnownOrphanClasses`** —
    Build a v6 DB with: 3 valid issues, 1 event with orphan
