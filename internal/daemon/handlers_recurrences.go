@@ -69,6 +69,31 @@ func parseIfMatchRevision(raw string) (int64, error) {
 	return n, nil
 }
 
+// activeRecurrenceByUID returns a recurrence by UID only when both the
+// recurrence and its parent project are not soft-deleted. All failure modes
+// return 404 errors to keep parent-project archival invisible to clients.
+func activeRecurrenceByUID(
+	ctx context.Context, d *db.DB, projectID int64, recUID string,
+) (db.Recurrence, error) {
+	rec, err := d.GetRecurrenceByUID(ctx, recUID)
+	if err != nil {
+		return db.Recurrence{}, api.NewError(404, "not_found",
+			fmt.Sprintf("recurrence %q not found", recUID), "", nil)
+	}
+	if rec.DeletedAt != nil {
+		return db.Recurrence{}, api.NewError(404, "not_found",
+			fmt.Sprintf("recurrence %q not found", recUID), "", nil)
+	}
+	if rec.ProjectID != projectID {
+		return db.Recurrence{}, api.NewError(404, "not_found",
+			fmt.Sprintf("recurrence %q not in project %d", recUID, projectID), "", nil)
+	}
+	if _, err := activeProjectByID(ctx, d, projectID); err != nil {
+		return db.Recurrence{}, err
+	}
+	return rec, nil
+}
+
 func createRecurrenceHandler(cfg ServerConfig) func(context.Context, *api.CreateRecurrenceRequest) (*api.CreateRecurrenceResponse, error) {
 	return func(ctx context.Context, in *api.CreateRecurrenceRequest) (*api.CreateRecurrenceResponse, error) {
 		if err := validateActor(in.Body.Actor); err != nil {
@@ -121,14 +146,9 @@ func listRecurrencesHandler(cfg ServerConfig) func(context.Context, *api.ListRec
 
 func showRecurrenceHandler(cfg ServerConfig) func(context.Context, *api.ShowRecurrenceRequest) (*api.ShowRecurrenceResponse, error) {
 	return func(ctx context.Context, in *api.ShowRecurrenceRequest) (*api.ShowRecurrenceResponse, error) {
-		rec, err := cfg.DB.GetRecurrenceByUID(ctx, in.RecurrenceUID)
+		rec, err := activeRecurrenceByUID(ctx, cfg.DB, in.ProjectID, in.RecurrenceUID)
 		if err != nil {
-			return nil, api.NewError(404, "not_found",
-				fmt.Sprintf("recurrence %q not found", in.RecurrenceUID), "", nil)
-		}
-		if rec.ProjectID != in.ProjectID {
-			return nil, api.NewError(404, "not_found",
-				fmt.Sprintf("recurrence %q not in project %d", in.RecurrenceUID, in.ProjectID), "", nil)
+			return nil, err
 		}
 		out := &api.ShowRecurrenceResponse{}
 		out.Body.Recurrence = rec
@@ -145,14 +165,9 @@ func patchRecurrenceHandler(cfg ServerConfig) func(context.Context, *api.PatchRe
 		if err != nil {
 			return nil, err
 		}
-		rec, err := cfg.DB.GetRecurrenceByUID(ctx, in.RecurrenceUID)
+		rec, err := activeRecurrenceByUID(ctx, cfg.DB, in.ProjectID, in.RecurrenceUID)
 		if err != nil {
-			return nil, api.NewError(404, "not_found",
-				fmt.Sprintf("recurrence %q not found", in.RecurrenceUID), "", nil)
-		}
-		if rec.ProjectID != in.ProjectID {
-			return nil, api.NewError(404, "not_found",
-				fmt.Sprintf("recurrence %q not in project %d", in.RecurrenceUID, in.ProjectID), "", nil)
+			return nil, err
 		}
 		update := db.RecurrenceUpdate{
 			Rule:     in.Body.RRule,
@@ -194,14 +209,9 @@ func deleteRecurrenceHandler(cfg ServerConfig) func(context.Context, *api.Delete
 		if err := validateActor(in.Actor); err != nil {
 			return nil, err
 		}
-		rec, err := cfg.DB.GetRecurrenceByUID(ctx, in.RecurrenceUID)
+		rec, err := activeRecurrenceByUID(ctx, cfg.DB, in.ProjectID, in.RecurrenceUID)
 		if err != nil {
-			return nil, api.NewError(404, "not_found",
-				fmt.Sprintf("recurrence %q not found", in.RecurrenceUID), "", nil)
-		}
-		if rec.ProjectID != in.ProjectID {
-			return nil, api.NewError(404, "not_found",
-				fmt.Sprintf("recurrence %q not in project %d", in.RecurrenceUID, in.ProjectID), "", nil)
+			return nil, err
 		}
 		if err := cfg.DB.SoftDeleteRecurrence(ctx, rec.ID, in.Actor); err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)
