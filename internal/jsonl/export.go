@@ -397,6 +397,9 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 8 {
 		return exportIssuesV6(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 10 {
+		return exportIssuesV8(ctx, d, enc, opts)
+	}
 	type record struct {
 		ID            int64           `json:"id"`
 		UID           string          `json:"uid"`
@@ -440,6 +443,59 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
 			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt, &metadata, &rec.Revision,
 			&rec.RecurrenceID, &rec.RecurrenceUID, &rec.OccurrenceKey)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(metadata)) {
+			return rec, fmt.Errorf("issue %d metadata is invalid JSON", rec.ID)
+		}
+		rec.Metadata = json.RawMessage(metadata)
+		return rec, nil
+	})
+}
+
+// exportIssuesV8 emits the schema_version 8..9 issue projection (with
+// metadata + revision but without recurrence linkage). The recurrences
+// table and issues.recurrence_id / issues.occurrence_key columns are v10+
+// additions, so cutover from a v8/v9 source must omit the LEFT JOIN and
+// the recurrence fields to avoid `no such table` / `no such column`.
+func exportIssuesV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+	type record struct {
+		ID           int64           `json:"id"`
+		UID          string          `json:"uid"`
+		ProjectID    int64           `json:"project_id"`
+		ShortID      string          `json:"short_id"`
+		Title        string          `json:"title"`
+		Body         string          `json:"body"`
+		Status       string          `json:"status"`
+		ClosedReason *string         `json:"closed_reason"`
+		Owner        *string         `json:"owner"`
+		Priority     *int64          `json:"priority,omitempty"`
+		Author       string          `json:"author"`
+		CreatedAt    string          `json:"created_at"`
+		UpdatedAt    string          `json:"updated_at"`
+		ClosedAt     *string         `json:"closed_at"`
+		DeletedAt    *string         `json:"deleted_at"`
+		Metadata     json.RawMessage `json:"metadata"`
+		Revision     int64           `json:"revision"`
+	}
+	query := `SELECT id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
+	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
+	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT),
+	                 metadata, revision
+	          FROM issues`
+	where, args := issueExportWhere("issues", opts)
+	query += where + ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export issues: %w", err)
+	}
+	return scanRecords(rows, KindIssue, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var metadata string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.ShortID, &rec.Title, &rec.Body,
+			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt, &metadata, &rec.Revision)
 		if err != nil {
 			return rec, err
 		}
@@ -737,6 +793,9 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 8 {
 		return exportEventsV3(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
+	if sourceSchemaVersion < 10 {
+		return exportEventsV8(ctx, d, enc, opts, projectNameExpr, joinProjects)
+	}
 	type record struct {
 		ID                int64           `json:"id"`
 		UID               string          `json:"uid"`
@@ -788,6 +847,62 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		var rec record
 		var payload string
 		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.OriginSeq, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
+			&rec.IssueUID, &rec.RelatedIssueID, &rec.RelatedIssueUID,
+			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(payload)) {
+			return rec, fmt.Errorf("event %d payload is invalid JSON", rec.ID)
+		}
+		rec.Payload = json.RawMessage(payload)
+		return rec, nil
+	})
+}
+
+// exportEventsV8 emits the schema_version 8..9 events projection (with uid
+// and origin_instance_uid but without origin_seq). The events.origin_seq
+// column is a v10 addition, so cutover from a v8/v9 source must omit it to
+// avoid `no such column: events.origin_seq` at SELECT time.
+func exportEventsV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
+	type record struct {
+		ID                int64           `json:"id"`
+		UID               string          `json:"uid"`
+		OriginInstanceUID string          `json:"origin_instance_uid"`
+		ProjectID         int64           `json:"project_id"`
+		ProjectName       string          `json:"project_name"`
+		IssueID           *int64          `json:"issue_id"`
+		IssueUID          *string         `json:"issue_uid"`
+		RelatedIssueID    *int64          `json:"related_issue_id"`
+		RelatedIssueUID   *string         `json:"related_issue_uid"`
+		Type              string          `json:"type"`
+		Actor             string          `json:"actor"`
+		Payload           json.RawMessage `json:"payload"`
+		CreatedAt         string          `json:"created_at"`
+	}
+	scrubCondition := `(peer.id IS NULL AND events.related_issue_id IS NOT NULL)`
+	if !opts.IncludeDeleted {
+		scrubCondition += ` OR (events.type = 'issue.links_changed' AND peer.deleted_at IS NOT NULL)`
+	}
+	relatedIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_id END`
+	relatedUIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_uid END`
+	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.project_id, %s, events.issue_id, events.issue_uid,
+	                 `+relatedIDExpr+`, `+relatedUIDExpr+`,
+	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
+	          FROM events%s
+	          LEFT JOIN issues subject_issue ON subject_issue.id = events.issue_id
+	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
+	clauses, args := eventExportWhereClauses(opts)
+	clauses = append([]string{`(events.issue_id IS NULL OR subject_issue.id IS NOT NULL)`}, clauses...)
+	query += whereClause(clauses) + ` ORDER BY events.id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export events: %w", err)
+	}
+	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var payload string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
 			&rec.IssueUID, &rec.RelatedIssueID, &rec.RelatedIssueUID,
 			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
 		if err != nil {
