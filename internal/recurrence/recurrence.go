@@ -39,12 +39,24 @@ func Walk(rule, dtstart, tz, after string) (*string, error) {
 		return nil, fmt.Errorf("build rrule: %w", err)
 	}
 
+	// Walk advances by date, not by sub-day occurrence. If the RRULE has
+	// sub-day components (FREQ=HOURLY, BYHOUR, etc.), r.After may return a
+	// time on the same calendar date as afterDate. Skip any same-date (or
+	// earlier) results by advancing until we get a strictly-later date or
+	// the series is exhausted.
+	afterFormatted := afterDate.Format(dateFmt)
 	n := r.After(afterDate, false)
-	if n.IsZero() {
-		return nil, nil
+	for !n.IsZero() {
+		cand := n.In(loc).Format(dateFmt)
+		if cand > afterFormatted {
+			// cand > afterFormatted is a safe lexicographic comparison for
+			// YYYY-MM-DD strings — equivalent to a calendar-date comparison.
+			return &cand, nil
+		}
+		// Same day or earlier — advance past this sub-day occurrence.
+		n = r.After(n, false)
 	}
-	s := n.In(loc).Format(dateFmt)
-	return &s, nil
+	return nil, nil
 }
 
 // Next returns the first occurrence on or after dtstart — useful when

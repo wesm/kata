@@ -56,3 +56,21 @@ func TestWalk_HonorsTimezoneForBoundaries(t *testing.T) {
 	require.NotNil(t, next)
 	assert.Equal(t, "2026-05-18", *next)
 }
+
+func TestWalk_StripsSubDailyOccurrences(t *testing.T) {
+	// FREQ=HOURLY;COUNT=24 fires 24 times within the dtstart day (2026-05-15).
+	// Walk("after=2026-05-15") must skip all intra-day results and return the
+	// first occurrence on 2026-05-16 — or nil if COUNT exhausts within the day.
+	// With COUNT=24 and dtstart at midnight, the last occurrence is at 23:00 on
+	// 2026-05-15, so the series is exhausted before reaching 2026-05-16.
+	next, err := Walk("FREQ=HOURLY;COUNT=24", "2026-05-15", "UTC", "2026-05-15")
+	require.NoError(t, err)
+	// COUNT=24 exhausts on 2026-05-15; no next date crosses into 2026-05-16.
+	assert.Nil(t, next, "HOURLY;COUNT=24 should be exhausted before reaching the next calendar day")
+
+	// With COUNT=25 the 25th occurrence lands on 2026-05-16 at 00:00.
+	next2, err := Walk("FREQ=HOURLY;COUNT=25", "2026-05-15", "UTC", "2026-05-15")
+	require.NoError(t, err)
+	require.NotNil(t, next2)
+	assert.Equal(t, "2026-05-16", *next2, "25th hourly occurrence crosses into the next day")
+}
