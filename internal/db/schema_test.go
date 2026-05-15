@@ -108,3 +108,8 @@ func TestRecurrencesTableAndIssueLinkage(t *testing.T) {
 	).Scan(&idxn))
 	assert.Equal(t, 1, idxn)
 }
+
+func TestSchemaVersionAt10(t *testing.T) {
+	d := openTestDB(t)
+	assertSchemaVersion(t, d, 10)
+}

@@ -20,7 +20,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-const currentSchemaVersion = 9
+const currentSchemaVersion = 10
 
 // CurrentSchemaVersion returns the schema version expected by this binary.
 func CurrentSchemaVersion() int { return currentSchemaVersion }
