@@ -493,6 +493,105 @@ func TestExport_SoftDeletedRecurrenceWithNoLiveIssues_Excluded(t *testing.T) {
 // wrote. The guarantee depends on the export-side eventRecord using
 // json.RawMessage (not interface{} / map[string]any, which would re-marshal
 // and reorder keys).
+// TestRoundtrip_MultipleRecurrencesAndInstances locks in the multi-row
+// UID→ID resolution path: two recurrences (Weekly + Monthly) with five
+// instances spread across them must each land with the correct recurrence_id
+// FK and occurrence_key after a JSONL roundtrip.
+func TestRoundtrip_MultipleRecurrencesAndInstances(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	// Insert two recurrences with distinct UIDs and template titles.
+	weeklyUID := "RECW00000000000000000000A1"
+	monthlyUID := "RECM00000000000000000000A1"
+
+	resW, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		weeklyUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "Weekly", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	weeklyID, err := resW.LastInsertId()
+	require.NoError(t, err)
+
+	resM, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		monthlyUID, p.ID, "FREQ=MONTHLY", "2026-05-01", "UTC", "Monthly", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	monthlyID, err := resM.LastInsertId()
+	require.NoError(t, err)
+
+	// Weekly instances: 2026-05-11, 2026-05-18, 2026-05-25.
+	weeklyKeys := []string{"2026-05-11", "2026-05-18", "2026-05-25"}
+	for _, key := range weeklyKeys {
+		iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: "Weekly " + key, Author: "tester",
+		})
+		require.NoError(t, err)
+		_, err = srcDB.ExecContext(ctx,
+			`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+			weeklyID, key, iss.ID)
+		require.NoError(t, err)
+	}
+
+	// Monthly instances: 2026-05-01, 2026-06-01.
+	monthlyKeys := []string{"2026-05-01", "2026-06-01"}
+	for _, key := range monthlyKeys {
+		iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: "Monthly " + key, Author: "tester",
+		})
+		require.NoError(t, err)
+		_, err = srcDB.ExecContext(ctx,
+			`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+			monthlyID, key, iss.ID)
+		require.NoError(t, err)
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	// Assert 3 issues link to the Weekly recurrence.
+	var weeklyCount int
+	require.NoError(t, dstDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM issues i
+		JOIN recurrences r ON r.id = i.recurrence_id
+		WHERE r.template_title = 'Weekly'`).Scan(&weeklyCount))
+	assert.Equal(t, 3, weeklyCount)
+
+	// Assert 2 issues link to the Monthly recurrence.
+	var monthlyCount int
+	require.NoError(t, dstDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM issues i
+		JOIN recurrences r ON r.id = i.recurrence_id
+		WHERE r.template_title = 'Monthly'`).Scan(&monthlyCount))
+	assert.Equal(t, 2, monthlyCount)
+
+	// Assert all five occurrence_keys are present and correctly ordered.
+	rows, err := dstDB.QueryContext(ctx,
+		`SELECT occurrence_key FROM issues WHERE occurrence_key IS NOT NULL ORDER BY occurrence_key ASC`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var keys []string
+	for rows.Next() {
+		var k string
+		require.NoError(t, rows.Scan(&k))
+		keys = append(keys, k)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{"2026-05-01", "2026-05-11", "2026-05-18", "2026-05-25", "2026-06-01"}, keys)
+}
+
 func TestRoundtrip_NewEventPayloadBytesAreExact(t *testing.T) {
 	srcDB := openExportTestDB(t)
 	ctx := context.Background()
