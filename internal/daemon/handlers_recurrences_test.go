@@ -209,6 +209,17 @@ func TestDeleteRecurrence_AfterDeleteReturns404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp2.StatusCode)
 }
 
+func doPost(t *testing.T, env *testenv.Env, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	return resp
+}
+
 func TestListRecurrences_ByProject(t *testing.T) {
 	env := testenv.New(t, testenv.WithAuthToken("tok"))
 	p := seedProject(t, env, "src")
@@ -230,4 +241,32 @@ func TestListRecurrences_ByProject(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
 	assert.Len(t, out.Recurrences, 2)
+}
+
+func TestCreateRecurrence_InvalidLabelReturns400(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p := seedProject(t, env, "src")
+
+	body := fmt.Sprintf(`{
+		"actor":"tester",
+		"rrule":"FREQ=WEEKLY",
+		"dtstart":"2026-05-15",
+		"timezone":"UTC",
+		"template":{"title":"t","labels":["hello world"]}
+	}`)
+	resp := doPost(t, env, fmt.Sprintf("%s/api/v1/projects/%d/recurrences", env.URL, p.ID), body)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestPatchRecurrence_InvalidLabelReturns400(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p := seedProject(t, env, "src")
+	rec := seedRecurrence(t, env, p.ID, "FREQ=WEEKLY", "2026-05-15", "UTC", "t")
+
+	body := `{"actor":"tester","template":{"labels":["hello world"]}}`
+	resp := doPatch(t, env, fmt.Sprintf("%s/api/v1/projects/%d/recurrences/%s", env.URL, p.ID, rec.UID),
+		body, `"rev-1"`)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
