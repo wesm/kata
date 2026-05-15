@@ -66,6 +66,9 @@ func AutoCutover(ctx context.Context, path string) error {
 	}
 	cleanupTemps = false
 	removeSQLiteFileSet(tmpJSONL)
+	if line := formatOrphanSummary(report); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	return nil
 }
 
@@ -125,6 +128,32 @@ func importCutoverTarget(ctx context.Context, tmpJSONL, tmpDB string) error {
 		return fmt.Errorf("record cutover schema version: %w", err)
 	}
 	return nil
+}
+
+// formatOrphanSummary renders the post-cutover summary line.
+// Returns "" when no orphans were dropped, so callers can skip
+// the println entirely on clean DBs. Only nonzero classes are
+// listed, in the fixed order events / comments / links /
+// issue_labels. ScrubbedRowsByTable is intentionally not
+// included — scrubs preserve the row, so reporting them as
+// "discarded" would mislead.
+func formatOrphanSummary(report OrphanReport) string {
+	classes := []string{"events", "comments", "links", "issue_labels"}
+	var parts []string
+	total := 0
+	for _, c := range classes {
+		n := len(report.DroppedRowsByTable[c])
+		if n == 0 {
+			continue
+		}
+		total += n
+		parts = append(parts, fmt.Sprintf("%s: %d", c, n))
+	}
+	if total == 0 {
+		return ""
+	}
+	return fmt.Sprintf("kata cutover: discarded %d orphan rows from old DB (%s)",
+		total, strings.Join(parts, ", "))
 }
 
 // formatUnknownViolations renders the preflight halt error.

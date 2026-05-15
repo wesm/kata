@@ -160,6 +160,49 @@ func TestAutoCutover_HaltsOnUnknownFKClass(t *testing.T) {
 	assertNoCutoverTemps(t, path)
 }
 
+// TestAutoCutover_PrintsOrphanSummary: when cutover discards
+// orphan rows, exactly one stderr line summarizes them, listing
+// only nonzero classes in the fixed order events / comments /
+// links / issue_labels. NULL-scrubbed events are NOT counted.
+func TestAutoCutover_PrintsOrphanSummary(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV3DBWithOrphans(t, path, orphanSpec{
+		OrphanComments:     2,
+		OrphanLinks:        2,
+		OrphanIssueLabels:  1,
+		OrphanEventIssueID: 1,
+		OrphanEventRelated: 1, // scrub, must not appear in summary
+	})
+
+	stderr, restore := captureStderr(t)
+	err := jsonl.AutoCutover(ctx, path)
+	captured := restore()
+	require.NoError(t, err)
+
+	// 1 dropped event + 2 dropped comments + 2 dropped links +
+	// 1 dropped issue_label = 6. The related-only event is
+	// scrubbed, not dropped, and is excluded from the summary.
+	expected := "kata cutover: discarded 6 orphan rows from old DB (events: 1, comments: 2, links: 2, issue_labels: 1)\n"
+	assert.Equal(t, expected, stderr.String())
+	_ = captured
+}
+
+// TestAutoCutover_NoSummaryWhenClean: no stderr output when the
+// source DB has zero orphans, so existing operators upgrading a
+// clean DB see no behavior change.
+func TestAutoCutover_NoSummaryWhenClean(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV3DBWithOrphans(t, path, orphanSpec{}) // baseline only
+
+	stderr, restore := captureStderr(t)
+	err := jsonl.AutoCutover(ctx, path)
+	_ = restore()
+	require.NoError(t, err)
+	assert.Empty(t, stderr.Bytes())
+}
+
 // TestAutoCutover_DropsAllKnownOrphanClasses: a source DB with
 // orphans across all four known classes (events, comments,
 // links, issue_labels) cuts over successfully. Orphan rows are

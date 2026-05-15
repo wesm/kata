@@ -382,3 +382,28 @@ func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 	_, err = raw.Exec(`PRAGMA foreign_keys = ON`)
 	require.NoError(t, err)
 }
+
+// captureStderr redirects os.Stderr to an in-memory buffer for
+// the duration of the test. The returned restore function reverts
+// os.Stderr and copies any pending pipe data into the buffer.
+// Use the buffer (not the restore return value) for assertions.
+func captureStderr(t *testing.T) (*bytes.Buffer, func() *bytes.Buffer) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	original := os.Stderr
+	os.Stderr = w
+	buf := &bytes.Buffer{}
+	done := make(chan struct{})
+	go func() {
+		_, _ = buf.ReadFrom(r)
+		close(done)
+	}()
+	return buf, func() *bytes.Buffer {
+		os.Stderr = original
+		_ = w.Close()
+		<-done
+		_ = r.Close()
+		return buf
+	}
+}
