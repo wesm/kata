@@ -235,13 +235,34 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if rec.Revision == 0 {
 			rec.Revision = 1
 		}
+		// Co-field validation: occurrence_key requires recurrence linkage.
+		if rec.OccurrenceKey != nil && rec.RecurrenceUID == nil && rec.RecurrenceID == nil {
+			return fmt.Errorf("import issue %d (uid=%s): occurrence_key set without recurrence_uid",
+				rec.ID, rec.UID)
+		}
+		if rec.RecurrenceUID != nil {
+			var resolvedID int64
+			if qErr := tx.QueryRowContext(ctx,
+				`SELECT id FROM recurrences WHERE uid = ?`, *rec.RecurrenceUID,
+			).Scan(&resolvedID); qErr != nil {
+				return fmt.Errorf("import issue %d: recurrence_uid %q not found: %w",
+					rec.ID, *rec.RecurrenceUID, qErr)
+			}
+			if rec.RecurrenceID != nil && *rec.RecurrenceID != resolvedID {
+				return fmt.Errorf("import issue %d: recurrence_uid %q resolves to id %d, but record carries recurrence_id %d",
+					rec.ID, *rec.RecurrenceUID, resolvedID, *rec.RecurrenceID)
+			}
+			rec.RecurrenceID = &resolvedID
+		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO issues(id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
-			                    created_at, updated_at, closed_at, deleted_at, metadata, revision)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    created_at, updated_at, closed_at, deleted_at, metadata, revision,
+			                    recurrence_id, occurrence_key)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, rec.UID, rec.ProjectID, rec.ShortID, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
 			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt,
-			string(rec.Metadata), rec.Revision)
+			string(rec.Metadata), rec.Revision,
+			rec.RecurrenceID, rec.OccurrenceKey)
 		return wrapImportErr(env.Kind, err)
 	case KindComment:
 		var rec commentRecord
@@ -612,6 +633,14 @@ type issueRecord struct {
 	// the fields and the importer defaults them to '{}'/1 before INSERT.
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 	Revision int64           `json:"revision,omitempty"`
+	// Recurrence linkage fields land in v10+ envelopes. RecurrenceUID is the
+	// portable identifier joined from recurrences.uid at export; RecurrenceID
+	// is the source-side row id (echoed for diagnostics). Import resolves
+	// RecurrenceUID against the target DB and validates against RecurrenceID
+	// when both are present.
+	RecurrenceID  *int64  `json:"recurrence_id,omitempty"`
+	RecurrenceUID *string `json:"recurrence_uid,omitempty"`
+	OccurrenceKey *string `json:"occurrence_key,omitempty"`
 }
 
 type commentRecord struct {

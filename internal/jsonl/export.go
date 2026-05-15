@@ -395,31 +395,37 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		return exportIssuesV6(ctx, d, enc, opts)
 	}
 	type record struct {
-		ID           int64           `json:"id"`
-		UID          string          `json:"uid"`
-		ProjectID    int64           `json:"project_id"`
-		ShortID      string          `json:"short_id"`
-		Title        string          `json:"title"`
-		Body         string          `json:"body"`
-		Status       string          `json:"status"`
-		ClosedReason *string         `json:"closed_reason"`
-		Owner        *string         `json:"owner"`
-		Priority     *int64          `json:"priority,omitempty"`
-		Author       string          `json:"author"`
-		CreatedAt    string          `json:"created_at"`
-		UpdatedAt    string          `json:"updated_at"`
-		ClosedAt     *string         `json:"closed_at"`
-		DeletedAt    *string         `json:"deleted_at"`
-		Metadata     json.RawMessage `json:"metadata"`
-		Revision     int64           `json:"revision"`
+		ID            int64           `json:"id"`
+		UID           string          `json:"uid"`
+		ProjectID     int64           `json:"project_id"`
+		ShortID       string          `json:"short_id"`
+		Title         string          `json:"title"`
+		Body          string          `json:"body"`
+		Status        string          `json:"status"`
+		ClosedReason  *string         `json:"closed_reason"`
+		Owner         *string         `json:"owner"`
+		Priority      *int64          `json:"priority,omitempty"`
+		Author        string          `json:"author"`
+		CreatedAt     string          `json:"created_at"`
+		UpdatedAt     string          `json:"updated_at"`
+		ClosedAt      *string         `json:"closed_at"`
+		DeletedAt     *string         `json:"deleted_at"`
+		Metadata      json.RawMessage `json:"metadata"`
+		Revision      int64           `json:"revision"`
+		RecurrenceID  *int64          `json:"recurrence_id,omitempty"`
+		RecurrenceUID *string         `json:"recurrence_uid,omitempty"`
+		OccurrenceKey *string         `json:"occurrence_key,omitempty"`
 	}
-	query := `SELECT id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
-	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
-	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT),
-	                 metadata, revision
-	          FROM issues`
-	where, args := issueExportWhere("issues", opts)
-	query += where + ` ORDER BY id ASC`
+	query := `SELECT i.id, i.uid, i.project_id, i.short_id, i.title, i.body,
+	                 i.status, i.closed_reason, i.owner, i.priority, i.author,
+	                 CAST(i.created_at AS TEXT), CAST(i.updated_at AS TEXT),
+	                 CAST(i.closed_at AS TEXT), CAST(i.deleted_at AS TEXT),
+	                 i.metadata, i.revision,
+	                 i.recurrence_id, r.uid, i.occurrence_key
+	          FROM issues i
+	          LEFT JOIN recurrences r ON r.id = i.recurrence_id`
+	where, args := issueExportWhere("i", opts)
+	query += where + ` ORDER BY i.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export issues: %w", err)
@@ -429,7 +435,8 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		var metadata string
 		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.ShortID, &rec.Title, &rec.Body,
 			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
-			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt, &metadata, &rec.Revision)
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt, &metadata, &rec.Revision,
+			&rec.RecurrenceID, &rec.RecurrenceUID, &rec.OccurrenceKey)
 		if err != nil {
 			return rec, err
 		}

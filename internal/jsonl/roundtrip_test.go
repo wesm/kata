@@ -301,6 +301,80 @@ func TestRoundtrip_RecurrenceFullFields(t *testing.T) {
 	assert.JSONEq(t, `["chore","weekly"]`, labels)
 }
 
+func TestRoundtrip_IssueRecurrenceLinkagePreserved(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	// Insert a recurrence directly.
+	recUID := "REC00000000000000000000001"
+	res, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "Weekly", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	recID, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	// Create an issue that references this recurrence via raw UPDATE.
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "Weekly", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+		recID, "2026-05-11", iss.ID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+	require.Contains(t, buf.String(), `"recurrence_uid":"`+recUID+`"`)
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var gotRecID int64
+	var gotOccKey string
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT recurrence_id, occurrence_key FROM issues WHERE id = ?`, iss.ID,
+	).Scan(&gotRecID, &gotOccKey))
+	assert.Equal(t, recID, gotRecID)
+	assert.Equal(t, "2026-05-11", gotOccKey)
+}
+
+func TestImport_RecurrenceUIDAndIDDisagree_Errors(t *testing.T) {
+	dstDB := openImportTargetDB(t)
+	body := bytes.NewBufferString("")
+	body.WriteString(`{"kind":"meta","data":{"key":"export_version","value":"10"}}` + "\n")
+	body.WriteString(`{"kind":"meta","data":{"key":"instance_uid","value":"ORIGIN0000000000000000000A"}}` + "\n")
+	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":"{}","revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"recurrence","data":{"id":1,"uid":"RECA000000000000000000000A","project_id":1,"rrule":"FREQ=WEEKLY","dtstart":"2026-05-15","timezone":"UTC","template_title":"a","template_body":"","template_labels":"[]","template_metadata":"{}","author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"recurrence","data":{"id":2,"uid":"RECB000000000000000000000A","project_id":1,"rrule":"FREQ=MONTHLY","dtstart":"2026-05-01","timezone":"UTC","template_title":"b","template_body":"","template_labels":"[]","template_metadata":"{}","author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	// Issue claims recurrence_uid=RECA but recurrence_id=2 (which is RECB).
+	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":"{}","revision":1,"recurrence_id":2,"recurrence_uid":"RECA000000000000000000000A","occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+
+	err := jsonl.Import(context.Background(), body, dstDB)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "recurrence_uid")
+}
+
+func TestImport_OccurrenceKeyWithoutRecurrence_Errors(t *testing.T) {
+	dstDB := openImportTargetDB(t)
+	body := bytes.NewBufferString("")
+	body.WriteString(`{"kind":"meta","data":{"key":"export_version","value":"10"}}` + "\n")
+	body.WriteString(`{"kind":"meta","data":{"key":"instance_uid","value":"ORIGIN0000000000000000000A"}}` + "\n")
+	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":"{}","revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":"{}","revision":1,"occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+
+	err := jsonl.Import(context.Background(), body, dstDB)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "occurrence_key")
+}
+
 func TestExport_RecurrencesAppearBeforeIssuesInStream(t *testing.T) {
 	srcDB := openExportTestDB(t)
 	ctx := context.Background()
