@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ListIssuesByViewIn holds parameters for ListIssuesByView.
@@ -53,6 +54,9 @@ func (d *DB) ListIssuesByView(ctx context.Context, in ListIssuesByViewIn) ([]Iss
 
 	switch in.View {
 	case "today":
+		if _, err := time.Parse("2006-01-02", in.TodayDate); err != nil {
+			return nil, fmt.Errorf("today view requires TodayDate in YYYY-MM-DD: %w", err)
+		}
 		where = append(where,
 			"i.status = 'open'",
 			`(json_extract(i.metadata,'$.scheduled_on') <= ?
@@ -61,6 +65,9 @@ func (d *DB) ListIssuesByView(ctx context.Context, in ListIssuesByViewIn) ([]Iss
                   AND json_extract(i.metadata,'$.deadline_on') <= ?))`)
 		args = append(args, in.TodayDate, in.TodayDate)
 	case "upcoming":
+		if _, err := time.Parse("2006-01-02", in.TodayDate); err != nil {
+			return nil, fmt.Errorf("upcoming view requires TodayDate in YYYY-MM-DD: %w", err)
+		}
 		where = append(where,
 			"i.status = 'open'",
 			"json_extract(i.metadata,'$.scheduled_on') > ?")
@@ -93,7 +100,8 @@ func (d *DB) ListIssuesByView(ctx context.Context, in ListIssuesByViewIn) ([]Iss
 
 	q := issueSelect +
 		" WHERE " + strings.Join(where, " AND ") +
-		" ORDER BY i.priority IS NULL, i.priority, i.updated_at DESC LIMIT ? OFFSET ?"
+		" ORDER BY i.priority IS NULL, i.priority, i.updated_at DESC, i.id DESC" +
+		" LIMIT ? OFFSET ?"
 	args = append(args, in.Limit, in.Offset)
 
 	rows, err := d.QueryContext(ctx, q, args...)

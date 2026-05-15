@@ -131,6 +131,21 @@ func TestMoveIssue_BadIfMatch_400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestMoveIssue_SameProject_400 covers the no-op case where to_project_uid
+// resolves to the issue's current project. The handler must reject this with
+// a 400 envelope rather than letting the DB layer respond with a generic 500.
+func TestMoveIssue_SameProject_400(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	src, _, iss := seedMovePair(t, env)
+
+	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, src.UID)
+	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
+	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
+	defer func() { _ = resp.Body.Close() }()
+	bs, _ := io.ReadAll(resp.Body)
+	assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "same_project")
+}
+
 func TestMoveIssue_ToProjectUIDNotFound_404(t *testing.T) {
 	env := testenv.New(t, testenv.WithAuthToken("tok"))
 	src, _, iss := seedMovePair(t, env)

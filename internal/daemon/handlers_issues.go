@@ -144,6 +144,15 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/issues",
 	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
+		if in.ProjectID < 0 {
+			return nil, api.NewError(400, "validation",
+				"project_id must be a positive integer", "", nil)
+		}
+		if in.ProjectID > 0 {
+			if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+				return nil, err
+			}
+		}
 		if in.View != "" {
 			return listIssuesViewResponse(ctx, cfg, in)
 		}
@@ -926,19 +935,12 @@ func formatDuplicateMessage(matched []map[string]any) string {
 
 // listIssuesFilteredResponse serves the legacy /api/v1/issues path: filter by
 // project / status / priority / max_priority, hydrate to IssueOut, and return
-// the ListIssuesResponse envelope.
+// the ListIssuesResponse envelope. The caller (the GET /api/v1/issues entry
+// handler) is responsible for validating project_id before dispatching here,
+// so both this branch and the view branch see the same gate.
 func listIssuesFilteredResponse(
 	ctx context.Context, cfg ServerConfig, in *api.ListAllIssuesRequest,
 ) (*api.ListIssuesResponse, error) {
-	if in.ProjectID < 0 {
-		return nil, api.NewError(400, "validation",
-			"project_id must be a positive integer", "", nil)
-	}
-	if in.ProjectID > 0 {
-		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
-			return nil, err
-		}
-	}
 	priority, err := parsePriorityQuery(in.Priority, "priority")
 	if err != nil {
 		return nil, err

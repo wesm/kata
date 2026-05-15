@@ -185,3 +185,37 @@ func TestGetIssuesView_ProjectFilter_FiltersByProject(t *testing.T) {
 	assert.Equal(t, "AlphaTask", out.Issues[0].Title)
 	assert.Equal(t, pA.ID, out.Issues[0].ProjectID)
 }
+
+// TestGetIssuesView_NegativeProjectID_400 ensures negative project_id values
+// are rejected up-front instead of being silently ignored by the DB layer.
+func TestGetIssuesView_NegativeProjectID_400(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+
+	resp, bs := doGetView(t, env, "view=anytime&project_id=-1", "UTC")
+	assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "validation")
+}
+
+// TestGetIssuesView_NonexistentProjectID_404 ensures a project_id that doesn't
+// exist returns 404 project_not_found, not 200 with an empty list.
+func TestGetIssuesView_NonexistentProjectID_404(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+
+	resp, bs := doGetView(t, env, "view=anytime&project_id=99999", "UTC")
+	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
+}
+
+// TestGetIssuesView_ArchivedProjectID_404 ensures an archived project surfaces
+// as project_not_found rather than silently returning an empty result set.
+func TestGetIssuesView_ArchivedProjectID_404(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+
+	p, err := env.DB.CreateProject(t.Context(), "gone")
+	require.NoError(t, err)
+	_, err = env.DB.ExecContext(t.Context(),
+		`UPDATE projects SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, p.ID)
+	require.NoError(t, err)
+
+	resp, bs := doGetView(t, env,
+		fmt.Sprintf("view=anytime&project_id=%d", p.ID), "UTC")
+	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
+}

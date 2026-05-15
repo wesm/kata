@@ -45,3 +45,27 @@ func TestEnsureInbox_IdempotentOnSecondCall(t *testing.T) {
 	assert.Equal(t, a.ID, b.ID, "second call must return the same project")
 	assert.Equal(t, a.UID, b.UID)
 }
+
+// TestEnsureInbox_RestoresArchivedSentinel guards against a startup deadlock
+// where an operator archived the Inbox sentinel and the next daemon boot would
+// otherwise crash trying to recreate it (project names are globally unique).
+func TestEnsureInbox_RestoresArchivedSentinel(t *testing.T) {
+	d := openInboxTestDB(t)
+	ctx := context.Background()
+
+	original, err := daemon.EnsureInbox(ctx, d)
+	require.NoError(t, err)
+
+	_, err = d.ExecContext(ctx,
+		`UPDATE projects SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, original.ID)
+	require.NoError(t, err)
+
+	restored, err := daemon.EnsureInbox(ctx, d)
+	require.NoError(t, err)
+	assert.Equal(t, original.ID, restored.ID, "should restore the same row, not create a new one")
+	assert.Nil(t, restored.DeletedAt, "DeletedAt must be cleared after restore")
+
+	looked, err := d.ProjectByName(ctx, "Inbox")
+	require.NoError(t, err)
+	assert.Equal(t, original.ID, looked.ID)
+}

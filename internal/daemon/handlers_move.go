@@ -58,6 +58,10 @@ func moveIssueHandler(cfg ServerConfig) func(context.Context, *api.MoveIssueRequ
 		if err != nil {
 			return nil, err
 		}
+		if tgt.ID == in.ProjectID {
+			return nil, api.NewError(400, "same_project",
+				"to_project_uid resolves to the issue's current project", "", nil)
+		}
 
 		res, err := cfg.DB.MoveIssueProject(ctx, db.MoveIssueProjectIn{
 			IssueID:       iss.ID,

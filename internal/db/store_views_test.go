@@ -143,17 +143,28 @@ func TestListIssuesByView_AreaFilter(t *testing.T) {
 
 // TestListIssuesByView_TodayPlanUsesAnIndex is a D4 sanity check: the SQLite
 // query planner must pick at least one index for the Today predicate rather
-// than falling back to a full table scan. If the scheduled_on partial index is
-// not chosen, a soft log message is emitted so the reviewer knows to evaluate
-// the secondary-index decision; the hard assertion only requires any index use.
+// than falling back to a full table scan. The EXPLAIN query mirrors the real
+// ListIssuesByView Today shape — projects join, deleted-at filters on both
+// sides, the scheduled_on / deadline_on OR branch, the ORDER BY tie-breakers,
+// and LIMIT/OFFSET — so a regression that shifts the planner onto a worse
+// path (e.g. a full scan after the OR is rewritten) is caught here. If the
+// scheduled_on partial index is not chosen, a soft log message is emitted so
+// the reviewer knows to evaluate the secondary-index decision; the hard
+// assertion only requires any index use.
 func TestListIssuesByView_TodayPlanUsesAnIndex(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 	rows, err := d.QueryContext(ctx, `EXPLAIN QUERY PLAN
-        SELECT id FROM issues
-         WHERE deleted_at IS NULL
-           AND status = 'open'
-           AND json_extract(metadata,'$.scheduled_on') <= '2026-05-15'`)
+        SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id
+         WHERE i.deleted_at IS NULL
+           AND p.deleted_at IS NULL
+           AND i.status = 'open'
+           AND (json_extract(i.metadata,'$.scheduled_on') <= '2026-05-15'
+                OR (json_extract(i.metadata,'$.scheduled_on') IS NULL
+                    AND json_extract(i.metadata,'$.deadline_on') IS NOT NULL
+                    AND json_extract(i.metadata,'$.deadline_on') <= '2026-05-15'))
+         ORDER BY i.priority IS NULL, i.priority, i.updated_at DESC, i.id DESC
+         LIMIT 50 OFFSET 0`)
 	require.NoError(t, err)
 	defer func() { _ = rows.Close() }()
 
@@ -177,6 +188,24 @@ func TestListIssuesByView_TodayPlanUsesAnIndex(t *testing.T) {
 		t.Logf("planner did not use the scheduled_on partial index; review §D4 secondary-index decision")
 	}
 	assert.True(t, sawAnyIndex, "planner must use some index, not a full table scan")
+}
+
+// TestListIssuesByView_RejectsBadTodayDate covers two cases of the date input
+// guard added to today/upcoming: an empty TodayDate (which would otherwise
+// silently match all rows under `>` and `<=`) and a malformed value.
+func TestListIssuesByView_RejectsBadTodayDate(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	for _, view := range []string{"today", "upcoming"} {
+		t.Run(view+"/empty", func(t *testing.T) {
+			_, err := d.ListIssuesByView(ctx, db.ListIssuesByViewIn{View: view, TodayDate: ""})
+			require.Error(t, err)
+		})
+		t.Run(view+"/malformed", func(t *testing.T) {
+			_, err := d.ListIssuesByView(ctx, db.ListIssuesByViewIn{View: view, TodayDate: "May 15"})
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestExpressionIndexesPresent(t *testing.T) {
