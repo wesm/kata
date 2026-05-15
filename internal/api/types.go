@@ -966,3 +966,21 @@ type DeleteRecurrenceRequest struct {
 // DeleteRecurrenceResponse is the 204 No Content envelope for soft-delete.
 // The 204 status is set via DefaultStatus in the huma.Operation; no body is returned.
 type DeleteRecurrenceResponse struct{}
+
+// Whitelisted issue metadata keys (mirrors internal/metadata.IssueRegistry).
+const (
+	MetadataKeyScheduledOn = "scheduled_on"
+	MetadataKeyDeadlineOn  = "deadline_on"
+	MetadataKeySomeday     = "someday"
+	MetadataKeyTodayBucket = "today_bucket"
+	MetadataKeyChecklist   = "checklist"
+	MetadataKeyTimezone    = "timezone"
+)
+
+// Whitelisted project metadata keys (mirrors internal/metadata.ProjectRegistry).
+const (
+	ProjectMetadataKeyArea         = "area"
+	ProjectMetadataKeySidebarOrder = "sidebar_order"
+	ProjectMetadataKeyIcon         = "icon"
+	ProjectMetadataKeyTimezone     = "timezone"
+)
