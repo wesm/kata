@@ -144,40 +144,10 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/issues",
 	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
-		if in.ProjectID < 0 {
-			return nil, api.NewError(400, "validation",
-				"project_id must be a positive integer", "", nil)
+		if in.View != "" {
+			return listIssuesViewResponse(ctx, cfg, in)
 		}
-		if in.ProjectID > 0 {
-			if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
-				return nil, err
-			}
-		}
-		priority, err := parsePriorityQuery(in.Priority, "priority")
-		if err != nil {
-			return nil, err
-		}
-		maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
-		if err != nil {
-			return nil, err
-		}
-		issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
-			ProjectID:   in.ProjectID,
-			Status:      in.Status,
-			Priority:    priority,
-			MaxPriority: maxPriority,
-			Limit:       in.Limit,
-		})
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		issueOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, issues)
-		out := &api.ListIssuesResponse{}
-		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
-		}
-		out.Body.Issues = issueOuts
-		return out, nil
+		return listIssuesFilteredResponse(ctx, cfg, in)
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -952,4 +922,46 @@ func formatDuplicateMessage(matched []map[string]any) string {
 		return "1 open issue matches this title"
 	}
 	return strconv.Itoa(n) + " open issues match this title"
+}
+
+// listIssuesFilteredResponse serves the legacy /api/v1/issues path: filter by
+// project / status / priority / max_priority, hydrate to IssueOut, and return
+// the ListIssuesResponse envelope.
+func listIssuesFilteredResponse(
+	ctx context.Context, cfg ServerConfig, in *api.ListAllIssuesRequest,
+) (*api.ListIssuesResponse, error) {
+	if in.ProjectID < 0 {
+		return nil, api.NewError(400, "validation",
+			"project_id must be a positive integer", "", nil)
+	}
+	if in.ProjectID > 0 {
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
+		}
+	}
+	priority, err := parsePriorityQuery(in.Priority, "priority")
+	if err != nil {
+		return nil, err
+	}
+	maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
+	if err != nil {
+		return nil, err
+	}
+	issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
+		ProjectID:   in.ProjectID,
+		Status:      in.Status,
+		Priority:    priority,
+		MaxPriority: maxPriority,
+		Limit:       in.Limit,
+	})
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	issueOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, issues)
+	if err != nil {
+		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+	}
+	out := &api.ListIssuesResponse{}
+	out.Body.Issues = issueOuts
+	return out, nil
 }

@@ -262,12 +262,22 @@ type ListIssuesRequest struct {
 // optional project_id query param narrows to a single project for callers
 // that want one trip through this surface; omit it for the all-projects feed.
 // Priority/MaxPriority are encoded the same way as ListIssuesRequest.
+//
+// When View is set, the handler switches to the named-view code path: it
+// computes the local date boundary from X-Kata-Client-TZ, ensures the inbox
+// sentinel project exists, and returns the rows produced by
+// db.ListIssuesByView. View accepts today|upcoming|inbox|someday|anytime|logbook.
+// Area scopes by projects.metadata.area; Offset paginates alongside Limit.
 type ListAllIssuesRequest struct {
 	ProjectID   int64  `query:"project_id,omitempty"`
 	Status      string `query:"status,omitempty" enum:"open,closed,"`
 	Priority    string `query:"priority,omitempty" doc:"exact priority filter (0..4); empty = no filter"`
 	MaxPriority string `query:"max_priority,omitempty" doc:"include only priority <= this value (0..4); empty = no filter"`
 	Limit       int    `query:"limit,omitempty"`
+	View        string `query:"view,omitempty" doc:"today|upcoming|inbox|someday|anytime|logbook; empty = no view"`
+	Area        string `query:"area,omitempty" doc:"scope by projects.metadata.area (case-insensitive)"`
+	Offset      int    `query:"offset,omitempty"`
+	ClientTZ    string `header:"X-Kata-Client-TZ" doc:"client IANA timezone for computing the today boundary; empty = UTC"`
 }
 
 // IssueOut is the wire projection of one row in ListIssuesResponse.
