@@ -14,6 +14,52 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// labelRe is the pattern from the schema CHECK: label must consist only of
+// a-z, 0-9, '.', '_', ':', '-' and be between 1 and 64 bytes long.
+// We validate this at write time so the DB constraint is never surprised.
+var labelAllowedChars = func() [256]bool {
+	var t [256]bool
+	const allowed = "abcdefghijklmnopqrstuvwxyz0123456789._:-"
+	for i := 0; i < len(allowed); i++ {
+		t[allowed[i]] = true
+	}
+	return t
+}()
+
+// dedupeNormalizeLabels trims, lowercases, and deduplicates labels. It returns
+// an error for any label that is empty after trimming, exceeds 64 bytes, or
+// contains characters outside [a-z0-9._:-] (matching the schema CHECK).
+// The returned slice is sorted for determinism.
+func dedupeNormalizeLabels(in []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		lbl := strings.TrimSpace(strings.ToLower(raw))
+		if len(lbl) == 0 {
+			return nil, fmt.Errorf("label must not be empty after trimming")
+		}
+		if len(lbl) > 64 {
+			return nil, fmt.Errorf("label %q exceeds 64-byte limit", lbl)
+		}
+		for i := 0; i < len(lbl); i++ {
+			if !labelAllowedChars[lbl[i]] {
+				return nil, fmt.Errorf("label %q contains invalid character %q", lbl, string(lbl[i]))
+			}
+		}
+		if _, dup := seen[lbl]; !dup {
+			seen[lbl] = struct{}{}
+			out = append(out, lbl)
+		}
+	}
+	// Sort for deterministic storage and diffing.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out, nil
+}
+
 // RecurrenceTemplate carries the issue-template fields for a recurrence row.
 // Owner and Priority are optional; Labels and Metadata default to empty
 // collections when nil.
@@ -63,9 +109,13 @@ func (d *DB) CreateRecurrence(ctx context.Context, in CreateRecurrenceIn) (Recur
 		return rec, fmt.Errorf("generate recurrence uid: %w", err)
 	}
 
+	normalizedLabels, err := dedupeNormalizeLabels(in.Template.Labels)
+	if err != nil {
+		return rec, fmt.Errorf("validate template_labels: %w", err)
+	}
 	labelsJSON := "[]"
-	if len(in.Template.Labels) > 0 {
-		b, merr := json.Marshal(in.Template.Labels)
+	if len(normalizedLabels) > 0 {
+		b, merr := json.Marshal(normalizedLabels)
 		if merr != nil {
 			return rec, fmt.Errorf("marshal labels: %w", merr)
 		}
@@ -174,7 +224,7 @@ func (d *DB) PatchRecurrence(ctx context.Context, in PatchRecurrenceIn) (PatchRe
 	defer func() { _ = tx.Rollback() }()
 
 	cur, err := d.getRecurrenceTx(ctx, tx, in.RecurrenceID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, ErrNotFound) {
 		return out, fmt.Errorf("recurrence %d not found", in.RecurrenceID)
 	}
 	if err != nil {
@@ -245,7 +295,11 @@ func (d *DB) PatchRecurrence(ctx context.Context, in PatchRecurrenceIn) (PatchRe
 		}
 	}
 	if in.Update.TemplateLabels != nil {
-		nextLabels, merr := json.Marshal(*in.Update.TemplateLabels)
+		normalized, nerr := dedupeNormalizeLabels(*in.Update.TemplateLabels)
+		if nerr != nil {
+			return out, fmt.Errorf("validate template_labels: %w", nerr)
+		}
+		nextLabels, merr := json.Marshal(normalized)
 		if merr != nil {
 			return out, fmt.Errorf("marshal labels: %w", merr)
 		}
@@ -382,6 +436,13 @@ const recurrenceSelectFields = `id, uid, project_id, rrule, dtstart, timezone,
     template_labels, template_metadata, next_occurrence_key,
     last_materialized_uid, author, revision, created_at, updated_at, deleted_at`
 
+// recurrenceSelectFieldsAliased is the same list with an "r." table alias,
+// used in JOIN queries where the recurrences table is aliased as "r".
+const recurrenceSelectFieldsAliased = `r.id, r.uid, r.project_id, r.rrule, r.dtstart, r.timezone,
+    r.template_title, r.template_body, r.template_owner, r.template_priority,
+    r.template_labels, r.template_metadata, r.next_occurrence_key,
+    r.last_materialized_uid, r.author, r.revision, r.created_at, r.updated_at, r.deleted_at`
+
 // scanner is the common interface satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
@@ -396,6 +457,9 @@ func scanRecurrence(row scanner) (Recurrence, error) {
 		&r.LastMaterializedUID, &r.Author, &r.Revision,
 		&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
 	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Recurrence{}, ErrNotFound
+	}
 	return r, err
 }
 
@@ -417,11 +481,14 @@ func (d *DB) GetRecurrenceByUID(ctx context.Context, recUID string) (Recurrence,
 }
 
 // ListRecurrencesByProject returns all non-deleted recurrences for projectID,
-// ordered by created_at DESC.
+// ordered by created_at DESC. Recurrences whose parent project is soft-deleted
+// (archived) are excluded alongside ordinary soft-deleted recurrence rows.
 func (d *DB) ListRecurrencesByProject(ctx context.Context, projectID int64) ([]Recurrence, error) {
 	rows, err := d.QueryContext(ctx,
-		"SELECT "+recurrenceSelectFields+
-			" FROM recurrences WHERE project_id = ? AND deleted_at IS NULL ORDER BY created_at DESC",
+		"SELECT "+recurrenceSelectFieldsAliased+
+			" FROM recurrences r JOIN projects p ON p.id = r.project_id"+
+			" WHERE r.project_id = ? AND r.deleted_at IS NULL AND p.deleted_at IS NULL"+
+			" ORDER BY r.created_at DESC",
 		projectID)
 	if err != nil {
 		return nil, err

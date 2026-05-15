@@ -158,3 +158,74 @@ func TestGetRecurrenceByUID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rec.ID, got.ID)
 }
+
+func TestGetRecurrenceByUID_MissingReturnsErrNotFound(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	_, err := d.GetRecurrenceByUID(ctx, "nosuchuid")
+	assert.ErrorIs(t, err, db.ErrNotFound)
+}
+
+func TestListRecurrencesByProject_ExcludesArchivedProject(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+
+	p, err := d.CreateProject(ctx, "archived-p")
+	require.NoError(t, err)
+
+	_, err = d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "should disappear"},
+	})
+	require.NoError(t, err)
+
+	// Archive the project.
+	_, err = d.ExecContext(ctx,
+		`UPDATE projects SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, p.ID)
+	require.NoError(t, err)
+
+	// Listing must return empty — the project is archived.
+	list, err := d.ListRecurrencesByProject(ctx, p.ID)
+	require.NoError(t, err)
+	assert.Empty(t, list, "archived project's recurrences must not appear in listing")
+}
+
+func TestCreateRecurrence_DedupesTemplateLabels(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p")
+
+	// Labels with duplicates, varied case, and extra whitespace.
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{
+			Title:  "dedup",
+			Labels: []string{"foo", "Foo", "  foo  ", "bar"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Stored labels must be normalized and sorted.
+	assert.Equal(t, `["bar","foo"]`, rec.TemplateLabels)
+}
+
+func TestCreateRecurrence_RejectsInvalidLabel(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, _ := d.CreateProject(ctx, "p")
+
+	// "hello world" contains a space (after trimming the full label, spaces
+	// inside the label are disallowed by the schema CHECK pattern).
+	_, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{
+			Title:  "bad label",
+			Labels: []string{"valid", "hello world"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid character")
+}
