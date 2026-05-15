@@ -300,10 +300,18 @@ func TestExportNoIncludeDeletedPreservesNonAggregatedRelatedOrphan(t *testing.T)
 	// Insert an issue.linked event (NOT issue.links_changed) whose
 	// related_issue_id points at an issue that does not exist. We
 	// flip foreign_keys=OFF for the insert because the FK on
-	// events.related_issue_id would otherwise reject it.
-	_, err := d.ExecContext(ctx, `PRAGMA foreign_keys = OFF`)
+	// events.related_issue_id would otherwise reject it. SQLite's
+	// foreign_keys pragma is connection-local, so pin every step to
+	// one *sql.Conn and restore the pragma before returning the
+	// connection to the pool — otherwise a later test could check
+	// out a connection still in FK-off state.
+	conn, err := d.Conn(ctx)
 	require.NoError(t, err)
-	_, err = d.ExecContext(ctx,
+	defer func() { _ = conn.Close() }()
+	_, err = conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	defer func() { _, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`) }()
+	_, err = conn.ExecContext(ctx,
 		`INSERT INTO events (uid, origin_instance_uid, project_id, project_name,
 		                     issue_id, issue_uid, related_issue_id, related_issue_uid,
 		                     type, actor, payload)
@@ -311,8 +319,6 @@ func TestExportNoIncludeDeletedPreservesNonAggregatedRelatedOrphan(t *testing.T)
 		         ?, ?, 999, '01HZZZZZZZZZZZZZZZZZZZZA99',
 		         'issue.linked', 'tester', '{}')`,
 		"01HZZZZZZZZZZZZZZZZZRELOR1", p.ID, p.Name, subject.ID, subject.UID)
-	require.NoError(t, err)
-	_, err = d.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
 	require.NoError(t, err)
 
 	records := exportAndDecode(ctx, t, d, jsonl.ExportOptions{IncludeDeleted: false})
