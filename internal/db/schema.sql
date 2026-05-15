@@ -8,6 +8,8 @@ CREATE TABLE projects (
   name       TEXT NOT NULL UNIQUE,
   created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   deleted_at DATETIME,
+  metadata   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+  revision   INTEGER NOT NULL DEFAULT 1,
   CHECK (length(uid) = 26),
   CHECK (length(trim(name)) > 0),
   CHECK (name NOT GLOB '*#*')

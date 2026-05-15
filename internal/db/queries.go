@@ -288,7 +288,7 @@ func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlia
 }
 
 // projectSelect is the canonical SELECT list for projects rows.
-const projectSelect = `SELECT id, uid, name, created_at, deleted_at FROM projects`
+const projectSelect = `SELECT id, uid, name, metadata, revision, created_at, deleted_at FROM projects`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows used by scan helpers.
 type rowScanner interface {
@@ -297,7 +297,7 @@ type rowScanner interface {
 
 func scanProject(r rowScanner) (Project, error) {
 	var p Project
-	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.CreatedAt, &p.DeletedAt)
+	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.Metadata, &p.Revision, &p.CreatedAt, &p.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}

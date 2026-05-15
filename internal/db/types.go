@@ -10,6 +10,8 @@ type Project struct {
 	ID        int64      `json:"id"`
 	UID       string     `json:"uid"`
 	Name      string     `json:"name"`
+	Metadata  string     `json:"metadata"`
+	Revision  int64      `json:"revision"`
 	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
