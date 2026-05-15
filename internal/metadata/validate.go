@@ -52,11 +52,10 @@ func Validate(registry map[string]Entry, key string, raw json.RawMessage) error 
 func validateDate(raw json.RawMessage) error {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return fmt.Errorf("date must be a JSON string: %w", err)
+		return fmt.Errorf("%w: date must be a JSON string: %v", ErrInvalidValue, err)
 	}
-	_, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return fmt.Errorf("date must match YYYY-MM-DD: %w", err)
+	if _, err := time.Parse("2006-01-02", s); err != nil {
+		return fmt.Errorf("%w: date must match YYYY-MM-DD: %v", ErrInvalidValue, err)
 	}
 	return nil
 }
@@ -64,7 +63,7 @@ func validateDate(raw json.RawMessage) error {
 func validateBool(raw json.RawMessage) error {
 	var b bool
 	if err := json.Unmarshal(raw, &b); err != nil {
-		return fmt.Errorf("value must be a JSON boolean: %w", err)
+		return fmt.Errorf("%w: value must be a JSON boolean: %v", ErrInvalidValue, err)
 	}
 	return nil
 }
@@ -72,20 +71,20 @@ func validateBool(raw json.RawMessage) error {
 func validateEnum(raw json.RawMessage, allowed []string) error {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return fmt.Errorf("enum value must be a JSON string: %w", err)
+		return fmt.Errorf("%w: enum value must be a JSON string: %v", ErrInvalidValue, err)
 	}
 	for _, v := range allowed {
 		if s == v {
 			return nil
 		}
 	}
-	return fmt.Errorf("value %q is not one of %v", s, allowed)
+	return fmt.Errorf("%w: value %q is not one of %v", ErrInvalidValue, s, allowed)
 }
 
 func validateString(raw json.RawMessage) error {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return fmt.Errorf("value must be a JSON string: %w", err)
+		return fmt.Errorf("%w: value must be a JSON string: %v", ErrInvalidValue, err)
 	}
 	return nil
 }
@@ -93,7 +92,7 @@ func validateString(raw json.RawMessage) error {
 func validateInt(raw json.RawMessage) error {
 	var n int64
 	if err := json.Unmarshal(raw, &n); err != nil {
-		return fmt.Errorf("value must be a JSON integer: %w", err)
+		return fmt.Errorf("%w: value must be a JSON integer: %v", ErrInvalidValue, err)
 	}
 	return nil
 }
@@ -128,10 +127,10 @@ func validateChecklist(raw json.RawMessage) error {
 func validateTimezoneIANA(raw json.RawMessage) error {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return fmt.Errorf("timezone must be a JSON string: %w", err)
+		return fmt.Errorf("%w: timezone must be a JSON string: %v", ErrInvalidValue, err)
 	}
 	if _, err := time.LoadLocation(s); err != nil {
-		return fmt.Errorf("timezone %q is not a valid IANA name: %w", s, err)
+		return fmt.Errorf("%w: timezone %q is not a valid IANA name: %v", ErrInvalidValue, s, err)
 	}
 	return nil
 }

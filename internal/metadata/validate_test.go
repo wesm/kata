@@ -69,3 +69,33 @@ func TestValidateNullClears(t *testing.T) {
 	assert.NoError(t, Validate(IssueRegistry, "scheduled_on", json.RawMessage(`null`)))
 	assert.NoError(t, Validate(IssueRegistry, "checklist", json.RawMessage(`null`)))
 }
+
+// TestValidate_AllErrorsWrapErrInvalidValue locks in the invariant that every
+// validator failure is detectable via errors.Is(err, ErrInvalidValue). Handlers
+// translate this to a 400 response; if a validator returns a plain error,
+// invalid client input falls through to a 500.
+func TestValidate_AllErrorsWrapErrInvalidValue(t *testing.T) {
+	cases := []struct {
+		name     string
+		registry map[string]Entry
+		key      string
+		raw      json.RawMessage
+	}{
+		{"date_wrong_type", IssueRegistry, "scheduled_on", json.RawMessage(`123`)},
+		{"date_malformed", IssueRegistry, "scheduled_on", json.RawMessage(`"not-a-date"`)},
+		{"bool_wrong_type", IssueRegistry, "someday", json.RawMessage(`"yes"`)},
+		{"enum_wrong_type", IssueRegistry, "today_bucket", json.RawMessage(`123`)},
+		{"enum_not_in_set", IssueRegistry, "today_bucket", json.RawMessage(`"midnight"`)},
+		{"timezone_wrong_type", IssueRegistry, "timezone", json.RawMessage(`123`)},
+		{"timezone_bogus", IssueRegistry, "timezone", json.RawMessage(`"Not/Real"`)},
+		{"project_string_wrong_type", ProjectRegistry, "area", json.RawMessage(`123`)},
+		{"project_int_wrong_type", ProjectRegistry, "sidebar_order", json.RawMessage(`"first"`)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := Validate(c.registry, c.key, c.raw)
+			assert.ErrorIs(t, err, ErrInvalidValue,
+				"validator must wrap ErrInvalidValue so handlers map to 400")
+		})
+	}
+}

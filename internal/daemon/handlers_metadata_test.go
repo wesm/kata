@@ -144,3 +144,34 @@ func TestPatchProjectMetadata_UnknownKey_400(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
+// TestPatchIssueMetadata_InvalidValueOnKnownKey_400 covers the validator path
+// where the key is registered but the value fails type-specific validation.
+// Validator errors must wrap metadata.ErrInvalidValue so the handler maps
+// them to 400 (not 500).
+func TestPatchIssueMetadata_InvalidValueOnKnownKey_400(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p, iss := seedProjectAndIssue(t, env)
+
+	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/metadata", env.URL, p.ID, iss.ShortID)
+	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
+	// "scheduled_on" is registered, but 123 is not a JSON string in YYYY-MM-DD.
+	resp := doPostWithIfMatch(t, env, url, `{"actor":"tester","patch":{"scheduled_on":123}}`, ifMatch)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestPatchProjectMetadata_InvalidValueOnKnownKey_400 mirrors the issue test
+// for project metadata: a value with the wrong JSON type must produce 400.
+func TestPatchProjectMetadata_InvalidValueOnKnownKey_400(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p, err := env.DB.CreateProject(t.Context(), "proj4")
+	require.NoError(t, err)
+
+	url := fmt.Sprintf("%s/api/v1/projects/%d/metadata", env.URL, p.ID)
+	ifMatch := fmt.Sprintf(`"rev-%d"`, p.Revision)
+	// "area" is TypeString — a number must be rejected as 400.
+	resp := doPostWithIfMatch(t, env, url, `{"actor":"tester","patch":{"area":123}}`, ifMatch)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
