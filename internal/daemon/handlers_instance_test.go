@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/testenv"
 	"github.com/wesm/kata/internal/uid"
 )
 
@@ -52,4 +54,31 @@ func TestInstance_503WhenUIDUnset(t *testing.T) {
 
 	resp, bs := getStatusBody(t, ts, "/api/v1/instance")
 	assertAPIError(t, resp.StatusCode, bs, http.StatusServiceUnavailable, "instance_uid_unset")
+}
+
+// TestInstanceEndpointReturnsVersionAndSchemaVersion covers spec §B4:
+// GET /api/v1/instance must surface the daemon's build version and the
+// database's schema_version alongside the instance UID so a connecting
+// spoke can decide whether it speaks the same wire/version contract.
+func TestInstanceEndpointReturnsVersionAndSchemaVersion(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("test-token"))
+
+	req, err := http.NewRequest(http.MethodGet, env.URL+"/api/v1/instance", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // test request to loopback URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var out struct {
+		InstanceUID   string `json:"instance_uid"`
+		Version       string `json:"version"`
+		SchemaVersion int64  `json:"schema_version"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	assert.NotEmpty(t, out.InstanceUID)
+	assert.NotEmpty(t, out.Version,
+		"version.Version must be populated even in dev builds")
+	assert.Equal(t, int64(db.CurrentSchemaVersion()), out.SchemaVersion)
 }

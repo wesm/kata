@@ -31,10 +31,14 @@ type HealthResponse struct {
 
 // InstanceResponse mirrors /api/v1/instance. Surfaces the local kata
 // installation's stable identifier so a future spoke client can discover the
-// peer it is connecting to.
+// peer it is connecting to. Version and SchemaVersion let the spoke decide
+// whether it speaks the same wire and storage contracts before issuing
+// further calls.
 type InstanceResponse struct {
 	Body struct {
-		InstanceUID string `json:"instance_uid"`
+		InstanceUID   string `json:"instance_uid"`
+		Version       string `json:"version"`
+		SchemaVersion int64  `json:"schema_version"`
 	}
 }
 
