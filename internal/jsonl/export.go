@@ -348,7 +348,10 @@ func exportRecurrences(ctx context.Context, d *db.DB, enc *Encoder, opts ExportO
 		args = append(args, opts.ProjectID)
 	}
 	if !opts.IncludeDeleted {
-		where = append(where, "deleted_at IS NULL")
+		where = append(where, `(deleted_at IS NULL
+		                        OR id IN (SELECT DISTINCT recurrence_id FROM issues
+		                                   WHERE recurrence_id IS NOT NULL
+		                                     AND deleted_at IS NULL))`)
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")

@@ -410,3 +410,77 @@ func TestExport_RecurrencesAppearBeforeIssuesInStream(t *testing.T) {
 	assert.Less(t, firstRecurrence, firstIssue,
 		"recurrence records must appear before issue records — issues reference recurrences via FK")
 }
+
+func TestExport_SoftDeletedRecurrenceReferencedByIssueIsIncluded(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, _ := srcDB.CreateProject(ctx, "p")
+
+	recUID := "REC00000000000000000000005"
+	res, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "x", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	recID, _ := res.LastInsertId()
+
+	// Live issue referencing the recurrence.
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "instance", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+		recID, "2026-05-11", iss.ID)
+	require.NoError(t, err)
+
+	// Soft-delete the recurrence directly.
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE recurrences SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		recID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf,
+		jsonl.ExportOptions{IncludeDeleted: false}))
+	assert.Contains(t, buf.String(), `"kind":"recurrence"`,
+		"soft-deleted recurrence referenced by a live issue must be included")
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+	var n int
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM issues WHERE recurrence_id IS NOT NULL`).Scan(&n))
+	assert.Equal(t, 1, n)
+}
+
+func TestExport_SoftDeletedRecurrenceWithNoLiveIssues_Excluded(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, _ := srcDB.CreateProject(ctx, "p")
+
+	recUID := "REC00000000000000000000006"
+	res, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "x", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	recID, _ := res.LastInsertId()
+
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE recurrences SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		recID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf,
+		jsonl.ExportOptions{IncludeDeleted: false}))
+	assert.NotContains(t, buf.String(), `"kind":"recurrence"`,
+		"soft-deleted recurrence with no live referrer must be excluded")
+}
