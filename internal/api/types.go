@@ -2,6 +2,7 @@
 package api //nolint:revive // package name "api" is fixed by Plan 1 §4 wire-types layout.
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/wesm/kata/internal/db"
@@ -861,3 +862,107 @@ type AuditClosesResponse struct {
 		Rows []AuditCloseRow `json:"rows"`
 	}
 }
+
+// RecurrenceTemplateInput is the JSON wire shape for the template fields
+// embedded in a CreateRecurrenceRequest. Mirrors db.RecurrenceTemplate but
+// stays in the api package so the public surface doesn't leak db-package
+// types into request bodies. Labels are accepted as a JSON array of strings;
+// metadata is an opaque JSON object.
+type RecurrenceTemplateInput struct {
+	Title    string          `json:"title" required:"true"`
+	Body     string          `json:"body,omitempty"`
+	Owner    *string         `json:"owner,omitempty"`
+	Priority *int64          `json:"priority,omitempty"`
+	Labels   []string        `json:"labels,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+}
+
+// CreateRecurrenceRequest is POST /api/v1/projects/{project_id}/recurrences.
+type CreateRecurrenceRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		Actor    string                  `json:"actor" required:"true"`
+		RRule    string                  `json:"rrule" required:"true"`
+		DTStart  string                  `json:"dtstart" required:"true"`
+		Timezone string                  `json:"timezone" required:"true"`
+		Template RecurrenceTemplateInput `json:"template"`
+	}
+}
+
+// CreateRecurrenceResponse returns the new recurrence row.
+type CreateRecurrenceResponse struct {
+	Body struct {
+		Recurrence db.Recurrence `json:"recurrence"`
+	}
+}
+
+// ListRecurrencesRequest is GET /api/v1/projects/{project_id}/recurrences.
+type ListRecurrencesRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+}
+
+// ListRecurrencesResponse wraps the recurrence list.
+type ListRecurrencesResponse struct {
+	Body struct {
+		Recurrences []db.Recurrence `json:"recurrences"`
+	}
+}
+
+// ShowRecurrenceRequest is GET /api/v1/projects/{project_id}/recurrences/{recurrence_uid}.
+type ShowRecurrenceRequest struct {
+	ProjectID     int64  `path:"project_id" required:"true"`
+	RecurrenceUID string `path:"recurrence_uid" required:"true"`
+}
+
+// ShowRecurrenceResponse returns a single recurrence row.
+type ShowRecurrenceResponse struct {
+	Body struct {
+		Recurrence db.Recurrence `json:"recurrence"`
+	}
+}
+
+// RecurrenceTemplateUpdateInput carries the partial-update shape for the
+// recurrence template. All fields are optional pointers; nil means "no change".
+type RecurrenceTemplateUpdateInput struct {
+	Title    *string          `json:"title,omitempty"`
+	Body     *string          `json:"body,omitempty"`
+	Owner    *string          `json:"owner,omitempty"`
+	Priority *int64           `json:"priority,omitempty"`
+	Labels   *[]string        `json:"labels,omitempty"`
+	Metadata *json.RawMessage `json:"metadata,omitempty"`
+}
+
+// PatchRecurrenceRequest is PATCH /api/v1/projects/{project_id}/recurrences/{recurrence_uid}.
+// If-Match is required and carries the current "rev-N" ETag for optimistic concurrency.
+type PatchRecurrenceRequest struct {
+	ProjectID     int64  `path:"project_id" required:"true"`
+	RecurrenceUID string `path:"recurrence_uid" required:"true"`
+	IfMatch       string `header:"If-Match"`
+	Body          struct {
+		Actor    string                         `json:"actor" required:"true"`
+		RRule    *string                        `json:"rrule,omitempty"`
+		DTStart  *string                        `json:"dtstart,omitempty"`
+		Timezone *string                        `json:"timezone,omitempty"`
+		Template *RecurrenceTemplateUpdateInput `json:"template,omitempty"`
+	}
+}
+
+// PatchRecurrenceResponse returns the patched recurrence and the new ETag.
+type PatchRecurrenceResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Recurrence db.Recurrence `json:"recurrence"`
+		Changed    bool          `json:"changed"`
+	}
+}
+
+// DeleteRecurrenceRequest is DELETE /api/v1/projects/{project_id}/recurrences/{recurrence_uid}.
+type DeleteRecurrenceRequest struct {
+	ProjectID     int64  `path:"project_id" required:"true"`
+	RecurrenceUID string `path:"recurrence_uid" required:"true"`
+	Actor         string `query:"actor" required:"true"`
+}
+
+// DeleteRecurrenceResponse is the 204 No Content envelope for soft-delete.
+// The 204 status is set via DefaultStatus in the huma.Operation; no body is returned.
+type DeleteRecurrenceResponse struct{}

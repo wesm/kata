@@ -195,6 +195,7 @@ func registerRoutes(humaAPI huma.API, mux *http.ServeMux, cfg ServerConfig) {
 	registerReady(humaAPI, cfg)
 	registerSearch(humaAPI, cfg)
 	registerDestructive(humaAPI, cfg)
+	registerRecurrences(humaAPI, cfg)
 	registerEventsHandlers(humaAPI, mux, cfg)
 	registerDigestHandlers(humaAPI, cfg)
 	registerAuditHandlers(humaAPI, cfg)
@@ -258,6 +259,11 @@ func registerSearch(humaAPI huma.API, cfg ServerConfig) {
 // registerDestructive registers /actions/delete, /actions/restore, /actions/purge.
 func registerDestructive(humaAPI huma.API, cfg ServerConfig) {
 	registerDestructiveHandlers(humaAPI, cfg)
+}
+
+// registerRecurrences registers the recurrence CRUD routes.
+func registerRecurrences(humaAPI huma.API, cfg ServerConfig) {
+	registerRecurrencesHandlers(humaAPI, cfg)
 }
 
 // validateActor returns a 400 validation error when actor is empty after
