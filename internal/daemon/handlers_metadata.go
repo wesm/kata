@@ -1,0 +1,68 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/db"
+	"github.com/wesm/kata/internal/metadata"
+)
+
+// registerMetadataHandlers installs the metadata patch routes.
+func registerMetadataHandlers(humaAPI huma.API, cfg ServerConfig) {
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "patchIssueMetadata",
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/issues/{ref}/metadata",
+	}, patchIssueMetadataHandler(cfg))
+}
+
+func patchIssueMetadataHandler(cfg ServerConfig) func(context.Context, *api.PatchIssueMetadataRequest) (*api.PatchIssueMetadataResponse, error) {
+	return func(ctx context.Context, in *api.PatchIssueMetadataRequest) (*api.PatchIssueMetadataResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
+		rev, err := parseIfMatchRevision(in.IfMatch)
+		if err != nil {
+			return nil, err
+		}
+		iss, err := activeIssueByRef(ctx, cfg.DB, in.ProjectID, in.Ref, db.IncludeDeletedNo)
+		if err != nil {
+			return nil, err
+		}
+		res, err := cfg.DB.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
+			IssueID:    iss.ID,
+			IfMatchRev: rev,
+			Actor:      in.Body.Actor,
+			Patch:      in.Body.Patch,
+		})
+		var conflict *db.RevisionConflictError
+		if errors.As(err, &conflict) {
+			return nil, api.NewError(412, "revision_conflict",
+				fmt.Sprintf("issue revision is %d", conflict.CurrentRevision), "", nil)
+		}
+		if errors.Is(err, metadata.ErrUnknownKey) {
+			return nil, api.NewError(400, "unknown_metadata_key", err.Error(), "", nil)
+		}
+		if errors.Is(err, metadata.ErrInvalidValue) {
+			return nil, api.NewError(400, "invalid_metadata_value", err.Error(), "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+
+		out := &api.PatchIssueMetadataResponse{}
+		out.ETag = fmt.Sprintf(`"rev-%d"`, res.NewRevision)
+		out.Body.Issue = res.Issue
+		out.Body.Changed = res.Changed
+		if res.Changed {
+			ev := res.Event
+			out.Body.Event = &ev
+		}
+		return out, nil
+	}
+}

@@ -967,6 +967,47 @@ type DeleteRecurrenceRequest struct {
 // The 204 status is set via DefaultStatus in the huma.Operation; no body is returned.
 type DeleteRecurrenceResponse struct{}
 
+// PatchIssueMetadataRequest is POST /api/v1/projects/{project_id}/issues/{ref}/metadata.
+type PatchIssueMetadataRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
+	IfMatch   string `header:"If-Match"`
+	Body      struct {
+		Actor string                     `json:"actor" required:"true"`
+		Patch map[string]json.RawMessage `json:"patch"`
+	}
+}
+
+// PatchIssueMetadataResponse is the response for POST .../issues/{ref}/metadata.
+type PatchIssueMetadataResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Issue   db.Issue  `json:"issue"`
+		Event   *db.Event `json:"event,omitempty"`
+		Changed bool      `json:"changed"`
+	}
+}
+
+// PatchProjectMetadataRequest is POST /api/v1/projects/{project_id}/metadata.
+type PatchProjectMetadataRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	IfMatch   string `header:"If-Match"`
+	Body      struct {
+		Actor string                     `json:"actor" required:"true"`
+		Patch map[string]json.RawMessage `json:"patch"`
+	}
+}
+
+// PatchProjectMetadataResponse is the response for POST .../projects/{project_id}/metadata.
+type PatchProjectMetadataResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Project db.Project `json:"project"`
+		Event   *db.Event  `json:"event,omitempty"`
+		Changed bool       `json:"changed"`
+	}
+}
+
 // Whitelisted issue metadata keys (mirrors internal/metadata.IssueRegistry).
 const (
 	MetadataKeyScheduledOn = "scheduled_on"
