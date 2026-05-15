@@ -41,11 +41,26 @@ func WithCloseThrottleDisabled() Option {
 }
 
 // WithAuthToken tells the test daemon to enforce bearer-token auth with the
-// given token. Tests must set the Authorization header on every request
-// except /ping and /health.
+// given token. Tests using env.HTTP directly must set the Authorization
+// header on every request except /ping and /health. Tests that drive the
+// daemonclient package (or any helper built on top of it) get the header
+// for free because the option also exports KATA_AUTH_TOKEN into the test
+// process so client-side construction resolves the same token via
+// daemonclient.NewHTTPClient.
 func WithAuthToken(token string) Option {
 	return func(cfg *daemon.ServerConfig) {
 		cfg.Auth.Token = token
+	}
+}
+
+// applyClientAuthEnv mirrors the WithAuthToken value into the
+// KATA_AUTH_TOKEN env var inside the test process so any in-process
+// daemonclient construction picks the token up automatically. Called by
+// New / NewFromDB after options are folded into cfg.
+func applyClientAuthEnv(t *testing.T, cfg daemon.ServerConfig) {
+	t.Helper()
+	if cfg.Auth.Token != "" {
+		t.Setenv("KATA_AUTH_TOKEN", cfg.Auth.Token)
 	}
 }
 
@@ -128,6 +143,7 @@ func serveDaemon(t *testing.T, d *db.DB, opts ...Option) (string, *http.Client, 
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	applyClientAuthEnv(t, cfg)
 	srv := daemon.NewServer(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())

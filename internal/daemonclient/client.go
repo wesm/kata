@@ -136,7 +136,23 @@ type Opts struct {
 // with the URL returned by Discover/EnsureRunning. We re-scan and re-probe
 // runtime files for unix endpoints so a stale record listed before a live
 // one cannot redirect us to a dead socket.
+//
+// When KATA_AUTH_TOKEN or [auth].token in <KATA_HOME>/config.toml is set,
+// the returned client transparently attaches Authorization: Bearer <token>
+// to every outgoing request via a wrapping RoundTripper. This matches the
+// daemon's bearer-auth middleware so token-protected daemons stay usable
+// from the first-party CLI/TUI without callers having to plumb the header
+// through every request site.
 func NewHTTPClient(ctx context.Context, baseURL string, opts Opts) (*http.Client, error) {
+	c, err := newHTTPClientWithoutAuth(ctx, baseURL, opts)
+	if err != nil {
+		return nil, err
+	}
+	c.Transport = withBearer(c.Transport, resolveAuthToken())
+	return c, nil
+}
+
+func newHTTPClientWithoutAuth(ctx context.Context, baseURL string, opts Opts) (*http.Client, error) {
 	if !strings.HasPrefix(baseURL, UnixBase) {
 		return tcpClient(opts)
 	}
