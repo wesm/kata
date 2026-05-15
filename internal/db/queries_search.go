@@ -105,6 +105,7 @@ func (d *DB) searchFTS(ctx context.Context, r searchFTSReq) ([]SearchCandidate, 
 	query := fmt.Sprintf(`
 		SELECT i.id, i.project_id, i.short_id, i.title, i.body, i.status,
 		       i.closed_reason, i.owner, i.priority, i.author, i.metadata, i.revision,
+		       i.recurrence_id, i.occurrence_key,
 		       i.created_at, i.updated_at, i.closed_at, i.deleted_at,
 		       bm25(issues_fts),
 		       (issues_fts.rowid IN (SELECT rowid FROM issues_fts WHERE title    MATCH ?)) AS in_title,
@@ -137,6 +138,7 @@ func (d *DB) searchFTS(ctx context.Context, r searchFTSReq) ([]SearchCandidate, 
 		)
 		if err := rows.Scan(&i.ID, &i.ProjectID, &i.ShortID, &i.Title, &i.Body, &i.Status,
 			&i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.Metadata, &i.Revision,
+			&i.RecurrenceID, &i.OccurrenceKey,
 			&i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt,
 			&rawScore, &inTitle, &inBody, &inComments); err != nil {
 			return nil, fmt.Errorf("scan search row: %w", err)

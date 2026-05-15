@@ -82,3 +82,29 @@ func TestEventsOriginSeqPartialIndexAllowsMultipleNulls(t *testing.T) {
 	require.NoError(t, insertWithNullSeq(),
 		"two NULL origin_seq rows must be allowed by the partial index")
 }
+
+func TestRecurrencesTableAndIssueLinkage(t *testing.T) {
+	d, ctx, p, _ := setupTestIssue(t)
+
+	_, err := d.ExecContext(ctx, `INSERT INTO recurrences
+        (uid, project_id, rrule, dtstart, timezone, template_title, author)
+        VALUES ('01J0000000000000000000REC1', ?, 'FREQ=WEEKLY', '2026-05-15',
+                'America/New_York', 'Pay rent', 'tester')`, p.ID)
+	require.NoError(t, err)
+
+	// recurrence_id + occurrence_key columns exist on issues
+	var n int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('issues')
+           WHERE name IN ('recurrence_id','occurrence_key')`,
+	).Scan(&n))
+	assert.Equal(t, 2, n)
+
+	// unique index exists
+	var idxn int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master
+           WHERE type='index' AND name='issues_recurrence_occurrence_uniq'`,
+	).Scan(&idxn))
+	assert.Equal(t, 1, idxn)
+}

@@ -40,24 +40,26 @@ type ProjectAlias struct {
 // Issue mirrors a row in issues. Priority is 0..4 with 0 = highest priority
 // and 4 = lowest; nil means no priority is set.
 type Issue struct {
-	ID           int64      `json:"id"`
-	UID          string     `json:"uid"`
-	ProjectID    int64      `json:"project_id"`
-	ProjectUID   string     `json:"project_uid,omitempty"`
-	ShortID      string     `json:"short_id"`
-	Title        string     `json:"title"`
-	Body         string     `json:"body"`
-	Status       string     `json:"status"`
-	ClosedReason *string    `json:"closed_reason,omitempty"`
-	Owner        *string    `json:"owner,omitempty"`
-	Priority     *int64     `json:"priority,omitempty"`
-	Author       string     `json:"author"`
-	Metadata     string     `json:"metadata"`
-	Revision     int64      `json:"revision"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	ClosedAt     *time.Time `json:"closed_at,omitempty"`
-	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
+	ID            int64      `json:"id"`
+	UID           string     `json:"uid"`
+	ProjectID     int64      `json:"project_id"`
+	ProjectUID    string     `json:"project_uid,omitempty"`
+	ShortID       string     `json:"short_id"`
+	Title         string     `json:"title"`
+	Body          string     `json:"body"`
+	Status        string     `json:"status"`
+	ClosedReason  *string    `json:"closed_reason,omitempty"`
+	Owner         *string    `json:"owner,omitempty"`
+	Priority      *int64     `json:"priority,omitempty"`
+	Author        string     `json:"author"`
+	Metadata      string     `json:"metadata"`
+	Revision      int64      `json:"revision"`
+	RecurrenceID  *int64     `json:"recurrence_id,omitempty"`
+	OccurrenceKey *string    `json:"occurrence_key,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	ClosedAt      *time.Time `json:"closed_at,omitempty"`
+	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
 }
 
 // Comment mirrors a row in comments.
@@ -113,6 +115,35 @@ type IssueLabel struct {
 	Label     string    `json:"label"`
 	Author    string    `json:"author"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// Recurrence mirrors a row in recurrences. Each row carries the RRULE plus
+// the issue template fields (title, body, owner, priority, labels, metadata)
+// used when materializing each occurrence into a concrete issues row. The
+// link is closed by issues.recurrence_id + issues.occurrence_key, whose
+// partial unique index guarantees one materialized issue per occurrence.
+type Recurrence struct {
+	ID               int64   `json:"id"`
+	UID              string  `json:"uid"`
+	ProjectID        int64   `json:"project_id"`
+	RRule            string  `json:"rrule"`
+	DTStart          string  `json:"dtstart"`
+	Timezone         string  `json:"timezone"`
+	TemplateTitle    string  `json:"template_title"`
+	TemplateBody     string  `json:"template_body"`
+	TemplateOwner    *string `json:"template_owner,omitempty"`
+	TemplatePriority *int64  `json:"template_priority,omitempty"`
+	// TemplateLabels and TemplateMetadata are stored as JSON-encoded text;
+	// callers decode into typed shapes themselves.
+	TemplateLabels      string     `json:"template_labels"`
+	TemplateMetadata    string     `json:"template_metadata"`
+	NextOccurrenceKey   *string    `json:"next_occurrence_key,omitempty"`
+	LastMaterializedUID *string    `json:"last_materialized_uid,omitempty"`
+	Author              string     `json:"author"`
+	Revision            int64      `json:"revision"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
 }
 
 // LabelCount is the per-label aggregate returned by LabelCounts.
