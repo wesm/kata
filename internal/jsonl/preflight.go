@@ -7,6 +7,14 @@ import (
 	"github.com/wesm/kata/internal/db"
 )
 
+// knownOrphanClasses is the ordered list of child tables whose
+// orphans cutover knows how to handle, used for the cutover stderr
+// summary's display order. Keep this in sync with the classifyKnownOrphan
+// switch below: every table here must have at least one drop or scrub
+// case there, and every table classifyKnownOrphan handles must appear
+// here. The order is the order classes are listed in the summary line.
+var knownOrphanClasses = []string{"events", "comments", "links", "issue_labels"}
+
 // OrphanReport is the result of preflighting a source DB before
 // cutover. DroppedRowsByTable and ScrubbedRowsByTable are keyed by
 // child-table name; values are the set of rowids in each
@@ -39,8 +47,9 @@ const (
 
 // classifyKnownOrphan returns dispositionDrop or dispositionScrub
 // for known issue-child orphan classes, or dispositionUnknown
-// otherwise. Keep this in sync with the disposition table in the
-// design doc and with the export-side scrub logic in export.go.
+// otherwise. Keep this in sync with knownOrphanClasses above, with
+// the disposition table in the design doc, and with the export-side
+// scrub logic in export.go.
 func classifyKnownOrphan(table, parent, column string) orphanDisposition {
 	if parent != "issues" {
 		return dispositionUnknown

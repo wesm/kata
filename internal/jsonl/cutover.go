@@ -138,7 +138,9 @@ func importCutoverTarget(ctx context.Context, tmpJSONL, tmpDB string) error {
 // included — scrubs preserve the row, so reporting them as
 // "discarded" would mislead.
 func formatOrphanSummary(report OrphanReport) string {
-	classes := []string{"events", "comments", "links", "issue_labels"}
+	// classes is sourced from preflight.go's knownOrphanClasses so the
+	// cutover summary stays in sync with the preflight classifier.
+	classes := knownOrphanClasses
 	var parts []string
 	total := 0
 	for _, c := range classes {

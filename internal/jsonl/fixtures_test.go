@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -387,6 +388,8 @@ func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 // the duration of the test. The returned restore function reverts
 // os.Stderr and copies any pending pipe data into the buffer.
 // Use the buffer (not the restore return value) for assertions.
+// A t.Cleanup guard ensures restore runs even if the test panics
+// or calls t.Fatal before the manual restore call.
 func captureStderr(t *testing.T) (*bytes.Buffer, func() *bytes.Buffer) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -399,11 +402,16 @@ func captureStderr(t *testing.T) (*bytes.Buffer, func() *bytes.Buffer) {
 		_, _ = buf.ReadFrom(r)
 		close(done)
 	}()
-	return buf, func() *bytes.Buffer {
-		os.Stderr = original
-		_ = w.Close()
-		<-done
-		_ = r.Close()
+	var once sync.Once
+	restore := func() *bytes.Buffer {
+		once.Do(func() {
+			os.Stderr = original
+			_ = w.Close()
+			<-done
+			_ = r.Close()
+		})
 		return buf
 	}
+	t.Cleanup(func() { _ = restore() })
+	return buf, restore
 }

@@ -177,7 +177,7 @@ func TestAutoCutover_PrintsOrphanSummary(t *testing.T) {
 
 	stderr, restore := captureStderr(t)
 	err := jsonl.AutoCutover(ctx, path)
-	captured := restore()
+	_ = restore()
 	require.NoError(t, err)
 
 	// 1 dropped event + 2 dropped comments + 2 dropped links +
@@ -185,7 +185,6 @@ func TestAutoCutover_PrintsOrphanSummary(t *testing.T) {
 	// scrubbed, not dropped, and is excluded from the summary.
 	expected := "kata cutover: discarded 6 orphan rows from old DB (events: 1, comments: 2, links: 2, issue_labels: 1)\n"
 	assert.Equal(t, expected, stderr.String())
-	_ = captured
 }
 
 // TestAutoCutover_NoSummaryWhenClean: no stderr output when the
