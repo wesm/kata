@@ -227,6 +227,10 @@ func runDaemonWithListen(ctx context.Context, listen string, insecureReadonly bo
 	}
 	defer func() { _ = store.Close() }()
 
+	if _, err := daemon.EnsureInbox(ctx, store); err != nil {
+		return fmt.Errorf("ensure Inbox project: %w", err)
+	}
+
 	disp, daemonLog, hookCfgPath, err := setupHooks(store, dbPath)
 	if err != nil {
 		return err
