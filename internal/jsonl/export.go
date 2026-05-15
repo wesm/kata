@@ -1153,10 +1153,14 @@ func eventExportWhereClauses(opts ExportOptions) ([]string, []any) {
 		// kata#1 design call: aggregated issue.links_changed events
 		// retain related_issue_id pointing at a soft-deleted peer
 		// so historical context survives. Per-link issue.linked /
-		// issue.unlinked events still drop via related_issue_id.
+		// issue.unlinked events still drop via related_issue_id when
+		// the peer is *soft-deleted* — but a fully-missing peer
+		// (orphan FK) must pass through to the SELECT-side CASE
+		// scrub so the event survives with NULL related fields,
+		// matching the issue_id-orphan behavior.
 		clauses = append(clauses,
 			`(events.issue_id IS NULL OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.issue_id AND issues.deleted_at IS NULL))`,
-			`(events.related_issue_id IS NULL OR events.type = 'issue.links_changed' OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.related_issue_id AND issues.deleted_at IS NULL))`,
+			`(events.related_issue_id IS NULL OR events.type = 'issue.links_changed' OR NOT EXISTS (SELECT 1 FROM issues WHERE issues.id = events.related_issue_id AND issues.deleted_at IS NOT NULL))`,
 		)
 	}
 	return clauses, args
