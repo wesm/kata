@@ -168,3 +168,82 @@ func TestCloseDone_MetadataContainsScheduledOn(t *testing.T) {
 	assert.Contains(t, metadata, `"scheduled_on"`)
 	assert.Contains(t, metadata, "2026-05-18")
 }
+
+func TestMaterializeNext_UniqueConflict_SkipsAndAdvancesCursor(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "x"},
+	})
+	require.NoError(t, err)
+	// Pre-seed the next instance for 2026-05-18 directly to force a UNIQUE conflict.
+	_, existingUID := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-18", "x")
+
+	tx, err := d.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	out, err := d.MaterializeNext(ctx, tx, rec.ID, "2026-05-11", "tester")
+	require.NoError(t, err)
+	assert.True(t, out.Skipped, "should report skipped on UNIQUE conflict")
+	assert.Equal(t, "2026-05-18", out.OccurrenceKey)
+	assert.Equal(t, existingUID, out.NewIssueUID, "out.NewIssueUID should reflect the existing row")
+	require.NoError(t, tx.Commit())
+
+	// Cursor advanced PAST the duplicate.
+	var nextKey *string
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT next_occurrence_key FROM recurrences WHERE id = ?`, rec.ID,
+	).Scan(&nextKey))
+	require.NotNil(t, nextKey, "next_occurrence_key must be set after a conflict skip")
+	assert.Equal(t, "2026-05-25", *nextKey,
+		"cursor must advance past the duplicate (2026-05-18) to 2026-05-25")
+
+	// Skipped event emitted exactly once with the expected payload shape.
+	var n int
+	var payload string
+	require.NoError(t, d.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(MAX(payload), '') FROM events
+		 WHERE type='recurrence.materialization_skipped'`,
+	).Scan(&n, &payload))
+	assert.Equal(t, 1, n)
+	assert.Contains(t, payload, `"recurrence_uid":"`+rec.UID+`"`)
+	assert.Contains(t, payload, `"occurrence_key":"2026-05-18"`)
+	assert.Contains(t, payload, `"existing_issue_uid":"`+existingUID+`"`)
+	assert.Contains(t, payload, `"reason":"already_exists"`)
+}
+
+func TestMaterializeNext_AfterConflict_NoRegressionOnReplay(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "x"},
+	})
+	require.NoError(t, err)
+	seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-18", "x")
+
+	// First call: hits the conflict, advances cursor to 2026-05-25.
+	tx1, err := d.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	out1, err := d.MaterializeNext(ctx, tx1, rec.ID, "2026-05-11", "tester")
+	require.NoError(t, err)
+	assert.True(t, out1.Skipped)
+	require.NoError(t, tx1.Commit())
+
+	// Second call walks from afterKey=2026-05-18, finds 2026-05-25 — cleanly materializes.
+	tx2, err := d.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	out2, err := d.MaterializeNext(ctx, tx2, rec.ID, "2026-05-18", "tester")
+	require.NoError(t, err)
+	require.NoError(t, tx2.Commit())
+	assert.False(t, out2.Skipped, "second call must materialize cleanly, not re-conflict")
+	assert.Equal(t, "2026-05-25", out2.OccurrenceKey)
+	assert.NotZero(t, out2.NewIssueID)
+}
