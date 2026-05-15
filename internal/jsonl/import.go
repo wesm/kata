@@ -190,6 +190,31 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, rec.ProjectID, rec.AliasIdentity, rec.AliasKind, rec.RootPath, rec.CreatedAt, rec.LastSeenAt)
 		return wrapImportErr(env.Kind, err)
+	case KindRecurrence:
+		var rec recurrenceRecord
+		if err := decodeData(env, &rec); err != nil {
+			return err
+		}
+		if len(rec.TemplateLabels) == 0 {
+			rec.TemplateLabels = json.RawMessage(`[]`)
+		}
+		if len(rec.TemplateMetadata) == 0 {
+			rec.TemplateMetadata = json.RawMessage(`{}`)
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO recurrences
+			   (id, uid, project_id, rrule, dtstart, timezone,
+			    template_title, template_body, template_owner, template_priority,
+			    template_labels, template_metadata,
+			    next_occurrence_key, last_materialized_uid,
+			    author, revision, created_at, updated_at, deleted_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.ProjectID, rec.RRule, rec.DTStart, rec.Timezone,
+			rec.TemplateTitle, rec.TemplateBody, rec.TemplateOwner, rec.TemplatePriority,
+			string(rec.TemplateLabels), string(rec.TemplateMetadata),
+			rec.NextOccurrenceKey, rec.LastMaterializedUID,
+			rec.Author, rec.Revision, rec.CreatedAt, rec.UpdatedAt, rec.DeletedAt)
+		return wrapImportErr(env.Kind, err)
 	case KindIssue:
 		var rec issueRecord
 		if err := decodeData(env, &rec); err != nil {
@@ -536,6 +561,28 @@ type projectAliasRecord struct {
 	RootPath      string `json:"root_path"`
 	CreatedAt     string `json:"created_at"`
 	LastSeenAt    string `json:"last_seen_at"`
+}
+
+type recurrenceRecord struct {
+	ID                  int64           `json:"id"`
+	UID                 string          `json:"uid"`
+	ProjectID           int64           `json:"project_id"`
+	RRule               string          `json:"rrule"`
+	DTStart             string          `json:"dtstart"`
+	Timezone            string          `json:"timezone"`
+	TemplateTitle       string          `json:"template_title"`
+	TemplateBody        string          `json:"template_body"`
+	TemplateOwner       *string         `json:"template_owner,omitempty"`
+	TemplatePriority    *int64          `json:"template_priority,omitempty"`
+	TemplateLabels      json.RawMessage `json:"template_labels"`
+	TemplateMetadata    json.RawMessage `json:"template_metadata"`
+	NextOccurrenceKey   *string         `json:"next_occurrence_key,omitempty"`
+	LastMaterializedUID *string         `json:"last_materialized_uid,omitempty"`
+	Author              string          `json:"author"`
+	Revision            int64           `json:"revision"`
+	CreatedAt           string          `json:"created_at"`
+	UpdatedAt           string          `json:"updated_at"`
+	DeletedAt           *string         `json:"deleted_at,omitempty"`
 }
 
 type issueRecord struct {

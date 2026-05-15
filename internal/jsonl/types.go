@@ -14,6 +14,7 @@ const (
 	KindMeta           Kind = "meta"
 	KindProject        Kind = "project"
 	KindProjectAlias   Kind = "project_alias"
+	KindRecurrence     Kind = "recurrence"
 	KindIssue          Kind = "issue"
 	KindComment        Kind = "comment"
 	KindIssueLabel     Kind = "issue_label"
@@ -35,14 +36,15 @@ var kindOrder = map[Kind]int{
 	KindMeta:           0,
 	KindProject:        1,
 	KindProjectAlias:   2,
-	KindIssue:          3,
-	KindComment:        4,
-	KindIssueLabel:     5,
-	KindLink:           6,
-	KindImportMapping:  7,
-	KindEvent:          8,
-	KindPurgeLog:       9,
-	KindSQLiteSequence: 10,
+	KindRecurrence:     3,
+	KindIssue:          4,
+	KindComment:        5,
+	KindIssueLabel:     6,
+	KindLink:           7,
+	KindImportMapping:  8,
+	KindEvent:          9,
+	KindPurgeLog:       10,
+	KindSQLiteSequence: 11,
 }
 
 // Envelope is one NDJSON record.

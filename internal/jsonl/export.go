@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/wesm/kata/internal/db"
 )
@@ -40,6 +41,11 @@ func Export(ctx context.Context, d *db.DB, w io.Writer, opts ExportOptions) erro
 	}
 	if err := exportProjectAliases(ctx, d, enc, opts); err != nil {
 		return err
+	}
+	if sourceSchemaVersion >= 10 {
+		if err := exportRecurrences(ctx, d, enc, opts); err != nil {
+			return err
+		}
 	}
 	if err := exportIssues(ctx, d, enc, opts, sourceSchemaVersion); err != nil {
 		return err
@@ -302,6 +308,79 @@ func exportProjectAliases(ctx context.Context, d *db.DB, enc *Encoder, opts Expo
 		err := rows.Scan(&rec.ID, &rec.ProjectID, &rec.AliasIdentity, &rec.AliasKind,
 			&rec.RootPath, &rec.CreatedAt, &rec.LastSeenAt)
 		return rec, err
+	})
+}
+
+func exportRecurrences(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+	type record struct {
+		ID                  int64           `json:"id"`
+		UID                 string          `json:"uid"`
+		ProjectID           int64           `json:"project_id"`
+		RRule               string          `json:"rrule"`
+		DTStart             string          `json:"dtstart"`
+		Timezone            string          `json:"timezone"`
+		TemplateTitle       string          `json:"template_title"`
+		TemplateBody        string          `json:"template_body"`
+		TemplateOwner       *string         `json:"template_owner,omitempty"`
+		TemplatePriority    *int64          `json:"template_priority,omitempty"`
+		TemplateLabels      json.RawMessage `json:"template_labels"`
+		TemplateMetadata    json.RawMessage `json:"template_metadata"`
+		NextOccurrenceKey   *string         `json:"next_occurrence_key,omitempty"`
+		LastMaterializedUID *string         `json:"last_materialized_uid,omitempty"`
+		Author              string          `json:"author"`
+		Revision            int64           `json:"revision"`
+		CreatedAt           string          `json:"created_at"`
+		UpdatedAt           string          `json:"updated_at"`
+		DeletedAt           *string         `json:"deleted_at,omitempty"`
+	}
+	query := `SELECT id, uid, project_id, rrule, dtstart, timezone,
+	                 template_title, template_body, template_owner, template_priority,
+	                 template_labels, template_metadata,
+	                 next_occurrence_key, last_materialized_uid,
+	                 author, revision,
+	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
+	                 CAST(deleted_at AS TEXT)
+	          FROM recurrences`
+	var where []string
+	var args []any
+	if opts.ProjectID > 0 {
+		where = append(where, "project_id = ?")
+		args = append(args, opts.ProjectID)
+	}
+	if !opts.IncludeDeleted {
+		where = append(where, "deleted_at IS NULL")
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY id ASC"
+
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export recurrences: %w", err)
+	}
+	return scanRecords(rows, KindRecurrence, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var labels, metadata string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.RRule, &rec.DTStart,
+			&rec.Timezone, &rec.TemplateTitle, &rec.TemplateBody,
+			&rec.TemplateOwner, &rec.TemplatePriority,
+			&labels, &metadata,
+			&rec.NextOccurrenceKey, &rec.LastMaterializedUID,
+			&rec.Author, &rec.Revision,
+			&rec.CreatedAt, &rec.UpdatedAt, &rec.DeletedAt)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(labels)) {
+			return rec, fmt.Errorf("recurrence %d template_labels is invalid JSON", rec.ID)
+		}
+		if !json.Valid([]byte(metadata)) {
+			return rec, fmt.Errorf("recurrence %d template_metadata is invalid JSON", rec.ID)
+		}
+		rec.TemplateLabels = json.RawMessage(labels)
+		rec.TemplateMetadata = json.RawMessage(metadata)
+		return rec, nil
 	})
 }
 

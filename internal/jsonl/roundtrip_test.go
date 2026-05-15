@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -266,4 +267,72 @@ func TestImport_OldExportWithoutOriginSeq_LeavesNullOrDefaults(t *testing.T) {
 		assert.Equal(t, id, origSeq.Int64,
 			"if origin_seq is stamped on import, it must equal event id")
 	}
+}
+
+func TestRoundtrip_RecurrenceFullFields(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"REC00000000000000000000001", p.ID, "FREQ=WEEKLY;BYDAY=MO", "2026-05-11",
+		"America/New_York", "Weekly review", "What got done?",
+		`["chore","weekly"]`, `{}`, "tester")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var rule, dtstart, tz, title, labels string
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT rrule, dtstart, timezone, template_title, template_labels
+		   FROM recurrences LIMIT 1`,
+	).Scan(&rule, &dtstart, &tz, &title, &labels))
+	assert.Equal(t, "FREQ=WEEKLY;BYDAY=MO", rule)
+	assert.Equal(t, "2026-05-11", dtstart)
+	assert.Equal(t, "America/New_York", tz)
+	assert.Equal(t, "Weekly review", title)
+	assert.JSONEq(t, `["chore","weekly"]`, labels)
+}
+
+func TestExport_RecurrencesAppearBeforeIssuesInStream(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	_, _, err = srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"REC00000000000000000000002", p.ID, "FREQ=WEEKLY", "2026-05-11",
+		"UTC", "x", "tester")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	lines := strings.Split(buf.String(), "\n")
+	firstRecurrence, firstIssue := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, `"kind":"recurrence"`) && firstRecurrence == -1 {
+			firstRecurrence = i
+		}
+		if strings.Contains(l, `"kind":"issue"`) && firstIssue == -1 {
+			firstIssue = i
+		}
+	}
+	require.NotEqual(t, -1, firstRecurrence)
+	require.NotEqual(t, -1, firstIssue)
+	assert.Less(t, firstRecurrence, firstIssue,
+		"recurrence records must appear before issue records — issues reference recurrences via FK")
 }
