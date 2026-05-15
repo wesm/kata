@@ -647,24 +647,27 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	// from the export — so the FK must be scrubbed at emit time so the
 	// JSONL round-trips. The payload's *_uids slices retain the orphan
 	// reference for historical context.
-	relatedIDExpr, relatedUIDExpr := "events.related_issue_id", "events.related_issue_uid"
+	//
+	// Scrub related_issue_id when the peer is missing entirely
+	// (any event type) OR, on live-only export, when an
+	// issue.links_changed peer is soft-deleted (kata#1 history-
+	// preservation rule). Peer-missing must be checked first so
+	// `peer.deleted_at` doesn't dereference a NULL row.
+	scrubCondition := `(peer.id IS NULL AND events.related_issue_id IS NOT NULL)`
 	if !opts.IncludeDeleted {
-		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
-		                          AND peer.deleted_at IS NOT NULL
-		                     THEN NULL
-		                     ELSE events.related_issue_id END`
-		relatedUIDExpr = `CASE WHEN events.type = 'issue.links_changed'
-		                           AND peer.deleted_at IS NOT NULL
-		                      THEN NULL
-		                      ELSE events.related_issue_uid END`
+		scrubCondition += ` OR (events.type = 'issue.links_changed' AND peer.deleted_at IS NOT NULL)`
 	}
+	relatedIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_id END`
+	relatedUIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_uid END`
 	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.project_id, %s, events.issue_id, events.issue_uid,
 	                 `+relatedIDExpr+`, `+relatedUIDExpr+`,
 	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
 	          FROM events%s
+	          LEFT JOIN issues subject_issue ON subject_issue.id = events.issue_id
 	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
-	where, args := eventExportWhere(opts)
-	query += where + ` ORDER BY events.id ASC`
+	clauses, args := eventExportWhereClauses(opts)
+	clauses = append([]string{`(events.issue_id IS NULL OR subject_issue.id IS NOT NULL)`}, clauses...)
+	query += whereClause(clauses) + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
@@ -705,24 +708,21 @@ func exportEventsV3(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		Payload           json.RawMessage `json:"payload"`
 		CreatedAt         string          `json:"created_at"`
 	}
-	relatedIDExpr, relatedUIDExpr := "events.related_issue_id", "events.related_issue_uid"
+	scrubCondition := `(peer.id IS NULL AND events.related_issue_id IS NOT NULL)`
 	if !opts.IncludeDeleted {
-		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
-		                          AND peer.deleted_at IS NOT NULL
-		                     THEN NULL
-		                     ELSE events.related_issue_id END`
-		relatedUIDExpr = `CASE WHEN events.type = 'issue.links_changed'
-		                           AND peer.deleted_at IS NOT NULL
-		                      THEN NULL
-		                      ELSE events.related_issue_uid END`
+		scrubCondition += ` OR (events.type = 'issue.links_changed' AND peer.deleted_at IS NOT NULL)`
 	}
+	relatedIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_id END`
+	relatedUIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_uid END`
 	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.project_id, %s, events.issue_id, events.issue_uid,
 	                 events.issue_number, `+relatedIDExpr+`, `+relatedUIDExpr+`,
 	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
 	          FROM events%s
+	          LEFT JOIN issues subject_issue ON subject_issue.id = events.issue_id
 	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
-	where, args := eventExportWhere(opts)
-	query += where + ` ORDER BY events.id ASC`
+	clauses, args := eventExportWhereClauses(opts)
+	clauses = append([]string{`(events.issue_id IS NULL OR subject_issue.id IS NOT NULL)`}, clauses...)
+	query += whereClause(clauses) + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
@@ -767,24 +767,21 @@ func exportEventsV2(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	// JSONL round-trips. The payload's *_uids slices retain the orphan
 	// UID for historical context. include_deleted=true exports both
 	// sides, so the FK roundtrips fine — leave the columns alone there.
-	relatedIDExpr, relatedUIDExpr := "events.related_issue_id", "events.related_issue_uid"
+	scrubCondition := `(peer.id IS NULL AND events.related_issue_id IS NOT NULL)`
 	if !opts.IncludeDeleted {
-		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
-		                          AND peer.deleted_at IS NOT NULL
-		                     THEN NULL
-		                     ELSE events.related_issue_id END`
-		relatedUIDExpr = `CASE WHEN events.type = 'issue.links_changed'
-		                           AND peer.deleted_at IS NOT NULL
-		                      THEN NULL
-		                      ELSE events.related_issue_uid END`
+		scrubCondition += ` OR (events.type = 'issue.links_changed' AND peer.deleted_at IS NOT NULL)`
 	}
+	relatedIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_id END`
+	relatedUIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_uid END`
 	query := fmt.Sprintf(`SELECT events.id, events.project_id, %s, events.issue_id, events.issue_uid,
 	                 events.issue_number, `+relatedIDExpr+`, `+relatedUIDExpr+`,
 	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
 	          FROM events%s
+	          LEFT JOIN issues subject_issue ON subject_issue.id = events.issue_id
 	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
-	where, args := eventExportWhere(opts)
-	query += where + ` ORDER BY events.id ASC`
+	clauses, args := eventExportWhereClauses(opts)
+	clauses = append([]string{`(events.issue_id IS NULL OR subject_issue.id IS NOT NULL)`}, clauses...)
+	query += whereClause(clauses) + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
@@ -821,20 +818,20 @@ func exportEventsV1(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	}
 	// See exportEventsV2 above for why aggregated issue.links_changed
 	// events on a soft-deleted peer get their related_issue_id scrubbed
-	// in live-only exports.
-	relatedIDExpr := "events.related_issue_id"
+	// in live-only exports. V1 has no related_issue_uid column.
+	scrubCondition := `(peer.id IS NULL AND events.related_issue_id IS NOT NULL)`
 	if !opts.IncludeDeleted {
-		relatedIDExpr = `CASE WHEN events.type = 'issue.links_changed'
-		                          AND peer.deleted_at IS NOT NULL
-		                     THEN NULL
-		                     ELSE events.related_issue_id END`
+		scrubCondition += ` OR (events.type = 'issue.links_changed' AND peer.deleted_at IS NOT NULL)`
 	}
+	relatedIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_id END`
 	query := fmt.Sprintf(`SELECT events.id, events.project_id, %s, events.issue_id, events.issue_number,
 	                 `+relatedIDExpr+`, events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
 	          FROM events%s
+	          LEFT JOIN issues subject_issue ON subject_issue.id = events.issue_id
 	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
-	where, args := eventExportWhere(opts)
-	query += where + ` ORDER BY events.id ASC`
+	clauses, args := eventExportWhereClauses(opts)
+	clauses = append([]string{`(events.issue_id IS NULL OR subject_issue.id IS NOT NULL)`}, clauses...)
+	query += whereClause(clauses) + ` ORDER BY events.id ASC`
 	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("export events: %w", err)
@@ -1139,7 +1136,7 @@ func linkExportWhere(opts ExportOptions) (string, []any) {
 	return whereClause(clauses), args
 }
 
-func eventExportWhere(opts ExportOptions) (string, []any) {
+func eventExportWhereClauses(opts ExportOptions) ([]string, []any) {
 	clauses := []string{}
 	args := []any{}
 	if opts.ProjectID > 0 {
@@ -1147,27 +1144,17 @@ func eventExportWhere(opts ExportOptions) (string, []any) {
 		args = append(args, opts.ProjectID)
 	}
 	if !opts.IncludeDeleted {
-		// Drop events whose issue_id refers to a soft-deleted issue,
-		// and events whose related_issue_id refers to a soft-deleted
-		// issue EXCEPT for aggregated issue.links_changed events. Per
-		// Jesse's design call on kata#1, soft-deleting a peer must not
-		// erase the historical context that another live issue was
-		// once linked to it. Aggregated events on a surviving issue
-		// are preserved regardless of whether iteration-16's envelope-
-		// peer fix populated related_issue_id (single-peer edit) or
-		// left it NULL (multi-peer edit) — exporting one but not the
-		// other based on batch size is just as broken as the broader
-		// history-loss problem this rule fixes. Per-link
-		// issue.linked / issue.unlinked events still drop via
-		// related_issue_id, matching their pre-kata#1 behavior.
-		// Payload-only references (issue.created initial links,
-		// issue.links_changed *_uids) export intact regardless.
+		// See exportEventsV2 / exportEvents commentary for the
+		// kata#1 design call: aggregated issue.links_changed events
+		// retain related_issue_id pointing at a soft-deleted peer
+		// so historical context survives. Per-link issue.linked /
+		// issue.unlinked events still drop via related_issue_id.
 		clauses = append(clauses,
 			`(events.issue_id IS NULL OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.issue_id AND issues.deleted_at IS NULL))`,
 			`(events.related_issue_id IS NULL OR events.type = 'issue.links_changed' OR EXISTS (SELECT 1 FROM issues WHERE issues.id = events.related_issue_id AND issues.deleted_at IS NULL))`,
 		)
 	}
-	return whereClause(clauses), args
+	return clauses, args
 }
 
 func whereClause(clauses []string) string {
