@@ -287,3 +287,97 @@ func buildV7FixtureWith(t *testing.T, issues []v7Issue, events []v7Event) string
 	}
 	return buildJSONL(lines...)
 }
+
+// orphanSpec describes the orphan rows seedV3DBWithOrphans should
+// inject after the valid baseline rows. All counts default to 0.
+type orphanSpec struct {
+	OrphanComments     int  // comments referencing missing issue_id
+	OrphanLinks        int  // links with one valid endpoint and one missing
+	OrphanLinkBothEnds int  // links with BOTH endpoints missing (dedup test)
+	OrphanIssueLabels  int  // issue_labels referencing missing issue_id
+	OrphanEventIssueID int  // events with missing issue_id (valid related)
+	OrphanEventRelated int  // events with valid issue_id, missing related
+	OrphanEventBoth    int  // events with BOTH columns missing (drop-precedence)
+	OrphanProjectAlias bool // single project_aliases row with missing project_id
+}
+
+// seedV3DBWithOrphans writes a v3-schema DB at path containing the existing
+// proj-a project (id=1 from legacy_v3.sql), 3 valid issues, plus the orphan
+// rows requested by spec. Orphans reference placeholder issue ID 999 (or
+// 998/997 for second/third missing endpoint), which is never inserted. PRAGMA
+// foreign_keys=OFF is used so the inserts succeed; post-cutover preflight then
+// sees them.
+func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
+	t.Helper()
+	writeLegacyV3DB(t, path)
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	defer func() { _ = raw.Close() }()
+
+	_, err = raw.Exec(`PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+
+	// Seed 3 valid issues under project_id=1 (the proj-a project from the
+	// legacy fixture).
+	for i := 1; i <= 3; i++ {
+		_, err = raw.Exec(`INSERT INTO issues (id, uid, project_id, number, title, author)
+			VALUES (?, ?, 1, ?, ?, 'tester')`,
+			i,
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZZZZI%02d", i),
+			i,
+			fmt.Sprintf("issue %d", i),
+		)
+		require.NoError(t, err)
+	}
+
+	for i := 0; i < spec.OrphanComments; i++ {
+		_, err = raw.Exec(`INSERT INTO comments (issue_id, author, body) VALUES (999, 'tester', ?)`,
+			fmt.Sprintf("orphan comment %d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanLinks; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO links (project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
+			VALUES (1, 1, 999, '01HZZZZZZZZZZZZZZZZZZZZI01', '01HZZZZZZZZZZZZZZZZZZZZI99', 'related', 'tester')`)
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanLinkBothEnds; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO links (project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
+			VALUES (1, 998, 999, '01HZZZZZZZZZZZZZZZZZZZZI98', '01HZZZZZZZZZZZZZZZZZZZZI99', 'related', 'tester')`)
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanIssueLabels; i++ {
+		_, err = raw.Exec(`INSERT INTO issue_labels (issue_id, label, author) VALUES (999, ?, 'tester')`,
+			fmt.Sprintf("orphan-%d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanEventIssueID; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, type, actor)
+			VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'proj-a', 999, 'issue.created', 'tester')`,
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZEVOI%02d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanEventRelated; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, related_issue_id, type, actor)
+			VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'proj-a', 1, 999, 'issue.linked', 'tester')`,
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZEVRE%02d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanEventBoth; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, related_issue_id, type, actor)
+			VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'proj-a', 998, 999, 'issue.linked', 'tester')`,
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZEVBO%02d", i))
+		require.NoError(t, err)
+	}
+	if spec.OrphanProjectAlias {
+		_, err = raw.Exec(`INSERT INTO project_aliases (project_id, alias_identity, alias_kind, root_path)
+			VALUES (777, 'github.com/wesm/missing', 'git', '/tmp/missing')`)
+		require.NoError(t, err)
+	}
+	_, err = raw.Exec(`PRAGMA foreign_keys = ON`)
+	require.NoError(t, err)
+}
