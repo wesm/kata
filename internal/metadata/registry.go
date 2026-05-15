@@ -9,15 +9,18 @@ package metadata
 // Type describes the expected value type for a metadata key.
 type Type int
 
+// Valid Type constants. TypeUnknown is the zero value and must not be used
+// for registered keys; all others correspond to the value kinds the
+// per-type validators in validate.go know how to check.
 const (
-	TypeUnknown      Type = iota
-	TypeDate              // "YYYY-MM-DD"
-	TypeBool              // true / false
-	TypeEnum              // string limited to a closed set
-	TypeString            // free-form string
-	TypeInt               // integer
-	TypeChecklist         // array of {id: ULID, text: string, done: bool}
-	TypeTimezoneIANA      // IANA timezone string
+	TypeUnknown      Type = iota // zero value — no key should carry this
+	TypeDate                     // "YYYY-MM-DD"
+	TypeBool                     // true / false
+	TypeEnum                     // string limited to a closed set
+	TypeString                   // free-form string
+	TypeInt                      // integer
+	TypeChecklist                // array of {id: ULID, text: string, done: bool}
+	TypeTimezoneIANA             // IANA timezone string
 )
 
 // Entry describes one whitelisted metadata key.

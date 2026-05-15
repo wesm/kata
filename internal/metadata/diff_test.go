@@ -10,8 +10,8 @@ import (
 
 func TestDiffAddedKey(t *testing.T) {
 	old := json.RawMessage(`{}`)
-	new_ := json.RawMessage(`{"scheduled_on":"2026-06-01"}`)
-	d, err := Diff(old, new_)
+	newBlob := json.RawMessage(`{"scheduled_on":"2026-06-01"}`)
+	d, err := Diff(old, newBlob)
 	require.NoError(t, err)
 	require.Contains(t, d, "scheduled_on")
 	assert.Nil(t, d["scheduled_on"].From)
@@ -20,8 +20,8 @@ func TestDiffAddedKey(t *testing.T) {
 
 func TestDiffRemovedKey(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":"2026-05-01"}`)
-	new_ := json.RawMessage(`{}`)
-	d, err := Diff(old, new_)
+	newBlob := json.RawMessage(`{}`)
+	d, err := Diff(old, newBlob)
 	require.NoError(t, err)
 	require.Contains(t, d, "scheduled_on")
 	assert.JSONEq(t, `"2026-05-01"`, string(d["scheduled_on"].From))
@@ -30,8 +30,8 @@ func TestDiffRemovedKey(t *testing.T) {
 
 func TestDiffChangedKey(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":"2026-05-01"}`)
-	new_ := json.RawMessage(`{"scheduled_on":"2026-06-15"}`)
-	d, err := Diff(old, new_)
+	newBlob := json.RawMessage(`{"scheduled_on":"2026-06-15"}`)
+	d, err := Diff(old, newBlob)
 	require.NoError(t, err)
 	require.Contains(t, d, "scheduled_on")
 	assert.JSONEq(t, `"2026-05-01"`, string(d["scheduled_on"].From))
@@ -47,8 +47,8 @@ func TestDiffUnchangedKeySuppressed(t *testing.T) {
 
 func TestDiffNullClearsKey(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":"2026-05-01"}`)
-	new_ := json.RawMessage(`{"scheduled_on":null}`)
-	d, err := Diff(old, new_)
+	newBlob := json.RawMessage(`{"scheduled_on":null}`)
+	d, err := Diff(old, newBlob)
 	require.NoError(t, err)
 	require.Contains(t, d, "scheduled_on")
 	assert.JSONEq(t, `"2026-05-01"`, string(d["scheduled_on"].From))
@@ -57,16 +57,16 @@ func TestDiffNullClearsKey(t *testing.T) {
 
 func TestDiffNullToNullNoOp(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":null}`)
-	new_ := json.RawMessage(`{"scheduled_on":null}`)
-	d, err := Diff(old, new_)
+	newBlob := json.RawMessage(`{"scheduled_on":null}`)
+	d, err := Diff(old, newBlob)
 	require.NoError(t, err)
 	assert.Empty(t, d)
 }
 
 func TestDiffAbsentToNullNoOp(t *testing.T) {
 	old := json.RawMessage(`{}`)
-	new_ := json.RawMessage(`{"scheduled_on":null}`)
-	d, err := Diff(old, new_)
+	newBlob := json.RawMessage(`{"scheduled_on":null}`)
+	d, err := Diff(old, newBlob)
 	require.NoError(t, err)
 	assert.Empty(t, d)
 }
@@ -79,8 +79,8 @@ func TestDiffEmptyBlobsNoOp(t *testing.T) {
 
 func TestDiffMultipleKeys(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":"2026-05-01","someday":true}`)
-	new_ := json.RawMessage(`{"scheduled_on":"2026-06-01","deadline_on":"2026-07-01"}`)
-	d, err := Diff(old, new_)
+	newBlob := json.RawMessage(`{"scheduled_on":"2026-06-01","deadline_on":"2026-07-01"}`)
+	d, err := Diff(old, newBlob)
 	require.NoError(t, err)
 
 	// scheduled_on changed
