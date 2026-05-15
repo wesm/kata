@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wesm/kata/internal/db"
@@ -33,6 +34,14 @@ func AutoCutover(ctx context.Context, path string) error {
 		return nil
 	}
 
+	report, err := PreflightSourceFKs(ctx, path)
+	if err != nil {
+		return err
+	}
+	if len(report.UnknownViolations) > 0 {
+		return formatUnknownViolations(path, report.UnknownViolations)
+	}
+
 	cleanupTemps := true
 	defer func() {
 		if cleanupTemps {
@@ -57,6 +66,9 @@ func AutoCutover(ctx context.Context, path string) error {
 	}
 	cleanupTemps = false
 	removeSQLiteFileSet(tmpJSONL)
+	if line := formatOrphanSummary(report); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	return nil
 }
 
@@ -116,6 +128,68 @@ func importCutoverTarget(ctx context.Context, tmpJSONL, tmpDB string) error {
 		return fmt.Errorf("record cutover schema version: %w", err)
 	}
 	return nil
+}
+
+// formatOrphanSummary renders the post-cutover summary line.
+// Returns "" when no orphans were dropped, so callers can skip
+// the println entirely on clean DBs. Only nonzero classes are
+// listed, in the fixed order events / comments / links /
+// issue_labels. ScrubbedRowsByTable is intentionally not
+// included — scrubs preserve the row, so reporting them as
+// "discarded" would mislead.
+func formatOrphanSummary(report OrphanReport) string {
+	// classes is sourced from preflight.go's knownOrphanClasses so the
+	// cutover summary stays in sync with the preflight classifier.
+	classes := knownOrphanClasses
+	var parts []string
+	total := 0
+	for _, c := range classes {
+		n := len(report.DroppedRowsByTable[c])
+		if n == 0 {
+			continue
+		}
+		total += n
+		parts = append(parts, fmt.Sprintf("%s: %d", c, n))
+	}
+	if total == 0 {
+		return ""
+	}
+	return fmt.Sprintf("kata cutover: discarded %d orphan rows from old DB (%s)",
+		total, strings.Join(parts, ", "))
+}
+
+// formatUnknownViolations renders the preflight halt error.
+// Caps per-child-table output at 20 rows to bound log size on
+// widely-corrupted DBs. Includes a remediation hint pointing at
+// the sqlite3 PRAGMA the operator can run by hand.
+func formatUnknownViolations(path string, violations []FKViolation) error {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "preflight: source DB at %s has unhandled foreign-key corruption that cutover cannot resolve. ", path)
+	sb.WriteString("Inspect with `sqlite3 ")
+	sb.WriteString(path)
+	sb.WriteString(" 'PRAGMA foreign_key_check;'` and repair before retrying. Found:")
+	truncated := false
+	perTable := map[string]int{}
+	for _, v := range violations {
+		if perTable[v.Table] >= 20 {
+			truncated = true
+			continue
+		}
+		perTable[v.Table]++
+		col := v.Column
+		if col == "" {
+			col = "?"
+		}
+		rowidStr := "NULL"
+		if v.RowID.Valid {
+			rowidStr = fmt.Sprintf("%d", v.RowID.Int64)
+		}
+		fmt.Fprintf(&sb, "\n  %s rowid=%s parent=%s column=%s", v.Table, rowidStr, v.ParentTable, col)
+	}
+	if truncated {
+		sb.WriteString("\n  (output capped at 20 rows per table)")
+	}
+	return errors.New(sb.String())
 }
 
 func removeSQLiteFileSet(path string) {
