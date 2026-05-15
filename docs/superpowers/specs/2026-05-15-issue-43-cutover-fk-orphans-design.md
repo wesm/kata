@@ -115,17 +115,23 @@ each row `(child_table, rowid, parent_table, fkid)`:
    optimization but worth doing — the orphan list could be long.
 2. Classify the violation against the known-orphan-class table
    below. Each class has an explicit disposition (drop or
-   NULL-scrub); increment the counter on the matching disposition
-   bucket in `OrphanReport`. If no class matches, append to
-   `UnknownViolations`.
+   NULL-scrub); record the `(table, rowid)` pair in the matching
+   disposition bucket in `OrphanReport`. If no class matches,
+   append the full violation to `UnknownViolations`.
 
-The report keeps drops and scrubs in separate buckets:
+The report tracks rowid *sets* per table, not integer counters,
+because `PRAGMA foreign_key_check` returns one row per violated
+constraint — not one row per child row. A `links` row with both
+`from_issue_id` and `to_issue_id` pointing at missing issues shows
+up twice in the check output but is a single dropped row at export.
+Counting raw violations would over-report. The report counts unique
+rowids per table.
 
 ```go
 type OrphanReport struct {
-    DroppedByTable    map[string]int   // events, comments, links, issue_labels
-    ScrubbedByTable   map[string]int   // events (related_issue_id only, today)
-    UnknownViolations []FKViolation    // empty in the happy path
+    DroppedRowsByTable  map[string]map[int64]struct{}  // unique rowids per table
+    ScrubbedRowsByTable map[string]map[int64]struct{}  // events related-only, today
+    UnknownViolations   []FKViolation                  // empty in the happy path
 }
 type FKViolation struct {
     Table       string
@@ -135,11 +141,23 @@ type FKViolation struct {
 }
 ```
 
+**Drop precedence over scrub.** A single `events` row may have
+*both* `issue_id` and `related_issue_id` orphaned (two
+foreign_key_check rows for the same rowid). The event is dropped —
+its primary subject is gone — so the rowid lives only in
+`DroppedRowsByTable["events"]`. The classification step enforces
+this: when adding to `ScrubbedRowsByTable`, first check
+`DroppedRowsByTable` and skip if the rowid is already there;
+conversely, when adding to `DroppedRowsByTable`, remove the rowid
+from `ScrubbedRowsByTable` if it was added earlier in the scan.
+Order-independence matters because `foreign_key_check` does not
+guarantee a particular ordering across constraints on the same row.
+
 Drops are data loss; scrubs preserve the row with NULL FKs. Lumping
 them in one counter would mislead the operator about what they lost.
-The stderr summary (below) consumes only `DroppedByTable`. A future
-change could surface `ScrubbedByTable` separately if needed; this
-spec does not.
+The stderr summary (below) consumes only `DroppedRowsByTable` and
+reports `len(set)` per table. A future change could surface
+`ScrubbedRowsByTable` separately if needed; this spec does not.
 
 **Known orphan classes** (these ones cutover handles via export):
 
@@ -246,7 +264,11 @@ kata cutover: discarded N orphan rows from old DB (events: 13, comments: 10, lin
 ```
 
 Format rules:
-- Total `N` is the sum of all nonzero counts.
+- Per-class counts are `len(DroppedRowsByTable[table])` — unique
+  dropped rowids per table, not raw `foreign_key_check` row counts.
+  A `links` row with two orphan endpoints contributes 1 to `links`,
+  not 2.
+- Total `N` is the sum of those per-class unique counts.
 - Only nonzero classes are listed, in the fixed order
   `events, comments, links, issue_labels`. This avoids `(comments: 0, links: 0, ...)` noise on the
   more common case where only one class has orphans.
@@ -255,7 +277,9 @@ Format rules:
   dropped. NULL-scrubbed `related_issue_id` events are *not*
   counted in the summary — the event row survived, and counting
   scrubs in the same total as drops would mislead the operator
-  about what was actually lost.
+  about what was actually lost. (An event with both `issue_id` and
+  `related_issue_id` orphaned counts as one drop, not one drop
+  plus one scrub — see drop-precedence rule above.)
 
 Print directly to `os.Stderr` from inside `AutoCutover`. Do not add
 an injectable writer to `AutoCutover`'s signature for testability —
@@ -294,7 +318,23 @@ table above.
    and `related_issue_uid`), and contains zero of the orphan rows
    from any class.
 
-2. **`TestAutoCutover_HaltsOnUnknownFKClass`** —
+2. **`TestPreflightSourceFKs_DeduplicatesPerRow`** —
+   Specifically targets the rowid-set vs. raw-violation distinction.
+   Seed two pathological rows in a v6 DB with `foreign_keys=OFF`:
+   (a) a `links` row whose `from_issue_id` *and* `to_issue_id` both
+   reference deleted issues (two `foreign_key_check` rows, one
+   dropped row); (b) an `events` row whose `issue_id` *and*
+   `related_issue_id` both reference deleted issues (two
+   `foreign_key_check` rows, one dropped row, no scrub).
+   Run `preflightSourceFKs` directly. Assert
+   `len(report.DroppedRowsByTable["links"]) == 1`,
+   `len(report.DroppedRowsByTable["events"]) == 1`,
+   `len(report.ScrubbedRowsByTable["events"]) == 0`. Run a second
+   variant where the `events` row has *only* `related_issue_id`
+   orphaned (valid `issue_id`); assert that one ends up in
+   `ScrubbedRowsByTable["events"]` with `Dropped` empty.
+
+3. **`TestAutoCutover_HaltsOnUnknownFKClass`** —
    Build a DB with an orphan class the cutover does not handle
    (e.g. a `project_aliases` row whose `project_id` references a
    missing project, inserted with `foreign_keys=OFF`). Run
@@ -303,13 +343,13 @@ table above.
    DB is unchanged byte-for-byte (or at least row-count-equivalent)
    and tmp files are cleaned up.
 
-3. **`TestAutoCutover_PrintsOrphanSummary`** —
+4. **`TestAutoCutover_PrintsOrphanSummary`** —
    Reuse the test #1 setup. Redirect `os.Stderr` to a pipe for the
    duration of `AutoCutover`. Assert exactly one line matching the
    expected summary with the right per-class counts and only
    nonzero classes listed.
 
-4. **`TestValidateBeforeCommit_GroupsAndFormats`** —
+5. **`TestValidateBeforeCommit_GroupsAndFormats`** —
    The existing edit at `import_test.go:168` is the seed. Extend
    the test (or add a sibling) to also cover multi-row,
    multi-table grouping — seed two violations across two child
