@@ -50,6 +50,8 @@ type Issue struct {
 	Owner        *string    `json:"owner,omitempty"`
 	Priority     *int64     `json:"priority,omitempty"`
 	Author       string     `json:"author"`
+	Metadata     string     `json:"metadata"`
+	Revision     int64      `json:"revision"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	ClosedAt     *time.Time `json:"closed_at,omitempty"`

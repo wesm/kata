@@ -43,6 +43,8 @@ CREATE TABLE issues (
   updated_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   closed_at     DATETIME,
   deleted_at    DATETIME,
+  metadata      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+  revision      INTEGER NOT NULL DEFAULT 1,
   CHECK (length(uid) = 26),
   CHECK (length(trim(title))  > 0),
   CHECK (length(trim(author)) > 0),
