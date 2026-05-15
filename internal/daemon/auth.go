@@ -2,10 +2,13 @@ package daemon
 
 import (
 	"crypto/subtle"
+	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/config"
 )
 
 const (
@@ -68,5 +71,47 @@ func requireBearer(p authPolicy) func(http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// checkAuthStartup refuses startup when the listen address is non-loopback
+// TCP, no token is configured, and the operator has not opted in to
+// --insecure-readonly. listen uses the same convention as runDaemonWithListen:
+// "" means Unix socket; "host:port" means TCP.
+func checkAuthStartup(listen string, p authPolicy) error {
+	if !isNonLoopbackTCP(listen) {
+		return nil
+	}
+	if p.Token == "" && !p.InsecureReadonly {
+		return fmt.Errorf("non-loopback TCP listen %q requires a token: "+
+			"set KATA_AUTH_TOKEN or [auth].token in <KATA_HOME>/config.toml, "+
+			"or pass --insecure-readonly to opt out (DEV ONLY)", listen)
+	}
+	return nil
+}
+
+// CheckAuthStartup is the exported form used by the CLI entry point.
+func CheckAuthStartup(listen string, auth config.AuthConfig, insecureReadonly bool) error {
+	return checkAuthStartup(listen, authPolicy{
+		Token: auth.Token, InsecureReadonly: insecureReadonly,
+	})
+}
+
+// isNonLoopbackTCP reports whether listen designates a TCP bind on a
+// non-loopback host. Empty listen (Unix socket) and parse failures
+// return false so callers default to "no extra restriction".
+func isNonLoopbackTCP(listen string) bool {
+	if listen == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	switch host {
+	case "", "127.0.0.1", "localhost", "::1":
+		return false
+	default:
+		return true
 	}
 }

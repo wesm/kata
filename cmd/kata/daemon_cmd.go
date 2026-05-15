@@ -27,20 +27,26 @@ func newDaemonCmd() *cobra.Command {
 }
 
 func daemonStartCmd() *cobra.Command {
-	var listen string
+	var (
+		listen           string
+		insecureReadonly bool
+	)
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "start the daemon in foreground",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
-			return runDaemonWithListen(ctx, listen)
+			return runDaemonWithListen(ctx, listen, insecureReadonly)
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "",
 		"bind TCP at host:port (admin-only; non-public addresses only). "+
 			"Falls back to $KATA_HOME/config.toml's `listen` value when "+
 			"unset. Default with neither: Unix socket under $KATA_HOME/runtime.")
+	cmd.Flags().BoolVar(&insecureReadonly, "insecure-readonly", false,
+		"permit unauthenticated GETs on non-loopback TCP when no token "+
+			"is configured (DEV ONLY — production must use a token).")
 	return cmd
 }
 
@@ -172,14 +178,15 @@ func daemonReloadCmd() *cobra.Command {
 // (no --listen, default Unix socket) and by the auto-start child process
 // spawned by ensureDaemon.
 func runDaemon(ctx context.Context) error {
-	return runDaemonWithListen(ctx, "")
+	return runDaemonWithListen(ctx, "", false)
 }
 
 // runDaemonWithListen is the variant used by `kata daemon start --listen`.
 // An empty listen string preserves the existing Unix-socket path exactly,
 // unless <KATA_HOME>/config.toml has a `listen = "..."` entry — in which
 // case the config value is used. CLI flag always wins over config.
-func runDaemonWithListen(ctx context.Context, listen string) error {
+// insecureReadonly is the dev escape hatch from --insecure-readonly.
+func runDaemonWithListen(ctx context.Context, listen string, insecureReadonly bool) error {
 	dcfg, err := config.ReadDaemonConfig()
 	if err != nil {
 		return err
@@ -189,6 +196,17 @@ func runDaemonWithListen(ctx context.Context, listen string) error {
 	}
 	ns, err := daemon.NewNamespace()
 	if err != nil {
+		return err
+	}
+	// chooseEndpoint validates the listen shape and address rules (e.g.
+	// rejecting literal public IPs like 8.8.8.8) without binding. Run it
+	// before the auth-startup guard so a public-address user sees the
+	// "non-public" error rather than a generic auth-required message.
+	endpoint, err := chooseEndpoint(ns, listen)
+	if err != nil {
+		return err
+	}
+	if err := daemon.CheckAuthStartup(listen, dcfg.Auth, insecureReadonly); err != nil {
 		return err
 	}
 	if err := ns.EnsureDirs(); err != nil {
@@ -220,11 +238,6 @@ func runDaemonWithListen(ctx context.Context, listen string) error {
 	defer signal.Stop(sigs)
 	go runReloadLoop(ctx, sigs, hookCfgPath, disp, daemonLog)
 
-	endpoint, err := chooseEndpoint(ns, listen)
-	if err != nil {
-		return err
-	}
-
 	srv := daemon.NewServer(daemon.ServerConfig{
 		DB:        store,
 		StartedAt: time.Now().UTC(),
@@ -233,6 +246,8 @@ func runDaemonWithListen(ctx context.Context, listen string) error {
 		CloseThrottle: daemon.CloseThrottlePolicy{
 			ThrottleDisabled: !dcfg.Close.Throttle.ThrottleEnabled(),
 		},
+		Auth:             dcfg.Auth,
+		InsecureReadonly: insecureReadonly,
 	})
 	defer func() { _ = srv.Close() }()
 

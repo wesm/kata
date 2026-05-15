@@ -12,6 +12,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/config"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/hooks"
 )
@@ -34,6 +35,22 @@ type ServerConfig struct {
 	// the daemon entry point sets ThrottleDisabled=true only when the
 	// operator opts out via [close.throttle] in config.toml.
 	CloseThrottle CloseThrottlePolicy
+
+	// Auth carries the bearer-token policy resolved at daemon start.
+	// Token == "" disables bearer auth (appropriate for Unix-socket and
+	// loopback-TCP deployments).
+	Auth config.AuthConfig
+
+	// InsecureReadonly permits unauthenticated GETs on non-loopback TCP
+	// even when Auth.Token == "". DEV ONLY — not for production.
+	InsecureReadonly bool
+}
+
+// authPolicy returns the resolved bearer-auth policy in the form the
+// middleware consumes. Keeping the conversion here means the middleware
+// stays unaware of ServerConfig and config.AuthConfig.
+func (c ServerConfig) authPolicy() authPolicy {
+	return authPolicy{Token: c.Auth.Token, InsecureReadonly: c.InsecureReadonly}
 }
 
 // CloseThrottlePolicy is the runtime form of [close.throttle] in
@@ -74,7 +91,7 @@ func NewServer(cfg ServerConfig) *Server {
 	s := &Server{cfg: cfg, api: humaAPI}
 	registerRoutes(humaAPI, mux, cfg)
 
-	s.handler = withCSRFGuards(mux)
+	s.handler = withCSRFGuards(requireBearer(cfg.authPolicy())(mux))
 	return s
 }
 

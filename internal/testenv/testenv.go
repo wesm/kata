@@ -40,6 +40,22 @@ func WithCloseThrottleDisabled() Option {
 	}
 }
 
+// WithAuthToken tells the test daemon to enforce bearer-token auth with the
+// given token. Tests must set the Authorization header on every request
+// except /ping and /health.
+func WithAuthToken(token string) Option {
+	return func(cfg *daemon.ServerConfig) {
+		cfg.Auth.Token = token
+	}
+}
+
+// WithInsecureReadonly enables the dev escape hatch in the test daemon.
+func WithInsecureReadonly() Option {
+	return func(cfg *daemon.ServerConfig) {
+		cfg.InsecureReadonly = true
+	}
+}
+
 // New launches a daemon listening on a free loopback port. The DB lives under
 // a temp KATA_HOME. Cleanup is wired via t.Cleanup.
 func New(t *testing.T, opts ...Option) *Env {
