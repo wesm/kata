@@ -505,6 +505,50 @@ func (d *DB) ListRecurrencesByProject(ctx context.Context, projectID int64) ([]R
 	return out, rows.Err()
 }
 
+// ListAllRecurrences returns every non-deleted recurrence whose parent project
+// is also non-deleted, ordered by recurrence id (stable). Used by the daemon
+// boot sweep to find recurrences that may need a missed-materialization
+// recovery; project-scoped reads should call ListRecurrencesByProject instead.
+func (d *DB) ListAllRecurrences(ctx context.Context) ([]Recurrence, error) {
+	rows, err := d.QueryContext(ctx,
+		"SELECT "+recurrenceSelectFieldsAliased+
+			" FROM recurrences r JOIN projects p ON p.id = r.project_id"+
+			" WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL"+
+			" ORDER BY r.id")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Recurrence
+	for rows.Next() {
+		r, err := scanRecurrence(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// LatestInstanceForRecurrence returns the non-deleted issue with the largest
+// occurrence_key for the given recurrence, or (nil, nil) when no instances
+// exist. Used by the daemon boot sweep to decide whether the latest closed-done
+// instance has already been materialized past.
+func (d *DB) LatestInstanceForRecurrence(ctx context.Context, recurrenceID int64) (*Issue, error) {
+	q := issueSelect +
+		" WHERE i.recurrence_id = ? AND i.deleted_at IS NULL" +
+		" ORDER BY i.occurrence_key DESC LIMIT 1"
+	row := d.QueryRowContext(ctx, q, recurrenceID)
+	issue, err := scanIssue(row)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &issue, nil
+}
+
 // MaterializeNextOut carries the results of a successful MaterializeNext call.
 type MaterializeNextOut struct {
 	// NewIssueID is the row id of the newly inserted issue (zero when Skipped).
