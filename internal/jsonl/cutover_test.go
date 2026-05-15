@@ -193,6 +193,10 @@ func TestAutoCutover_DropsAllKnownOrphanClasses(t *testing.T) {
 	assert.Equal(t, 0, linkCount, "orphan links should be dropped")
 	assert.Equal(t, 0, labelCount, "orphan issue_labels should be dropped")
 
+	var issueCount int
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM issues`).Scan(&issueCount))
+	assert.Equal(t, 3, issueCount, "the 3 seeded valid issues must survive cutover")
+
 	// One event survives: the related-only orphan, with NULL
 	// related fields. The issue_id-orphan event was dropped.
 	assert.Equal(t, 1, eventCount, "only the related-only-orphan event should survive")

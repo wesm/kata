@@ -137,9 +137,11 @@ func formatUnknownViolations(path string, violations []FKViolation) error {
 	sb.WriteString("Inspect with `sqlite3 ")
 	sb.WriteString(path)
 	sb.WriteString(" 'PRAGMA foreign_key_check;'` and repair before retrying. Found:")
+	truncated := false
 	perTable := map[string]int{}
 	for _, v := range violations {
 		if perTable[v.Table] >= 20 {
+			truncated = true
 			continue
 		}
 		perTable[v.Table]++
@@ -148,6 +150,9 @@ func formatUnknownViolations(path string, violations []FKViolation) error {
 			col = "?"
 		}
 		fmt.Fprintf(&sb, "\n  %s rowid=%d parent=%s column=%s", v.Table, v.RowID, v.ParentTable, col)
+	}
+	if truncated {
+		sb.WriteString("\n  (output capped at 20 rows per table)")
 	}
 	return errors.New(sb.String())
 }
