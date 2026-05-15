@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -702,18 +703,9 @@ func reconcileSequences(ctx context.Context, tx *sql.Tx) error {
 }
 
 func validateBeforeCommit(ctx context.Context, tx *sql.Tx) error {
-	fkRows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
-	if err != nil {
-		return fmt.Errorf("foreign_key_check: %w", err)
+	if err := checkForeignKeyViolations(ctx, tx); err != nil {
+		return err
 	}
-	defer func() { _ = fkRows.Close() }()
-	if fkRows.Next() {
-		return fmt.Errorf("foreign_key_check: violations found")
-	}
-	if err := fkRows.Err(); err != nil {
-		return fmt.Errorf("foreign_key_check rows: %w", err)
-	}
-
 	rows, err := tx.QueryContext(ctx, `PRAGMA integrity_check`)
 	if err != nil {
 		return fmt.Errorf("integrity_check: %w", err)
@@ -729,4 +721,59 @@ func validateBeforeCommit(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return rows.Err()
+}
+
+// checkForeignKeyViolations runs PRAGMA foreign_key_check, scans every
+// returned row, resolves each violated FK to its column name, and
+// returns a single error grouping per-row detail when at least one
+// violation exists. Output is capped at 20 rows per child table to
+// bound log size on widely-corrupted DBs.
+func checkForeignKeyViolations(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	type viol struct {
+		Table       string
+		RowID       sql.NullInt64
+		ParentTable string
+		FKID        int
+	}
+	var all []viol
+	for rows.Next() {
+		var v viol
+		if err := rows.Scan(&v.Table, &v.RowID, &v.ParentTable, &v.FKID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("foreign_key_check scan: %w", err)
+		}
+		all = append(all, v)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("foreign_key_check rows: %w", err)
+	}
+	_ = rows.Close()
+	if len(all) == 0 {
+		return nil
+	}
+	resolver := newFKColumnResolver(tx)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "foreign_key_check: %d violations:", len(all))
+	perTable := map[string]int{}
+	for _, v := range all {
+		if perTable[v.Table] >= 20 {
+			continue
+		}
+		perTable[v.Table]++
+		col, _ := resolver.resolve(ctx, v.Table, v.FKID)
+		if col == "" {
+			col = "?"
+		}
+		rowidStr := "?"
+		if v.RowID.Valid {
+			rowidStr = fmt.Sprintf("%d", v.RowID.Int64)
+		}
+		fmt.Fprintf(&sb, "\n  %s rowid=%s parent=%s column=%s", v.Table, rowidStr, v.ParentTable, col)
+	}
+	return errors.New(sb.String())
 }

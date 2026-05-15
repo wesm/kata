@@ -165,6 +165,30 @@ func TestImportRejectsForeignKeyViolationBeforeCommit(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "foreign_key_check")
+	assert.Contains(t, err.Error(), "project_aliases rowid=1 parent=projects")
+	var count int
+	require.NoError(t, target.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_aliases`).Scan(&count))
+	assert.Equal(t, 0, count)
+}
+
+func TestImportRejectsForeignKeyViolationsAcrossMultipleTables(t *testing.T) {
+	ctx := context.Background()
+	target := openImportTargetDB(t)
+
+	// Two violations on different tables: a project_alias pointing
+	// at a missing project, and a project_alias whose project_id
+	// references a different missing project. Both rows are
+	// rejected and the error must group/list both.
+	err := importJSONL(ctx, target,
+		validExportVersion,
+		`{"kind":"project_alias","data":{"id":1,"project_id":777,"alias_identity":"missing-a","alias_kind":"git","root_path":"/tmp/a","created_at":"2026-05-03T00:00:00.000Z","last_seen_at":"2026-05-03T00:00:00.000Z"}}`,
+		`{"kind":"project_alias","data":{"id":2,"project_id":888,"alias_identity":"missing-b","alias_kind":"git","root_path":"/tmp/b","created_at":"2026-05-03T00:00:00.000Z","last_seen_at":"2026-05-03T00:00:00.000Z"}}`,
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "foreign_key_check")
+	assert.Contains(t, err.Error(), "project_aliases rowid=1 parent=projects column=project_id")
+	assert.Contains(t, err.Error(), "project_aliases rowid=2 parent=projects column=project_id")
 	var count int
 	require.NoError(t, target.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_aliases`).Scan(&count))
 	assert.Equal(t, 0, count)
