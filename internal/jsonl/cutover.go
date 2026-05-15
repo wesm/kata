@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wesm/kata/internal/db"
@@ -31,6 +32,14 @@ func AutoCutover(ctx context.Context, path string) error {
 	}
 	if version >= db.CurrentSchemaVersion() {
 		return nil
+	}
+
+	report, err := PreflightSourceFKs(ctx, path)
+	if err != nil {
+		return err
+	}
+	if len(report.UnknownViolations) > 0 {
+		return formatUnknownViolations(path, report.UnknownViolations)
 	}
 
 	cleanupTemps := true
@@ -116,6 +125,31 @@ func importCutoverTarget(ctx context.Context, tmpJSONL, tmpDB string) error {
 		return fmt.Errorf("record cutover schema version: %w", err)
 	}
 	return nil
+}
+
+// formatUnknownViolations renders the preflight halt error.
+// Caps per-child-table output at 20 rows to bound log size on
+// widely-corrupted DBs. Includes a remediation hint pointing at
+// the sqlite3 PRAGMA the operator can run by hand.
+func formatUnknownViolations(path string, violations []FKViolation) error {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "preflight: source DB at %s has unhandled foreign-key corruption that cutover cannot resolve. ", path)
+	sb.WriteString("Inspect with `sqlite3 ")
+	sb.WriteString(path)
+	sb.WriteString(" 'PRAGMA foreign_key_check;'` and repair before retrying. Found:")
+	perTable := map[string]int{}
+	for _, v := range violations {
+		if perTable[v.Table] >= 20 {
+			continue
+		}
+		perTable[v.Table]++
+		col := v.Column
+		if col == "" {
+			col = "?"
+		}
+		fmt.Fprintf(&sb, "\n  %s rowid=%d parent=%s column=%s", v.Table, v.RowID, v.ParentTable, col)
+	}
+	return errors.New(sb.String())
 }
 
 func removeSQLiteFileSet(path string) {

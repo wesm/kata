@@ -318,12 +318,13 @@ func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 	require.NoError(t, err)
 
 	// Seed 3 valid issues under project_id=1 (the proj-a project from the
-	// legacy fixture).
+	// legacy fixture). UIDs use only valid Crockford base32 characters
+	// (uppercase, no I/L/O/U) so the v7→v8 short_id derivation accepts them.
 	for i := 1; i <= 3; i++ {
 		_, err = raw.Exec(`INSERT INTO issues (id, uid, project_id, number, title, author)
 			VALUES (?, ?, 1, ?, ?, 'tester')`,
 			i,
-			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZZZZI%02d", i),
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZZZZA%02d", i),
 			i,
 			fmt.Sprintf("issue %d", i),
 		)
@@ -338,13 +339,13 @@ func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 	for i := 0; i < spec.OrphanLinks; i++ {
 		_, err = raw.Exec(
 			`INSERT INTO links (project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
-			VALUES (1, 1, 999, '01HZZZZZZZZZZZZZZZZZZZZI01', '01HZZZZZZZZZZZZZZZZZZZZI99', 'related', 'tester')`)
+			VALUES (1, 1, 999, '01HZZZZZZZZZZZZZZZZZZZZA01', '01HZZZZZZZZZZZZZZZZZZZZA99', 'related', 'tester')`)
 		require.NoError(t, err)
 	}
 	for i := 0; i < spec.OrphanLinkBothEnds; i++ {
 		_, err = raw.Exec(
 			`INSERT INTO links (project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
-			VALUES (1, 998, 999, '01HZZZZZZZZZZZZZZZZZZZZI98', '01HZZZZZZZZZZZZZZZZZZZZI99', 'related', 'tester')`)
+			VALUES (1, 998, 999, '01HZZZZZZZZZZZZZZZZZZZZA98', '01HZZZZZZZZZZZZZZZZZZZZA99', 'related', 'tester')`)
 		require.NoError(t, err)
 	}
 	for i := 0; i < spec.OrphanIssueLabels; i++ {
@@ -356,21 +357,21 @@ func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 		_, err = raw.Exec(
 			`INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, type, actor)
 			VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'proj-a', 999, 'issue.created', 'tester')`,
-			fmt.Sprintf("01HZZZZZZZZZZZZZZZZEVOI%02d", i))
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZEV0A%02d", i))
 		require.NoError(t, err)
 	}
 	for i := 0; i < spec.OrphanEventRelated; i++ {
 		_, err = raw.Exec(
 			`INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, related_issue_id, type, actor)
 			VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'proj-a', 1, 999, 'issue.linked', 'tester')`,
-			fmt.Sprintf("01HZZZZZZZZZZZZZZZZEVRE%02d", i))
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZEVRA%02d", i))
 		require.NoError(t, err)
 	}
 	for i := 0; i < spec.OrphanEventBoth; i++ {
 		_, err = raw.Exec(
 			`INSERT INTO events (uid, origin_instance_uid, project_id, project_identity, issue_id, related_issue_id, type, actor)
 			VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'proj-a', 998, 999, 'issue.linked', 'tester')`,
-			fmt.Sprintf("01HZZZZZZZZZZZZZZZZEVBO%02d", i))
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZEVBA%02d", i))
 		require.NoError(t, err)
 	}
 	if spec.OrphanProjectAlias {

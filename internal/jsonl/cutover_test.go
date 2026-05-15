@@ -133,3 +133,74 @@ func assertNoCutoverTemps(t *testing.T, path string) {
 		assert.True(t, os.IsNotExist(err), path+suffix)
 	}
 }
+
+// TestAutoCutover_HaltsOnUnknownFKClass: a source DB containing
+// an FK violation outside the known orphan classes (a
+// project_aliases row pointing at a missing project) refuses to
+// cutover and reports actionable detail. The source DB is left
+// untouched and no temp files remain.
+func TestAutoCutover_HaltsOnUnknownFKClass(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV3DBWithOrphans(t, path, orphanSpec{OrphanProjectAlias: true})
+
+	before, err := os.ReadFile(path) //nolint:gosec // test fixture under TempDir
+	require.NoError(t, err)
+
+	err = jsonl.AutoCutover(ctx, path)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project_aliases")
+	assert.Contains(t, err.Error(), "parent=projects")
+	assert.Contains(t, err.Error(), "column=project_id")
+
+	after, err := os.ReadFile(path) //nolint:gosec // test fixture under TempDir
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "source DB must not be mutated on preflight halt")
+	assertNoCutoverTemps(t, path)
+}
+
+// TestAutoCutover_DropsAllKnownOrphanClasses: a source DB with
+// orphans across all four known classes (events, comments,
+// links, issue_labels) cuts over successfully. Orphan rows are
+// dropped; events with valid issue_id but orphan related_issue_id
+// are preserved with NULL related fields.
+func TestAutoCutover_DropsAllKnownOrphanClasses(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV3DBWithOrphans(t, path, orphanSpec{
+		OrphanComments:     2,
+		OrphanLinks:        2,
+		OrphanIssueLabels:  1,
+		OrphanEventIssueID: 1,
+		OrphanEventRelated: 1,
+	})
+
+	require.NoError(t, jsonl.AutoCutover(ctx, path))
+
+	d, err := db.Open(ctx, path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	assertCurrentSchemaVersion(t, path)
+
+	var commentCount, linkCount, labelCount, eventCount int
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM comments`).Scan(&commentCount))
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM links`).Scan(&linkCount))
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM issue_labels`).Scan(&labelCount))
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&eventCount))
+	assert.Equal(t, 0, commentCount, "orphan comments should be dropped")
+	assert.Equal(t, 0, linkCount, "orphan links should be dropped")
+	assert.Equal(t, 0, labelCount, "orphan issue_labels should be dropped")
+
+	// One event survives: the related-only orphan, with NULL
+	// related fields. The issue_id-orphan event was dropped.
+	assert.Equal(t, 1, eventCount, "only the related-only-orphan event should survive")
+	var relatedID, relatedUID sql.NullString
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT related_issue_id, related_issue_uid FROM events`).Scan(&relatedID, &relatedUID))
+	assert.False(t, relatedID.Valid, "related_issue_id must be NULL after scrub")
+	assert.False(t, relatedUID.Valid, "related_issue_uid must be NULL after scrub")
+
+	assertNoCutoverTemps(t, path)
+}
