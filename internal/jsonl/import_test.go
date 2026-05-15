@@ -171,14 +171,17 @@ func TestImportRejectsForeignKeyViolationBeforeCommit(t *testing.T) {
 	assert.Equal(t, 0, count)
 }
 
-func TestImportRejectsForeignKeyViolationsAcrossMultipleTables(t *testing.T) {
+func TestImportRejectsForeignKeyViolationsListsEveryRow(t *testing.T) {
 	ctx := context.Background()
 	target := openImportTargetDB(t)
 
-	// Two violations on different tables: a project_alias pointing
-	// at a missing project, and a project_alias whose project_id
-	// references a different missing project. Both rows are
-	// rejected and the error must group/list both.
+	// Two project_alias rows each referencing a different missing project.
+	// Verifies that all violation rows are listed in the error, not just the
+	// first. (Cross-table coverage is not possible here: the comments table
+	// has an AFTER INSERT trigger that rewrites issues_fts synchronously, so
+	// inserting an orphan comment corrupts the FTS state before deferred FK
+	// checks fire. project_aliases has no such trigger, so multiple orphan
+	// rows of the same table are the cleanest multi-row coverage available.)
 	err := importJSONL(ctx, target,
 		validExportVersion,
 		`{"kind":"project_alias","data":{"id":1,"project_id":777,"alias_identity":"missing-a","alias_kind":"git","root_path":"/tmp/a","created_at":"2026-05-03T00:00:00.000Z","last_seen_at":"2026-05-03T00:00:00.000Z"}}`,

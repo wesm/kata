@@ -752,6 +752,10 @@ func checkForeignKeyViolations(ctx context.Context, tx *sql.Tx) error {
 		_ = rows.Close()
 		return fmt.Errorf("foreign_key_check rows: %w", err)
 	}
+	// Close the foreign_key_check rows before the resolver loop:
+	// the resolver issues PRAGMA queries on the same *sql.Tx, and
+	// SQLite requires the prior result set closed before another
+	// statement runs on the connection.
 	_ = rows.Close()
 	if len(all) == 0 {
 		return nil
@@ -759,13 +763,15 @@ func checkForeignKeyViolations(ctx context.Context, tx *sql.Tx) error {
 	resolver := newFKColumnResolver(tx)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "foreign_key_check: %d violations:", len(all))
+	truncated := false
 	perTable := map[string]int{}
 	for _, v := range all {
 		if perTable[v.Table] >= 20 {
+			truncated = true
 			continue
 		}
 		perTable[v.Table]++
-		col, _ := resolver.resolve(ctx, v.Table, v.FKID)
+		col, resolveErr := resolver.resolve(ctx, v.Table, v.FKID)
 		if col == "" {
 			col = "?"
 		}
@@ -774,6 +780,12 @@ func checkForeignKeyViolations(ctx context.Context, tx *sql.Tx) error {
 			rowidStr = fmt.Sprintf("%d", v.RowID.Int64)
 		}
 		fmt.Fprintf(&sb, "\n  %s rowid=%s parent=%s column=%s", v.Table, rowidStr, v.ParentTable, col)
+		if resolveErr != nil {
+			fmt.Fprintf(&sb, " (column resolver: %v)", resolveErr)
+		}
+	}
+	if truncated {
+		sb.WriteString("\n  (output capped at 20 rows per table)")
 	}
 	return errors.New(sb.String())
 }
