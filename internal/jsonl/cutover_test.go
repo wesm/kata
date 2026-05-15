@@ -218,6 +218,11 @@ func TestAutoCutover_DropsAllKnownOrphanClasses(t *testing.T) {
 		OrphanEventRelated: 1,
 	})
 
+	// Suppress the cutover summary stderr line; this test asserts
+	// data-shape invariants. The summary itself is asserted by
+	// TestAutoCutover_PrintsOrphanSummary against the same seed.
+	_, restore := captureStderr(t)
+	defer restore()
 	require.NoError(t, jsonl.AutoCutover(ctx, path))
 
 	d, err := db.Open(ctx, path)
