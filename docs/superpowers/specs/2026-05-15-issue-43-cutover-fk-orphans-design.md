@@ -295,7 +295,7 @@ test ergonomics for one print statement.
 | `internal/jsonl/cutover.go`           | Add `preflightSourceFKs`, `OrphanReport` type, `FKViolation` type; thread report through `AutoCutover`; print stderr summary on success |
 | `internal/jsonl/export.go`            | Extend `exportEvents`, `exportEventsV3`, `exportEventsV2`, `exportEventsV1` with `issue_id` orphan filter and broadened `related_issue_id` NULL-scrub |
 | `internal/jsonl/import.go`            | Rewrite `validateBeforeCommit` to scan, group, format with `foreign_key_list` lookup    |
-| `internal/jsonl/cutover_test.go`      | Three new cutover tests (below)                                                         |
+| `internal/jsonl/cutover_test.go`      | Four new cutover / preflight tests (below)                                              |
 | `internal/jsonl/import_test.go`       | One new test for the diagnostic format; existing line 168 edit is incorporated as-is    |
 
 ## Tests
@@ -322,10 +322,13 @@ table above.
    Specifically targets the rowid-set vs. raw-violation distinction.
    Seed two pathological rows in a v6 DB with `foreign_keys=OFF`:
    (a) a `links` row whose `from_issue_id` *and* `to_issue_id` both
-   reference deleted issues (two `foreign_key_check` rows, one
-   dropped row); (b) an `events` row whose `issue_id` *and*
-   `related_issue_id` both reference deleted issues (two
-   `foreign_key_check` rows, one dropped row, no scrub).
+   reference issue IDs missing from the `issues` table (two
+   `foreign_key_check` rows, one dropped row); (b) an `events` row
+   whose `issue_id` *and* `related_issue_id` both reference missing
+   issue IDs (two `foreign_key_check` rows, one dropped row, no
+   scrub). "Missing" here means hard-deleted / never-existed, not
+   soft-deleted — soft-deleted rows still satisfy the FK and would
+   not appear in `foreign_key_check`.
    Run `preflightSourceFKs` directly. Assert
    `len(report.DroppedRowsByTable["links"]) == 1`,
    `len(report.DroppedRowsByTable["events"]) == 1`,
