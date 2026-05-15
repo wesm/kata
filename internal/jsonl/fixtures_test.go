@@ -295,7 +295,7 @@ type orphanSpec struct {
 	OrphanLinks        int  // links with one valid endpoint and one missing
 	OrphanLinkBothEnds int  // links with BOTH endpoints missing (dedup test)
 	OrphanIssueLabels  int  // issue_labels referencing missing issue_id
-	OrphanEventIssueID int  // events with missing issue_id (valid related)
+	OrphanEventIssueID int  // events with missing issue_id; related_issue_id is NULL
 	OrphanEventRelated int  // events with valid issue_id, missing related
 	OrphanEventBoth    int  // events with BOTH columns missing (drop-precedence)
 	OrphanProjectAlias bool // single project_aliases row with missing project_id

@@ -114,9 +114,16 @@ func PreflightSourceFKs(ctx context.Context, path string) (OrphanReport, error) 
 	}
 	resolver := newFKColumnResolver(source)
 	for _, r := range raws {
+		// Classification depends on the column name -- if we can't resolve
+		// it, we cannot safely distinguish a known orphan class from an
+		// unknown one. Abort rather than risk a misclassification that
+		// would either falsely halt cutover or wrongly let it proceed.
+		// (This intentionally differs from import.go's checkForeignKeyViolations,
+		// which annotates the row and continues; that path is reporting
+		// failures to a user, not making a go/no-go decision.)
 		col, err := resolver.resolve(ctx, r.Table, r.FKID)
 		if err != nil {
-			return OrphanReport{}, err
+			return OrphanReport{}, fmt.Errorf("preflight resolve %s: %w", r.Table, err)
 		}
 		switch classifyKnownOrphan(r.Table, r.ParentTable, col) {
 		case dispositionDrop:
