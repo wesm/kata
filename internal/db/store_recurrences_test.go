@@ -229,3 +229,48 @@ func TestCreateRecurrence_RejectsInvalidLabel(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid character")
 }
+
+func TestMaterializeNext_NormalizesLegacyDuplicateLabels(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	// Create a recurrence the normal way, then bypass dedupe normalization by
+	// overwriting template_labels directly with a duplicate-containing array.
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "t"},
+	})
+	require.NoError(t, err)
+	_, err = d.ExecContext(ctx,
+		`UPDATE recurrences SET template_labels = ? WHERE id = ?`,
+		`["foo","foo","bar"]`, rec.ID)
+	require.NoError(t, err)
+
+	// Seed the first instance and close it to trigger MaterializeNext.
+	firstID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-15", "t")
+	_, _, _, err = d.CloseIssue(ctx, firstID, "done", "tester", "", nil)
+	require.NoError(t, err)
+
+	// The new instance (2026-05-22) must exist and carry deduplicated labels.
+	var newIssueID int64
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT id FROM issues WHERE recurrence_id = ? AND occurrence_key = ?`,
+		rec.ID, "2026-05-22",
+	).Scan(&newIssueID))
+
+	rows, err := d.QueryContext(ctx,
+		`SELECT label FROM issue_labels WHERE issue_id = ? ORDER BY label ASC`, newIssueID)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var got []string
+	for rows.Next() {
+		var lbl string
+		require.NoError(t, rows.Scan(&lbl))
+		got = append(got, lbl)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{"bar", "foo"}, got, "labels must be sorted and deduplicated")
+}

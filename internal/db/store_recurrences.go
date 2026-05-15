@@ -36,14 +36,14 @@ func dedupeNormalizeLabels(in []string) ([]string, error) {
 	for _, raw := range in {
 		lbl := strings.TrimSpace(strings.ToLower(raw))
 		if len(lbl) == 0 {
-			return nil, fmt.Errorf("label must not be empty after trimming")
+			return nil, fmt.Errorf("%w: label must be 1-64 characters", ErrLabelInvalid)
 		}
 		if len(lbl) > 64 {
-			return nil, fmt.Errorf("label %q exceeds 64-byte limit", lbl)
+			return nil, fmt.Errorf("%w: label %q must be 1-64 characters", ErrLabelInvalid, lbl)
 		}
 		for i := 0; i < len(lbl); i++ {
 			if !labelAllowedChars[lbl[i]] {
-				return nil, fmt.Errorf("label %q contains invalid character %q", lbl, string(lbl[i]))
+				return nil, fmt.Errorf("%w: label %q contains invalid characters", ErrLabelInvalid, lbl)
 			}
 		}
 		if _, dup := seen[lbl]; !dup {
@@ -644,6 +644,13 @@ func (d *DB) MaterializeNext(
 	// Seed labels from template_labels.
 	var labels []string
 	_ = json.Unmarshal([]byte(r.TemplateLabels), &labels)
+	// Defensive: stored template_labels may pre-date dedupe normalization
+	// (e.g. imported JSONL). Normalize before insertion to avoid hitting the
+	// (issue_id, label) PRIMARY KEY on the materialization tx.
+	labels, err = dedupeNormalizeLabels(labels)
+	if err != nil {
+		return out, fmt.Errorf("normalize stored labels: %w", err)
+	}
 	for _, lbl := range labels {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO issue_labels (issue_id, label, author) VALUES (?, ?, ?)`,
