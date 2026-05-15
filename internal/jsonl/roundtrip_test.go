@@ -577,19 +577,28 @@ func TestRoundtrip_MultipleRecurrencesAndInstances(t *testing.T) {
 		WHERE r.template_title = 'Monthly'`).Scan(&monthlyCount))
 	assert.Equal(t, 2, monthlyCount)
 
-	// Assert all five occurrence_keys are present and correctly ordered.
-	rows, err := dstDB.QueryContext(ctx,
-		`SELECT occurrence_key FROM issues WHERE occurrence_key IS NOT NULL ORDER BY occurrence_key ASC`)
+	// Assert occurrence_keys land under the *correct* recurrence — not just
+	// that the right counts and key set survive globally. A bug that swapped
+	// one weekly key with one monthly key while preserving cardinalities
+	// would pass the counts above but fail this per-recurrence check.
+	rows, err := dstDB.QueryContext(ctx, `
+		SELECT r.template_title, i.occurrence_key
+		  FROM issues i JOIN recurrences r ON r.id = i.recurrence_id
+		 WHERE i.occurrence_key IS NOT NULL
+		 ORDER BY r.template_title ASC, i.occurrence_key ASC`)
 	require.NoError(t, err)
 	defer func() { _ = rows.Close() }()
-	var keys []string
+	keysByRecurrence := map[string][]string{}
 	for rows.Next() {
-		var k string
-		require.NoError(t, rows.Scan(&k))
-		keys = append(keys, k)
+		var title, key string
+		require.NoError(t, rows.Scan(&title, &key))
+		keysByRecurrence[title] = append(keysByRecurrence[title], key)
 	}
 	require.NoError(t, rows.Err())
-	assert.Equal(t, []string{"2026-05-01", "2026-05-11", "2026-05-18", "2026-05-25", "2026-06-01"}, keys)
+	assert.Equal(t, map[string][]string{
+		"Monthly": {"2026-05-01", "2026-06-01"},
+		"Weekly":  {"2026-05-11", "2026-05-18", "2026-05-25"},
+	}, keysByRecurrence)
 }
 
 func TestRoundtrip_NewEventPayloadBytesAreExact(t *testing.T) {
