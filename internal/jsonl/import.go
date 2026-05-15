@@ -168,10 +168,17 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if renamed {
 			fmt.Fprintf(os.Stderr, "note: project #%d renamed from %q to %q during cutover\n", rec.ID, rec.OriginalName, rec.Name)
 		}
+		if len(rec.Metadata) == 0 {
+			rec.Metadata = json.RawMessage(`{}`)
+		}
+		if rec.Revision == 0 {
+			rec.Revision = 1
+		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO projects(id, uid, name, created_at, deleted_at)
-			 VALUES(?, ?, ?, ?, ?)`,
-			rec.ID, rec.UID, rec.Name, rec.CreatedAt, rec.DeletedAt)
+			`INSERT INTO projects(id, uid, name, created_at, deleted_at, metadata, revision)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.Name, rec.CreatedAt, rec.DeletedAt,
+			string(rec.Metadata), rec.Revision)
 		return wrapImportErr(env.Kind, err)
 	case KindProjectAlias:
 		var rec projectAliasRecord
@@ -197,12 +204,19 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if rec.ShortID == "" {
 			return fmt.Errorf("import issue %d: missing short_id (older envelopes must go through cutover)", rec.ID)
 		}
+		if len(rec.Metadata) == 0 {
+			rec.Metadata = json.RawMessage(`{}`)
+		}
+		if rec.Revision == 0 {
+			rec.Revision = 1
+		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO issues(id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
-			                    created_at, updated_at, closed_at, deleted_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    created_at, updated_at, closed_at, deleted_at, metadata, revision)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, rec.UID, rec.ProjectID, rec.ShortID, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
-			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
+			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt,
+			string(rec.Metadata), rec.Revision)
 		return wrapImportErr(env.Kind, err)
 	case KindComment:
 		var rec commentRecord
@@ -508,6 +522,10 @@ type projectRecord struct {
 	// the current version's exports (v8+) — see export.go.
 	NextIssueNumber int64   `json:"next_issue_number,omitempty"`
 	DeletedAt       *string `json:"deleted_at,omitempty"`
+	// Metadata and Revision land in v10 envelopes; pre-v10 sources omit
+	// the fields and the importer defaults them to '{}'/1 before INSERT.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Revision int64           `json:"revision,omitempty"`
 }
 
 type projectAliasRecord struct {
@@ -543,6 +561,10 @@ type issueRecord struct {
 	UpdatedAt    string  `json:"updated_at"`
 	ClosedAt     *string `json:"closed_at"`
 	DeletedAt    *string `json:"deleted_at"`
+	// Metadata and Revision land in v10 envelopes; pre-v10 sources omit
+	// the fields and the importer defaults them to '{}'/1 before INSERT.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Revision int64           `json:"revision,omitempty"`
 }
 
 type commentRecord struct {

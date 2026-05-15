@@ -121,14 +121,16 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		return exportProjectsV7(ctx, d, enc, opts)
 	}
 	type record struct {
-		ID        int64   `json:"id"`
-		UID       string  `json:"uid"`
-		Name      string  `json:"name"`
-		CreatedAt string  `json:"created_at"`
-		DeletedAt *string `json:"deleted_at,omitempty"`
+		ID        int64           `json:"id"`
+		UID       string          `json:"uid"`
+		Name      string          `json:"name"`
+		CreatedAt string          `json:"created_at"`
+		DeletedAt *string         `json:"deleted_at,omitempty"`
+		Metadata  json.RawMessage `json:"metadata"`
+		Revision  int64           `json:"revision"`
 	}
 	query := `SELECT id, uid, name, CAST(created_at AS TEXT),
-	                 CAST(deleted_at AS TEXT) FROM projects`
+	                 CAST(deleted_at AS TEXT), metadata, revision FROM projects`
 	args := []any{}
 	if opts.ProjectID > 0 {
 		query += ` WHERE id = ?`
@@ -141,8 +143,17 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	}
 	return scanRecords(rows, KindProject, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
-		err := rows.Scan(&rec.ID, &rec.UID, &rec.Name, &rec.CreatedAt, &rec.DeletedAt)
-		return rec, err
+		var metadata string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.Name, &rec.CreatedAt, &rec.DeletedAt,
+			&metadata, &rec.Revision)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(metadata)) {
+			return rec, fmt.Errorf("project %d metadata is invalid JSON", rec.ID)
+		}
+		rec.Metadata = json.RawMessage(metadata)
+		return rec, nil
 	})
 }
 
@@ -305,25 +316,28 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 		return exportIssuesV6(ctx, d, enc, opts)
 	}
 	type record struct {
-		ID           int64   `json:"id"`
-		UID          string  `json:"uid"`
-		ProjectID    int64   `json:"project_id"`
-		ShortID      string  `json:"short_id"`
-		Title        string  `json:"title"`
-		Body         string  `json:"body"`
-		Status       string  `json:"status"`
-		ClosedReason *string `json:"closed_reason"`
-		Owner        *string `json:"owner"`
-		Priority     *int64  `json:"priority,omitempty"`
-		Author       string  `json:"author"`
-		CreatedAt    string  `json:"created_at"`
-		UpdatedAt    string  `json:"updated_at"`
-		ClosedAt     *string `json:"closed_at"`
-		DeletedAt    *string `json:"deleted_at"`
+		ID           int64           `json:"id"`
+		UID          string          `json:"uid"`
+		ProjectID    int64           `json:"project_id"`
+		ShortID      string          `json:"short_id"`
+		Title        string          `json:"title"`
+		Body         string          `json:"body"`
+		Status       string          `json:"status"`
+		ClosedReason *string         `json:"closed_reason"`
+		Owner        *string         `json:"owner"`
+		Priority     *int64          `json:"priority,omitempty"`
+		Author       string          `json:"author"`
+		CreatedAt    string          `json:"created_at"`
+		UpdatedAt    string          `json:"updated_at"`
+		ClosedAt     *string         `json:"closed_at"`
+		DeletedAt    *string         `json:"deleted_at"`
+		Metadata     json.RawMessage `json:"metadata"`
+		Revision     int64           `json:"revision"`
 	}
 	query := `SELECT id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
 	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
-	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT)
+	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT),
+	                 metadata, revision
 	          FROM issues`
 	where, args := issueExportWhere("issues", opts)
 	query += where + ` ORDER BY id ASC`
@@ -333,10 +347,18 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	}
 	return scanRecords(rows, KindIssue, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
+		var metadata string
 		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.ShortID, &rec.Title, &rec.Body,
 			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
-			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt)
-		return rec, err
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt, &metadata, &rec.Revision)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(metadata)) {
+			return rec, fmt.Errorf("issue %d metadata is invalid JSON", rec.ID)
+		}
+		rec.Metadata = json.RawMessage(metadata)
+		return rec, nil
 	})
 }
 

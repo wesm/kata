@@ -168,3 +168,55 @@ func TestRoundtrip_IssueEnvelopeCarriesShortID(t *testing.T) {
 	_, hasNumber := issuePayload["number"]
 	assert.False(t, hasNumber, "issue envelope should not carry 'number'")
 }
+
+func TestRoundtrip_IssuePreservesMetadataAndRevision(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE issues SET metadata = ?, revision = ? WHERE id = ?`,
+		`{"scheduled_on":"2026-05-20","someday":false}`, int64(7), iss.ID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var meta string
+	var rev int64
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT metadata, revision FROM issues LIMIT 1`).Scan(&meta, &rev))
+	assert.JSONEq(t, `{"scheduled_on":"2026-05-20","someday":false}`, meta)
+	assert.Equal(t, int64(7), rev)
+}
+
+func TestRoundtrip_ProjectPreservesMetadataAndRevision(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "Personal")
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE projects SET metadata = ?, revision = ? WHERE id = ?`,
+		`{"area":"Personal","sidebar_order":2}`, int64(4), p.ID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var meta string
+	var rev int64
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT metadata, revision FROM projects WHERE name = 'Personal'`,
+	).Scan(&meta, &rev))
+	assert.JSONEq(t, `{"area":"Personal","sidebar_order":2}`, meta)
+	assert.Equal(t, int64(4), rev)
+}
