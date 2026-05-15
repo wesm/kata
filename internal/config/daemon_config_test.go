@@ -91,3 +91,36 @@ func TestReadDaemonConfig_RejectsMalformed(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config.toml")
 }
+
+func TestReadDaemonConfig_ReadsAuthToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	t.Setenv("KATA_AUTH_TOKEN", "")
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"),
+		[]byte("[auth]\ntoken = \"abc-123\"\n"), 0o600))
+
+	cfg, err := config.ReadDaemonConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "abc-123", cfg.Auth.Token)
+}
+
+func TestReadDaemonConfig_AuthTokenEnvOverridesTOML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KATA_HOME", home)
+	t.Setenv("KATA_AUTH_TOKEN", "from-env")
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"),
+		[]byte("[auth]\ntoken = \"from-toml\"\n"), 0o600))
+
+	cfg, err := config.ReadDaemonConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "from-env", cfg.Auth.Token,
+		"KATA_AUTH_TOKEN must override config.toml")
+}
+
+func TestReadDaemonConfig_AuthTokenAbsent(t *testing.T) {
+	t.Setenv("KATA_HOME", t.TempDir())
+	t.Setenv("KATA_AUTH_TOKEN", "")
+	cfg, err := config.ReadDaemonConfig()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Auth.Token)
+}
