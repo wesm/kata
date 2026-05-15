@@ -216,6 +216,131 @@ func TestMaterializeNext_UniqueConflict_SkipsAndAdvancesCursor(t *testing.T) {
 	assert.Contains(t, payload, `"reason":"already_exists"`)
 }
 
+// TestCloseDone_Recurrence_EmitsExhaustedOnLastOccurrenceCOUNT1 verifies that
+// closing the sole instance of a COUNT=1 rule emits recurrence.exhausted exactly
+// once, clears the cursor, and does not re-emit on a subsequent MaterializeNext
+// replay (one-shot transition guard).
+func TestCloseDone_Recurrence_EmitsExhaustedOnLastOccurrenceCOUNT1(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=DAILY;COUNT=1", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "x"},
+	})
+	require.NoError(t, err)
+
+	// Sanity: cursor was initialized at creation (Gap A fix).
+	var initialCursor *string
+	require.NoError(t, d.QueryRow(
+		`SELECT next_occurrence_key FROM recurrences WHERE id = ?`, rec.ID,
+	).Scan(&initialCursor))
+	require.NotNil(t, initialCursor, "CreateRecurrence must set next_occurrence_key at creation")
+	assert.Equal(t, "2026-05-15", *initialCursor)
+
+	issueID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-15", "x")
+	_, _, _, err = d.CloseIssue(ctx, issueID, "done", "tester", "msg", nil)
+	require.NoError(t, err)
+
+	var n int
+	require.NoError(t, d.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type='recurrence.exhausted'`,
+	).Scan(&n))
+	assert.Equal(t, 1, n, "exhausted must be emitted exactly once on the transition")
+
+	// Cursor cleared.
+	var afterCursor *string
+	require.NoError(t, d.QueryRow(
+		`SELECT next_occurrence_key FROM recurrences WHERE id = ?`, rec.ID,
+	).Scan(&afterCursor))
+	assert.Nil(t, afterCursor)
+
+	// Replaying MaterializeNext directly must NOT re-emit.
+	tx, err := d.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = d.MaterializeNext(ctx, tx, rec.ID, "2026-05-15", "tester")
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+	require.NoError(t, d.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type='recurrence.exhausted'`,
+	).Scan(&n))
+	assert.Equal(t, 1, n, "exhausted is a one-shot transition")
+}
+
+// TestCloseDone_Recurrence_EmitsExhaustedWhenSuccessPathExhaustsCOUNT2 verifies
+// the Gap B fix: when the success-path materialization advances the cursor to
+// NULL (because no next occurrence exists after the one just materialized), it
+// emits recurrence.exhausted immediately — before any subsequent close can see
+// cursor=NULL and skip the guard.
+func TestCloseDone_Recurrence_EmitsExhaustedWhenSuccessPathExhaustsCOUNT2(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=DAILY;COUNT=2", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "x"},
+	})
+	require.NoError(t, err)
+
+	firstID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-15", "x")
+
+	// Close #1 → MaterializeNext walks 2026-05-15 → 2026-05-16 (materialize),
+	// then Walk(after=2026-05-16) = nil → cursor → NULL → emit exhausted (Gap B).
+	_, _, _, err = d.CloseIssue(ctx, firstID, "done", "tester", "m1", nil)
+	require.NoError(t, err)
+
+	var n int
+	require.NoError(t, d.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type='recurrence.exhausted'`,
+	).Scan(&n))
+	assert.Equal(t, 1, n, "exhausted must fire when materialization exhausts the future")
+
+	// The materialized #2 was created with occurrence_key=2026-05-16.
+	var secondID int64
+	require.NoError(t, d.QueryRow(
+		`SELECT id FROM issues WHERE recurrence_id = ? AND occurrence_key = ?`,
+		rec.ID, "2026-05-16",
+	).Scan(&secondID))
+
+	// Close #2 → MaterializeNext(after=2026-05-16) → Walk=nil → cursor was already NULL
+	// → no second exhausted event.
+	_, _, _, err = d.CloseIssue(ctx, secondID, "done", "tester", "m2", nil)
+	require.NoError(t, err)
+	require.NoError(t, d.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type='recurrence.exhausted'`,
+	).Scan(&n))
+	assert.Equal(t, 1, n, "exhausted is one-shot — must not fire on subsequent close")
+}
+
+// TestCloseDone_Recurrence_NoExhaustedWhileFutureRemains verifies that closing
+// an instance of a COUNT=10 recurrence (which has many future occurrences) does
+// not emit recurrence.exhausted.
+func TestCloseDone_Recurrence_NoExhaustedWhileFutureRemains(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=DAILY;COUNT=10", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "x"},
+	})
+	require.NoError(t, err)
+	firstID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-15", "x")
+	_, _, _, err = d.CloseIssue(ctx, firstID, "done", "tester", "msg", nil)
+	require.NoError(t, err)
+	var n int
+	require.NoError(t, d.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type='recurrence.exhausted'`,
+	).Scan(&n))
+	assert.Equal(t, 0, n, "exhausted must not fire while the rule still has more occurrences")
+}
+
 func TestMaterializeNext_AfterConflict_NoRegressionOnReplay(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

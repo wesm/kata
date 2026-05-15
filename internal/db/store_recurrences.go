@@ -76,16 +76,26 @@ func (d *DB) CreateRecurrence(ctx context.Context, in CreateRecurrenceIn) (Recur
 		metaJSON = string(in.Template.Metadata)
 	}
 
+	// Compute the initial cursor: the first occurrence on or after dtstart.
+	// recurrence.Next returns nil for trivially-empty rules (e.g. UNTIL in the
+	// past); in that case the recurrence is born "exhausted" with cursor=NULL.
+	firstNext, err := recurrence.Next(in.Rule, in.DTStart, in.Timezone)
+	if err != nil {
+		return rec, fmt.Errorf("compute first occurrence: %w", err)
+	}
+
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO recurrences
 		  (uid, project_id, rrule, dtstart, timezone,
 		   template_title, template_body, template_owner, template_priority,
-		   template_labels, template_metadata, author, revision)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		   template_labels, template_metadata, next_occurrence_key,
+		   author, revision)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		recUID, in.ProjectID, in.Rule, in.DTStart, in.Timezone,
 		in.Template.Title, in.Template.Body,
 		in.Template.Owner, in.Template.Priority,
-		labelsJSON, metaJSON, in.Actor)
+		labelsJSON, metaJSON, firstNext, // *string → NULL when nil
+		in.Actor)
 	if err != nil {
 		return rec, err
 	}
@@ -639,6 +649,27 @@ func (d *DB) MaterializeNext(
 		Payload:     string(matPayload),
 	}); err != nil {
 		return out, err
+	}
+
+	// If we just materialized the LAST occurrence (cursor transitioned to NULL),
+	// emit recurrence.exhausted in the same tx — this is the only opportunity:
+	// subsequent close attempts will see cursor=NULL and skip the no-next guard.
+	if r.NextOccurrenceKey != nil && *r.NextOccurrenceKey != "" && nextNext == nil {
+		exhPayload, mErr := json.Marshal(map[string]string{"recurrence_uid": r.UID})
+		if mErr != nil {
+			return out, fmt.Errorf("marshal exhausted payload: %w", mErr)
+		}
+		if _, err := d.insertEventTx(ctx, tx, eventInsert{
+			ProjectID:   r.ProjectID,
+			ProjectName: projectName,
+			IssueID:     &newIssueID,
+			IssueUID:    &newUID,
+			Type:        "recurrence.exhausted",
+			Actor:       actor,
+			Payload:     string(exhPayload),
+		}); err != nil {
+			return out, err
+		}
 	}
 
 	out.NewIssueID = newIssueID
