@@ -2,6 +2,7 @@ package jsonl
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/wesm/kata/internal/db"
@@ -27,10 +28,12 @@ type OrphanReport struct {
 }
 
 // FKViolation is a single PRAGMA foreign_key_check row with the
-// fkid resolved to a column name.
+// fkid resolved to a column name. RowID is sql.NullInt64 because
+// PRAGMA foreign_key_check returns NULL for the rowid column on
+// WITHOUT ROWID tables; scanning into a plain int64 would fail.
 type FKViolation struct {
 	Table       string
-	RowID       int64
+	RowID       sql.NullInt64
 	ParentTable string
 	Column      string
 }
@@ -98,7 +101,7 @@ func PreflightSourceFKs(ctx context.Context, path string) (OrphanReport, error) 
 	}
 	type rawViol struct {
 		Table       string
-		RowID       int64
+		RowID       sql.NullInt64
 		ParentTable string
 		FKID        int
 	}
@@ -134,23 +137,33 @@ func PreflightSourceFKs(ctx context.Context, path string) (OrphanReport, error) 
 		if err != nil {
 			return OrphanReport{}, fmt.Errorf("preflight resolve %s: %w", r.Table, err)
 		}
-		switch classifyKnownOrphan(r.Table, r.ParentTable, col) {
+		disp := classifyKnownOrphan(r.Table, r.ParentTable, col)
+		// A NULL rowid (WITHOUT ROWID source table) leaves us with no
+		// stable identifier to dedupe drop/scrub buckets by, so we
+		// can't safely include it in either. The four known orphan
+		// classes are all rowid tables, so this should never fire on
+		// real data, but if it ever does we surface the violation
+		// rather than silently coalesce or skip it.
+		if !r.RowID.Valid {
+			disp = dispositionUnknown
+		}
+		switch disp {
 		case dispositionDrop:
-			ensureRowSet(report.DroppedRowsByTable, r.Table)[r.RowID] = struct{}{}
+			ensureRowSet(report.DroppedRowsByTable, r.Table)[r.RowID.Int64] = struct{}{}
 			// Drop precedence: remove any earlier scrub entry for
 			// this rowid in the same table.
 			if scrubs, ok := report.ScrubbedRowsByTable[r.Table]; ok {
-				delete(scrubs, r.RowID)
+				delete(scrubs, r.RowID.Int64)
 			}
 		case dispositionScrub:
 			// Drop precedence: skip if this rowid is already in
 			// the drop bucket for the same table.
 			if drops, ok := report.DroppedRowsByTable[r.Table]; ok {
-				if _, present := drops[r.RowID]; present {
+				if _, present := drops[r.RowID.Int64]; present {
 					continue
 				}
 			}
-			ensureRowSet(report.ScrubbedRowsByTable, r.Table)[r.RowID] = struct{}{}
+			ensureRowSet(report.ScrubbedRowsByTable, r.Table)[r.RowID.Int64] = struct{}{}
 		default:
 			report.UnknownViolations = append(report.UnknownViolations, FKViolation{
 				Table:       r.Table,

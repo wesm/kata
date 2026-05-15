@@ -202,6 +202,24 @@ func TestAutoCutover_NoSummaryWhenClean(t *testing.T) {
 	assert.Empty(t, stderr.Bytes())
 }
 
+// TestAutoCutover_HaltErrorRendersNullRowid confirms the preflight
+// halt message handles WITHOUT ROWID source tables. PRAGMA
+// foreign_key_check returns NULL for the rowid column there, so the
+// rendered detail uses the literal "NULL" rather than "0" or a
+// formatting artifact.
+func TestAutoCutover_HaltErrorRendersNullRowid(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV3DBWithOrphans(t, path, orphanSpec{})
+	addWithoutRowidOrphan(t, path)
+
+	err := jsonl.AutoCutover(ctx, path)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wr_child rowid=NULL parent=projects column=project_id")
+	assertNoCutoverTemps(t, path)
+}
+
 // TestAutoCutover_V8HaltsOnOrphanImportMapping covers the v5+
 // import_mappings code path that the v3 fixture cannot reach: an
 // import_mappings row whose link_id points at a missing link gets

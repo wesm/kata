@@ -75,4 +75,24 @@ func TestPreflightSourceFKs_DeduplicatesPerRow(t *testing.T) {
 		assert.Empty(t, report.ScrubbedRowsByTable)
 		assert.Empty(t, report.UnknownViolations)
 	})
+
+	// PRAGMA foreign_key_check returns NULL for the rowid column on
+	// WITHOUT ROWID tables. Scanning that into a plain int64 fails
+	// with a type-conversion error, which would mask the actual
+	// violation. Use sql.NullInt64 so the row scans cleanly and the
+	// violation surfaces in UnknownViolations with RowID.Valid=false.
+	t.Run("WITHOUT ROWID source table yields NULL rowid", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "kata.db")
+		seedV3DBWithOrphans(t, path, orphanSpec{})
+		addWithoutRowidOrphan(t, path)
+
+		report, err := jsonl.PreflightSourceFKs(ctx, path)
+		require.NoError(t, err)
+		require.Len(t, report.UnknownViolations, 1)
+		v := report.UnknownViolations[0]
+		assert.Equal(t, "wr_child", v.Table)
+		assert.Equal(t, "projects", v.ParentTable)
+		assert.Equal(t, "project_id", v.Column)
+		assert.False(t, v.RowID.Valid, "WITHOUT ROWID tables yield NULL rowid from foreign_key_check")
+	})
 }

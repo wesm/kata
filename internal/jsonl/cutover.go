@@ -180,7 +180,11 @@ func formatUnknownViolations(path string, violations []FKViolation) error {
 		if col == "" {
 			col = "?"
 		}
-		fmt.Fprintf(&sb, "\n  %s rowid=%d parent=%s column=%s", v.Table, v.RowID, v.ParentTable, col)
+		rowidStr := "NULL"
+		if v.RowID.Valid {
+			rowidStr = fmt.Sprintf("%d", v.RowID.Int64)
+		}
+		fmt.Fprintf(&sb, "\n  %s rowid=%s parent=%s column=%s", v.Table, rowidStr, v.ParentTable, col)
 	}
 	if truncated {
 		sb.WriteString("\n  (output capped at 20 rows per table)")

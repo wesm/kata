@@ -525,6 +525,30 @@ func seedV8DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 	require.NoError(t, err)
 }
 
+// addWithoutRowidOrphan augments an existing source DB with a tiny
+// WITHOUT ROWID child table referencing projects(id) and inserts one
+// orphan row whose project_id has no parent. PRAGMA foreign_key_check
+// reports NULL for the rowid column on WITHOUT ROWID tables, so this
+// fixture exercises the NULL-rowid scan path in PreflightSourceFKs.
+func addWithoutRowidOrphan(t *testing.T, path string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	defer func() { _ = raw.Close() }()
+
+	_, err = raw.Exec(`PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`CREATE TABLE wr_child (
+		key        TEXT NOT NULL PRIMARY KEY,
+		project_id INTEGER NOT NULL REFERENCES projects(id)
+	) WITHOUT ROWID`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`INSERT INTO wr_child(key, project_id) VALUES ('orphan', 999)`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`PRAGMA foreign_keys = ON`)
+	require.NoError(t, err)
+}
+
 // captureStderr redirects os.Stderr to an in-memory buffer for
 // the duration of the test. The returned restore function reverts
 // os.Stderr and copies any pending pipe data into the buffer.
