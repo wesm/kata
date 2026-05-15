@@ -95,3 +95,52 @@ func TestPatchIssueMetadata_MissingIfMatch_400(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
+func TestPatchProjectMetadata_HappyPath_200(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p, err := env.DB.CreateProject(t.Context(), "proj")
+	require.NoError(t, err)
+
+	url := fmt.Sprintf("%s/api/v1/projects/%d/metadata", env.URL, p.ID)
+	ifMatch := fmt.Sprintf(`"rev-%d"`, p.Revision)
+	resp := doPostWithIfMatch(t, env, url, `{"actor":"tester","patch":{"area":"Personal"}}`, ifMatch)
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+	assert.Equal(t, fmt.Sprintf(`"rev-%d"`, p.Revision+1), resp.Header.Get("ETag"))
+
+	var out struct {
+		Project struct {
+			Metadata string `json:"metadata"`
+			Revision int64  `json:"revision"`
+		} `json:"project"`
+		Changed bool `json:"changed"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.True(t, out.Changed)
+	assert.Equal(t, p.Revision+1, out.Project.Revision)
+	assert.Contains(t, out.Project.Metadata, `"area":"Personal"`)
+}
+
+func TestPatchProjectMetadata_StaleIfMatch_412(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p, err := env.DB.CreateProject(t.Context(), "proj2")
+	require.NoError(t, err)
+
+	url := fmt.Sprintf("%s/api/v1/projects/%d/metadata", env.URL, p.ID)
+	resp := doPostWithIfMatch(t, env, url, `{"actor":"tester","patch":{"area":"Work"}}`, `"rev-99"`)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
+}
+
+func TestPatchProjectMetadata_UnknownKey_400(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p, err := env.DB.CreateProject(t.Context(), "proj3")
+	require.NoError(t, err)
+
+	url := fmt.Sprintf("%s/api/v1/projects/%d/metadata", env.URL, p.ID)
+	ifMatch := fmt.Sprintf(`"rev-%d"`, p.Revision)
+	resp := doPostWithIfMatch(t, env, url, `{"actor":"tester","patch":{"banana":"yellow"}}`, ifMatch)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}

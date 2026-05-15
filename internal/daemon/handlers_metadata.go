@@ -19,6 +19,12 @@ func registerMetadataHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "POST",
 		Path:        "/api/v1/projects/{project_id}/issues/{ref}/metadata",
 	}, patchIssueMetadataHandler(cfg))
+
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "patchProjectMetadata",
+		Method:      "POST",
+		Path:        "/api/v1/projects/{project_id}/metadata",
+	}, patchProjectMetadataHandler(cfg))
 }
 
 func patchIssueMetadataHandler(cfg ServerConfig) func(context.Context, *api.PatchIssueMetadataRequest) (*api.PatchIssueMetadataResponse, error) {
@@ -58,6 +64,50 @@ func patchIssueMetadataHandler(cfg ServerConfig) func(context.Context, *api.Patc
 		out := &api.PatchIssueMetadataResponse{}
 		out.ETag = fmt.Sprintf(`"rev-%d"`, res.NewRevision)
 		out.Body.Issue = res.Issue
+		out.Body.Changed = res.Changed
+		if res.Changed {
+			ev := res.Event
+			out.Body.Event = &ev
+		}
+		return out, nil
+	}
+}
+
+func patchProjectMetadataHandler(cfg ServerConfig) func(context.Context, *api.PatchProjectMetadataRequest) (*api.PatchProjectMetadataResponse, error) {
+	return func(ctx context.Context, in *api.PatchProjectMetadataRequest) (*api.PatchProjectMetadataResponse, error) {
+		if err := validateActor(in.Body.Actor); err != nil {
+			return nil, err
+		}
+		rev, err := parseIfMatchRevision(in.IfMatch)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
+			return nil, err
+		}
+		res, err := cfg.DB.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+			ProjectID:  in.ProjectID,
+			IfMatchRev: rev,
+			Actor:      in.Body.Actor,
+			Patch:      in.Body.Patch,
+		})
+		var conflict *db.RevisionConflictError
+		if errors.As(err, &conflict) {
+			return nil, api.NewError(412, "revision_conflict",
+				fmt.Sprintf("project revision is %d", conflict.CurrentRevision), "", nil)
+		}
+		if errors.Is(err, metadata.ErrUnknownKey) {
+			return nil, api.NewError(400, "unknown_metadata_key", err.Error(), "", nil)
+		}
+		if errors.Is(err, metadata.ErrInvalidValue) {
+			return nil, api.NewError(400, "invalid_metadata_value", err.Error(), "", nil)
+		}
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.PatchProjectMetadataResponse{}
+		out.ETag = fmt.Sprintf(`"rev-%d"`, res.NewRevision)
+		out.Body.Project = res.Project
 		out.Body.Changed = res.Changed
 		if res.Changed {
 			ev := res.Event
