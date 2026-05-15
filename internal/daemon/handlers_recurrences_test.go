@@ -247,13 +247,13 @@ func TestCreateRecurrence_InvalidLabelReturns400(t *testing.T) {
 	env := testenv.New(t, testenv.WithAuthToken("tok"))
 	p := seedProject(t, env, "src")
 
-	body := fmt.Sprintf(`{
+	body := `{
 		"actor":"tester",
 		"rrule":"FREQ=WEEKLY",
 		"dtstart":"2026-05-15",
 		"timezone":"UTC",
 		"template":{"title":"t","labels":["hello world"]}
-	}`)
+	}`
 	resp := doPost(t, env, fmt.Sprintf("%s/api/v1/projects/%d/recurrences", env.URL, p.ID), body)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
