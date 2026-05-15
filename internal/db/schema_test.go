@@ -8,8 +8,7 @@ import (
 )
 
 func TestIssuesMetadataAndRevisionColumns(t *testing.T) {
-	d, ctx, p, iss := setupTestIssue(t)
-	_ = p
+	d, ctx, _, iss := setupTestIssue(t)
 	var meta string
 	var rev int64
 	require.NoError(t, d.QueryRowContext(ctx,
