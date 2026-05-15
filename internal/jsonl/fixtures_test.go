@@ -289,17 +289,21 @@ func buildV7FixtureWith(t *testing.T, issues []v7Issue, events []v7Event) string
 	return buildJSONL(lines...)
 }
 
-// orphanSpec describes the orphan rows seedV3DBWithOrphans should
-// inject after the valid baseline rows. All counts default to 0.
+// orphanSpec describes the orphan rows the seed helpers
+// (seedV3DBWithOrphans, seedV8DBWithOrphans) should inject after the
+// valid baseline rows. All counts default to 0. The v3 helper ignores
+// OrphanImportMappingLink because the v3 schema has no import_mappings
+// table; that field is honored only by seedV8DBWithOrphans.
 type orphanSpec struct {
-	OrphanComments     int  // comments referencing missing issue_id
-	OrphanLinks        int  // links with one valid endpoint and one missing
-	OrphanLinkBothEnds int  // links with BOTH endpoints missing (dedup test)
-	OrphanIssueLabels  int  // issue_labels referencing missing issue_id
-	OrphanEventIssueID int  // events with missing issue_id; related_issue_id is NULL
-	OrphanEventRelated int  // events with valid issue_id, missing related
-	OrphanEventBoth    int  // events with BOTH columns missing (drop-precedence)
-	OrphanProjectAlias bool // single project_aliases row with missing project_id
+	OrphanComments          int  // comments referencing missing issue_id
+	OrphanLinks             int  // links with one valid endpoint and one missing
+	OrphanLinkBothEnds      int  // links with BOTH endpoints missing (dedup test)
+	OrphanIssueLabels       int  // issue_labels referencing missing issue_id
+	OrphanEventIssueID      int  // events with missing issue_id; related_issue_id is NULL
+	OrphanEventRelated      int  // events with valid issue_id, missing related
+	OrphanEventBoth         int  // events with BOTH columns missing (drop-precedence)
+	OrphanProjectAlias      bool // single project_aliases row with missing project_id
+	OrphanImportMappingLink int  // v5+ only: import_mappings rows whose link_id points at a missing link
 }
 
 // seedV3DBWithOrphans writes a v3-schema DB at path containing the existing
@@ -380,6 +384,143 @@ func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 			VALUES (777, 'github.com/wesm/missing', 'git', '/tmp/missing')`)
 		require.NoError(t, err)
 	}
+	_, err = raw.Exec(`PRAGMA foreign_keys = ON`)
+	require.NoError(t, err)
+}
+
+// seedV8DBWithOrphans builds a source DB at meta.schema_version='8'
+// containing a valid baseline (1 project, 3 issues, 1 link, 1 comment,
+// 1 issue_label, 4 import_mappings) plus the orphan rows requested by
+// spec. The on-disk schema is the binary's current schema (v9) — we
+// rewrite meta.schema_version to '8' so AutoCutover proceeds and the
+// V8+ export branches run, since v8 and v9 share the same column
+// shape. This is the only fixture that exercises the v5+
+// import_mappings code path; the v3 fixture cannot reach it.
+func seedV8DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Phase 1: bootstrap the current schema with db.Open so meta is
+	// populated correctly, then close to release the handle before the
+	// raw connection takes over.
+	d, err := db.Open(ctx, path)
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	defer func() { _ = raw.Close() }()
+
+	// Phase 2: seed the valid baseline via raw SQL. Fixed UIDs keep the
+	// fixture deterministic; short_ids satisfy the issues CHECK that
+	// short_id = lower(substr(uid, 27 - length(short_id), length(short_id))).
+	const projectUID = "01HZZZZZZZZZZZZZZZZZZZZZZZ"
+	issueUIDs := []string{
+		"01HZZZZZZZZZZZZZZZZZZZZA01",
+		"01HZZZZZZZZZZZZZZZZZZZZA02",
+		"01HZZZZZZZZZZZZZZZZZZZZA03",
+	}
+	issueShortIDs := []string{"za01", "za02", "za03"}
+
+	_, err = raw.Exec(`INSERT INTO projects(id, uid, name) VALUES (1, ?, 'kata')`, projectUID)
+	require.NoError(t, err)
+	for i, uid := range issueUIDs {
+		_, err = raw.Exec(
+			`INSERT INTO issues(id, uid, project_id, short_id, title, author)
+			 VALUES (?, ?, 1, ?, ?, 'tester')`,
+			i+1, uid, issueShortIDs[i], fmt.Sprintf("issue %d", i+1))
+		require.NoError(t, err)
+	}
+	_, err = raw.Exec(
+		`INSERT INTO links(id, project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
+		 VALUES (1, 1, 1, 2, ?, ?, 'related', 'tester')`,
+		issueUIDs[0], issueUIDs[1])
+	require.NoError(t, err)
+	_, err = raw.Exec(
+		`INSERT INTO comments(id, issue_id, author, body) VALUES (1, 1, 'tester', 'valid comment')`)
+	require.NoError(t, err)
+	_, err = raw.Exec(
+		`INSERT INTO issue_labels(issue_id, label, author) VALUES (1, 'bug', 'tester')`)
+	require.NoError(t, err)
+	_, err = raw.Exec(
+		`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, type, actor, payload)
+		 VALUES ('01HZZZZZZZZZZZZZZZZZEVAL01', '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'kata', 1, 'issue.created', 'tester', '{}')`)
+	require.NoError(t, err)
+
+	// One valid import_mappings row per object_type. These are the
+	// rows that exercise the v5+ exportImportMappings code path on the
+	// happy path, alongside any orphans the spec requests.
+	_, err = raw.Exec(
+		`INSERT INTO import_mappings(source, external_id, object_type, project_id, issue_id) VALUES
+		 ('beads', 'iss-1', 'issue', 1, 1)`)
+	require.NoError(t, err)
+	_, err = raw.Exec(
+		`INSERT INTO import_mappings(source, external_id, object_type, project_id, issue_id, comment_id) VALUES
+		 ('beads', 'cmt-1', 'comment', 1, 1, 1)`)
+	require.NoError(t, err)
+	_, err = raw.Exec(
+		`INSERT INTO import_mappings(source, external_id, object_type, project_id, issue_id, link_id) VALUES
+		 ('beads', 'lnk-1', 'link', 1, 1, 1)`)
+	require.NoError(t, err)
+	_, err = raw.Exec(
+		`INSERT INTO import_mappings(source, external_id, object_type, project_id, issue_id, label) VALUES
+		 ('beads', 'lbl-1', 'label', 1, 1, 'bug')`)
+	require.NoError(t, err)
+
+	// Phase 3: orphan injection with FKs disabled, schema_version
+	// rewrite, then FKs re-enabled so PRAGMA foreign_key_check sees
+	// every violation when the cutover preflight runs.
+	_, err = raw.Exec(`PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+
+	for i := 0; i < spec.OrphanComments; i++ {
+		_, err = raw.Exec(`INSERT INTO comments(issue_id, author, body) VALUES (999, 'tester', ?)`,
+			fmt.Sprintf("orphan comment %d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanLinks; i++ {
+		// Vary to_issue_id per row so the (from, to, type) UNIQUE on
+		// links doesn't collide across multiple orphan inserts.
+		_, err = raw.Exec(
+			`INSERT INTO links(project_id, from_issue_id, to_issue_id, from_issue_uid, to_issue_uid, type, author)
+			 VALUES (1, 1, ?, ?, '01HZZZZZZZZZZZZZZZZZZZZA99', 'related', 'tester')`,
+			900+i, issueUIDs[0])
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanIssueLabels; i++ {
+		_, err = raw.Exec(`INSERT INTO issue_labels(issue_id, label, author) VALUES (999, ?, 'tester')`,
+			fmt.Sprintf("orphan-%d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanEventIssueID; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, type, actor, payload)
+			 VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'kata', 999, 'issue.created', 'tester', '{}')`,
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZEV0A%02d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanEventRelated; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO events(uid, origin_instance_uid, project_id, project_name, issue_id, related_issue_id, type, actor, payload)
+			 VALUES (?, '01HZZZZZZZZZZZZZZZZZZZZZ00', 1, 'kata', 1, 999, 'issue.linked', 'tester', '{}')`,
+			fmt.Sprintf("01HZZZZZZZZZZZZZZZZZEVRA%02d", i))
+		require.NoError(t, err)
+	}
+	for i := 0; i < spec.OrphanImportMappingLink; i++ {
+		_, err = raw.Exec(
+			`INSERT INTO import_mappings(source, external_id, object_type, project_id, issue_id, link_id) VALUES
+			 ('beads', ?, 'link', 1, 1, 999)`,
+			fmt.Sprintf("orphan-link-%d", i))
+		require.NoError(t, err)
+	}
+	if spec.OrphanProjectAlias {
+		_, err = raw.Exec(`INSERT INTO project_aliases(project_id, alias_identity, alias_kind, root_path)
+			VALUES (777, 'github.com/wesm/missing', 'git', '/tmp/missing')`)
+		require.NoError(t, err)
+	}
+
+	_, err = raw.Exec(`UPDATE meta SET value='8' WHERE key='schema_version'`)
+	require.NoError(t, err)
 	_, err = raw.Exec(`PRAGMA foreign_keys = ON`)
 	require.NoError(t, err)
 }

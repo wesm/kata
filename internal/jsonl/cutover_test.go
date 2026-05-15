@@ -202,6 +202,106 @@ func TestAutoCutover_NoSummaryWhenClean(t *testing.T) {
 	assert.Empty(t, stderr.Bytes())
 }
 
+// TestAutoCutover_V8HaltsOnOrphanImportMapping covers the v5+
+// import_mappings code path that the v3 fixture cannot reach: an
+// import_mappings row whose link_id points at a missing link gets
+// classified as Unknown (preflight only knows the four issue-child
+// classes) and halts cutover with actionable detail. Source DB and
+// temp files are unchanged. This is the test that gives confidence
+// the fix in this branch handles a v6/v7/v8 → v9 cutover where the
+// orphan lives in import_mappings, not the four child tables the v3
+// test exercises.
+func TestAutoCutover_V8HaltsOnOrphanImportMapping(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV8DBWithOrphans(t, path, orphanSpec{OrphanImportMappingLink: 1})
+
+	before, err := os.ReadFile(path) //nolint:gosec // test fixture under TempDir
+	require.NoError(t, err)
+
+	err = jsonl.AutoCutover(ctx, path)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "import_mappings")
+	assert.Contains(t, err.Error(), "parent=links")
+	assert.Contains(t, err.Error(), "column=link_id")
+
+	after, err := os.ReadFile(path) //nolint:gosec // test fixture under TempDir
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "source DB must not be mutated on preflight halt")
+	assertNoCutoverTemps(t, path)
+}
+
+// TestAutoCutover_V8DropsAllKnownOrphanClasses mirrors the v3 drop
+// test on a v8 source. It exercises the V8+ events scrub branch
+// (events with NULL issue_number column) and the v5+ exportImportMappings
+// round-trip path, neither of which the v3 fixture reaches. This is
+// the test that gives confidence the fix handles a v6/v7/v8 → v9
+// cutover with orphans across the known classes.
+func TestAutoCutover_V8DropsAllKnownOrphanClasses(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV8DBWithOrphans(t, path, orphanSpec{
+		OrphanComments:     2,
+		OrphanLinks:        2,
+		OrphanIssueLabels:  1,
+		OrphanEventIssueID: 1,
+		OrphanEventRelated: 1,
+	})
+
+	// Suppress the cutover summary stderr line; this test asserts data-
+	// shape invariants. The summary is asserted by TestAutoCutover_PrintsOrphanSummary.
+	_, restore := captureStderr(t)
+	defer restore()
+	require.NoError(t, jsonl.AutoCutover(ctx, path))
+
+	d, err := db.Open(ctx, path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	assertCurrentSchemaVersion(t, path)
+
+	var commentCount, linkCount, labelCount, importMappingCount int
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM comments`).Scan(&commentCount))
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM links`).Scan(&linkCount))
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM issue_labels`).Scan(&labelCount))
+	require.NoError(t, d.QueryRowContext(ctx, `SELECT COUNT(*) FROM import_mappings`).Scan(&importMappingCount))
+
+	// Baseline: 1 valid comment, 1 valid link, 1 valid label, 4 valid
+	// import_mappings. Orphans dropped entirely.
+	assert.Equal(t, 1, commentCount, "valid comment survives; orphan comments dropped")
+	assert.Equal(t, 1, linkCount, "valid link survives; orphan links dropped")
+	assert.Equal(t, 1, labelCount, "valid label survives; orphan label dropped")
+	assert.Equal(t, 4, importMappingCount, "all 4 valid import_mappings round-trip")
+
+	// The related-only-orphan event is preserved with NULL related fields;
+	// the issue_id-orphan event was dropped.
+	var eventScrubbedCount int
+	require.NoError(t, d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM events WHERE type = 'issue.linked' AND related_issue_id IS NULL`).Scan(&eventScrubbedCount))
+	assert.Equal(t, 1, eventScrubbedCount, "orphan related event survives with NULL related")
+
+	assertNoCutoverTemps(t, path)
+}
+
+// TestAutoCutover_V8Clean: a v8 source with no orphans cuts over
+// silently (no stderr summary line) and lands at the current schema.
+// Confirms the fix is transparent to operators upgrading a clean v8
+// DB to v9.
+func TestAutoCutover_V8Clean(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kata.db")
+	seedV8DBWithOrphans(t, path, orphanSpec{})
+
+	stderr, restore := captureStderr(t)
+	err := jsonl.AutoCutover(ctx, path)
+	_ = restore()
+	require.NoError(t, err)
+	assert.Empty(t, stderr.Bytes())
+	assertCurrentSchemaVersion(t, path)
+	assertNoCutoverTemps(t, path)
+}
+
 // TestAutoCutover_DropsAllKnownOrphanClasses: a source DB with
 // orphans across all four known classes (events, comments,
 // links, issue_labels) cuts over successfully. Orphan rows are
