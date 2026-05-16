@@ -54,15 +54,17 @@ type ProjectStatsOut struct {
 
 // ProjectOut is the API-shape of a project. Metadata carries the project's
 // metadata JSON blob verbatim (e.g. {"area":"Personal"}) so consumers can
-// read fields like `area` without a per-project follow-up fetch.
+// read fields like `area` without a per-project follow-up fetch. The type
+// is db.JSONBlob, which marshals on the wire as a raw JSON object — not as
+// a JSON-encoded string.
 type ProjectOut struct {
-	ID        int64      `json:"id"`
-	UID       string     `json:"uid"`
-	Name      string     `json:"name"`
-	Metadata  string     `json:"metadata"`
-	Revision  int64      `json:"revision"`
-	CreatedAt time.Time  `json:"created_at"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	ID        int64       `json:"id"`
+	UID       string      `json:"uid"`
+	Name      string      `json:"name"`
+	Metadata  db.JSONBlob `json:"metadata"`
+	Revision  int64       `json:"revision"`
+	CreatedAt time.Time   `json:"created_at"`
+	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
 
 	// Stats is populated only when the request carries ?include=stats.
 	// Wired in Task 3.

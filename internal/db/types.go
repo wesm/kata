@@ -1,6 +1,44 @@
 package db
 
-import "time"
+import (
+	"time"
+)
+
+// JSONBlob is the storage type for TEXT columns that hold a JSON value
+// (objects for metadata, arrays for labels). Underlying string lets the
+// database/sql driver scan TEXT into it directly with no `(*[]byte)(&…)`
+// cast and lets handlers pass it back into INSERT/UPDATE as a regular
+// string parameter. Custom MarshalJSON / UnmarshalJSON make it round-trip
+// on the wire as the raw JSON value rather than as a JSON-encoded string:
+// {"area":"Personal"} instead of "{\"area\":\"Personal\"}".
+//
+// The empty value marshals as JSON null so a struct missing a default
+// doesn't produce invalid JSON. CHECK constraints in the schema
+// (json_valid + json_type) enforce that any persisted value is the
+// expected shape — this type intentionally trusts those constraints and
+// does no shape validation on marshal.
+type JSONBlob string
+
+// MarshalJSON emits the stored bytes verbatim (a JSON object or array,
+// per schema). Empty JSONBlob marshals as JSON null.
+func (j JSONBlob) MarshalJSON() ([]byte, error) {
+	if j == "" {
+		return []byte("null"), nil
+	}
+	return []byte(j), nil
+}
+
+// UnmarshalJSON copies the raw input bytes verbatim. JSON null is stored
+// as the empty string so a round-trip through unmarshal/marshal produces
+// the same value.
+func (j *JSONBlob) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		*j = ""
+		return nil
+	}
+	*j = JSONBlob(b)
+	return nil
+}
 
 // Project mirrors a row in projects. DeletedAt is set when the project has
 // been archived via kata projects remove (#24); the row stays in the table so
@@ -10,7 +48,7 @@ type Project struct {
 	ID        int64      `json:"id"`
 	UID       string     `json:"uid"`
 	Name      string     `json:"name"`
-	Metadata  string     `json:"metadata"`
+	Metadata  JSONBlob   `json:"metadata"`
 	Revision  int64      `json:"revision"`
 	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
@@ -52,7 +90,7 @@ type Issue struct {
 	Owner         *string    `json:"owner,omitempty"`
 	Priority      *int64     `json:"priority,omitempty"`
 	Author        string     `json:"author"`
-	Metadata      string     `json:"metadata"`
+	Metadata      JSONBlob   `json:"metadata"`
 	Revision      int64      `json:"revision"`
 	RecurrenceID  *int64     `json:"recurrence_id,omitempty"`
 	OccurrenceKey *string    `json:"occurrence_key,omitempty"`
@@ -122,20 +160,18 @@ type IssueLabel struct {
 // link is closed by issues.recurrence_id + issues.occurrence_key, whose
 // partial unique index guarantees one materialized issue per occurrence.
 type Recurrence struct {
-	ID               int64   `json:"id"`
-	UID              string  `json:"uid"`
-	ProjectID        int64   `json:"project_id"`
-	RRule            string  `json:"rrule"`
-	DTStart          string  `json:"dtstart"`
-	Timezone         string  `json:"timezone"`
-	TemplateTitle    string  `json:"template_title"`
-	TemplateBody     string  `json:"template_body"`
-	TemplateOwner    *string `json:"template_owner,omitempty"`
-	TemplatePriority *int64  `json:"template_priority,omitempty"`
-	// TemplateLabels and TemplateMetadata are stored as JSON-encoded text;
-	// callers decode into typed shapes themselves.
-	TemplateLabels      string     `json:"template_labels"`
-	TemplateMetadata    string     `json:"template_metadata"`
+	ID                  int64      `json:"id"`
+	UID                 string     `json:"uid"`
+	ProjectID           int64      `json:"project_id"`
+	RRule               string     `json:"rrule"`
+	DTStart             string     `json:"dtstart"`
+	Timezone            string     `json:"timezone"`
+	TemplateTitle       string     `json:"template_title"`
+	TemplateBody        string     `json:"template_body"`
+	TemplateOwner       *string    `json:"template_owner,omitempty"`
+	TemplatePriority    *int64     `json:"template_priority,omitempty"`
+	TemplateLabels      JSONBlob   `json:"template_labels"`
+	TemplateMetadata    JSONBlob   `json:"template_metadata"`
 	NextOccurrenceKey   *string    `json:"next_occurrence_key,omitempty"`
 	LastMaterializedUID *string    `json:"last_materialized_uid,omitempty"`
 	Author              string     `json:"author"`

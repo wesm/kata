@@ -58,19 +58,19 @@ func metadataSubjects() []metadataSubject {
 }
 
 // decodeMetadataEnvelope pulls the {metadata, revision} pair from the
-// subject-specific envelope key in a PATCH response body. The metadata blob
-// is stored as a JSON string, so this returns the decoded inner string ready
-// for substring assertions.
+// subject-specific envelope key in a PATCH response body. metadata is a JSON
+// object on the wire; the helper returns it as the raw bytes (rendered as a
+// string for substring assertions on the well-formed marshal output).
 func decodeMetadataEnvelope(t *testing.T, raw []byte, envKey string) (metadata string, rev int64) {
 	t.Helper()
 	var envelope map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(raw, &envelope))
 	var inner struct {
-		Metadata string `json:"metadata"`
-		Revision int64  `json:"revision"`
+		Metadata json.RawMessage `json:"metadata"`
+		Revision int64           `json:"revision"`
 	}
 	require.NoError(t, json.Unmarshal(envelope[envKey], &inner))
-	return inner.Metadata, inner.Revision
+	return string(inner.Metadata), inner.Revision
 }
 
 // TestPatchMetadata_HappyPath_200 covers the happy-path PATCH for both the
@@ -188,15 +188,15 @@ func TestPatchIssueMetadata_UnknownKey_Accepted(t *testing.T) {
 
 	var out struct {
 		Issue struct {
-			Metadata string `json:"metadata"`
-			Revision int64  `json:"revision"`
+			Metadata json.RawMessage `json:"metadata"`
+			Revision int64           `json:"revision"`
 		} `json:"issue"`
 		Changed bool `json:"changed"`
 	}
 	require.NoError(t, json.Unmarshal(raw, &out))
 	assert.True(t, out.Changed)
 	assert.Equal(t, iss.Revision+1, out.Issue.Revision)
-	assert.Contains(t, out.Issue.Metadata, `"definitely_not_a_key":"yellow"`,
+	assert.Contains(t, string(out.Issue.Metadata), `"definitely_not_a_key":"yellow"`,
 		"unknown key must round-trip into the persisted metadata blob")
 
 	// GET-after view confirms the key is durably stored and surfaced.
@@ -211,11 +211,11 @@ func TestPatchIssueMetadata_UnknownKey_Accepted(t *testing.T) {
 
 	var view struct {
 		Issue struct {
-			Metadata string `json:"metadata"`
+			Metadata json.RawMessage `json:"metadata"`
 		} `json:"issue"`
 	}
 	require.NoError(t, json.Unmarshal(getBody, &view))
-	assert.Contains(t, view.Issue.Metadata, `"definitely_not_a_key":"yellow"`,
+	assert.Contains(t, string(view.Issue.Metadata), `"definitely_not_a_key":"yellow"`,
 		"GET-after must surface the opaque key alongside the reserved ones")
 }
 
@@ -248,15 +248,15 @@ func TestPatchProjectMetadata_UnknownKey_Accepted(t *testing.T) {
 
 	var out struct {
 		Project struct {
-			Metadata string `json:"metadata"`
-			Revision int64  `json:"revision"`
+			Metadata json.RawMessage `json:"metadata"`
+			Revision int64           `json:"revision"`
 		} `json:"project"`
 		Changed bool `json:"changed"`
 	}
 	require.NoError(t, json.Unmarshal(raw, &out))
 	assert.True(t, out.Changed)
 	assert.Equal(t, p.Revision+1, out.Project.Revision)
-	assert.Contains(t, out.Project.Metadata, `"definitely_not_a_key":"yellow"`,
+	assert.Contains(t, string(out.Project.Metadata), `"definitely_not_a_key":"yellow"`,
 		"unknown key must round-trip into the persisted metadata blob")
 
 	// DB-side check: confirm the key is durably stored (the ShowProject wire

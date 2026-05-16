@@ -393,19 +393,17 @@ func (d *DB) PatchRecurrence(ctx context.Context, in PatchRecurrenceIn) (PatchRe
 		if merr != nil {
 			return out, fmt.Errorf("marshal labels: %w", merr)
 		}
-		if string(nextLabels) != cur.TemplateLabels {
+		if string(nextLabels) != string(cur.TemplateLabels) {
 			addDiff("template_labels",
-				json.RawMessage(cur.TemplateLabels),
-				json.RawMessage(nextLabels))
+				json.RawMessage(cur.TemplateLabels), json.RawMessage(nextLabels))
 			sets = append(sets, "template_labels = ?")
 			args = append(args, string(nextLabels))
 		}
 	}
 	if in.Update.TemplateMetadata != nil {
-		if string(*in.Update.TemplateMetadata) != cur.TemplateMetadata {
+		if string(*in.Update.TemplateMetadata) != string(cur.TemplateMetadata) {
 			addDiff("template_metadata",
-				json.RawMessage(cur.TemplateMetadata),
-				json.RawMessage(*in.Update.TemplateMetadata))
+				json.RawMessage(cur.TemplateMetadata), *in.Update.TemplateMetadata)
 			sets = append(sets, "template_metadata = ?")
 			args = append(args, string(*in.Update.TemplateMetadata))
 		}

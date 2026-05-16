@@ -162,7 +162,7 @@ func TestCreateRecurrence_DedupesTemplateLabels(t *testing.T) {
 	})
 
 	// Stored labels must be normalized and sorted.
-	assert.Equal(t, `["bar","foo"]`, rec.TemplateLabels)
+	assert.JSONEq(t, `["bar","foo"]`, string(rec.TemplateLabels))
 }
 
 func TestCreateRecurrence_RejectsInvalidLabel(t *testing.T) {
