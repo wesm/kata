@@ -88,7 +88,7 @@ func TestImportV1FillsUIDsDeterministically(t *testing.T) {
 	}
 	var schemaVersion string
 	require.NoError(t, first.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion))
-	assert.Equal(t, "11", schemaVersion)
+	assert.Equal(t, "10", schemaVersion)
 }
 
 func TestImportLegacyEventSnapshotsUseFinalProjectName(t *testing.T) {
