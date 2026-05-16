@@ -97,9 +97,12 @@ func CheckAuthStartup(listen string, auth config.AuthConfig, insecureReadonly bo
 	})
 }
 
-// isNonLoopbackTCP reports whether listen designates a TCP bind on a
-// non-loopback host. Empty listen (Unix socket) and parse failures
-// return false so callers default to "no extra restriction".
+// isNonLoopbackTCP reports whether listen designates a TCP bind that's
+// reachable from anywhere but loopback. Empty listen (Unix socket) returns
+// false. Hosts that resolve to loopback IPs return false. Wildcard binds
+// (empty host, 0.0.0.0, ::) and non-loopback IPs / unknown hostnames return
+// true so the auth-startup check defaults to "needs a token" for anything
+// that could plausibly be reached from another machine on the same network.
 func isNonLoopbackTCP(listen string) bool {
 	if listen == "" {
 		return false
@@ -108,10 +111,19 @@ func isNonLoopbackTCP(listen string) bool {
 	if err != nil {
 		return false
 	}
-	switch host {
-	case "", "127.0.0.1", "localhost", "::1":
-		return false
-	default:
+	// Empty host means ":port" — net.Listen binds every interface. 0.0.0.0
+	// and :: are the IPv4 / IPv6 wildcards. All three are non-loopback.
+	if host == "" || host == "0.0.0.0" || host == "::" {
 		return true
 	}
+	if host == "localhost" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback()
+	}
+	// Non-IP, non-localhost hostname — we can't safely resolve here without
+	// DNS, so treat as non-loopback. Operators can use 127.0.0.1 / ::1
+	// explicitly if they want the loopback-only path.
+	return true
 }

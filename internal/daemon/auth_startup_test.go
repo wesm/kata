@@ -40,6 +40,39 @@ func TestAuthStartupGuard_TokenConfigured_PermittedEverywhere(t *testing.T) {
 	require.NoError(t, checkAuthStartup("100.64.0.5:7777", p))
 }
 
+// TestAuthStartupGuard_WildcardBindWithoutToken_Refuses covers the listen
+// shapes that bind every interface in Go's net.Listen — :port (empty host),
+// 0.0.0.0:port, and [::]:port. Each is reachable from anywhere on the
+// network and so must require a token unless --insecure-readonly is set.
+func TestAuthStartupGuard_WildcardBindWithoutToken_Refuses(t *testing.T) {
+	for _, addr := range []string{":7777", "0.0.0.0:7777", "[::]:7777"} {
+		t.Run(addr, func(t *testing.T) {
+			err := checkAuthStartup(addr,
+				authPolicy{Token: "", InsecureReadonly: false})
+			require.Error(t, err, "wildcard bind %q must require auth", addr)
+			assert.Contains(t, err.Error(), "non-loopback TCP")
+		})
+	}
+}
+
+// TestAuthStartupGuard_UnknownHostnameWithoutToken_Refuses covers the
+// conservative-default case: any non-IP, non-localhost hostname could be
+// public, and the guard cannot resolve DNS, so it must require a token.
+func TestAuthStartupGuard_UnknownHostnameWithoutToken_Refuses(t *testing.T) {
+	err := checkAuthStartup("example.internal:7777",
+		authPolicy{Token: "", InsecureReadonly: false})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-loopback TCP")
+}
+
+// TestAuthStartupGuard_LocalhostHostname_NoTokenOK covers the symbolic
+// loopback name. "localhost" stays in the no-token-OK set because Go's
+// resolver maps it to a loopback IP on every supported platform.
+func TestAuthStartupGuard_LocalhostHostname_NoTokenOK(t *testing.T) {
+	require.NoError(t, checkAuthStartup("localhost:7777",
+		authPolicy{Token: "", InsecureReadonly: false}))
+}
+
 func TestServerConfig_AuthPolicyThreaded(t *testing.T) {
 	cfg := ServerConfig{
 		Auth:             config.AuthConfig{Token: "tok-123"},

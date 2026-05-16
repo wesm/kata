@@ -117,7 +117,7 @@ func createRecurrenceHandler(cfg ServerConfig) func(context.Context, *api.Create
 				Metadata: in.Body.Template.Metadata,
 			},
 		})
-		if errors.Is(err, db.ErrLabelInvalid) {
+		if errors.Is(err, db.ErrLabelInvalid) || errors.Is(err, db.ErrInvalidRecurrence) {
 			return nil, api.NewError(400, "validation", err.Error(), "", nil)
 		}
 		if err != nil {
@@ -196,7 +196,7 @@ func patchRecurrenceHandler(cfg ServerConfig) func(context.Context, *api.PatchRe
 			return nil, api.NewError(412, "revision_conflict",
 				fmt.Sprintf("recurrence revision is %d", rce.CurrentRevision), "", nil)
 		}
-		if errors.Is(err, db.ErrLabelInvalid) {
+		if errors.Is(err, db.ErrLabelInvalid) || errors.Is(err, db.ErrInvalidRecurrence) {
 			return nil, api.NewError(400, "validation", err.Error(), "", nil)
 		}
 		if err != nil {

@@ -270,3 +270,55 @@ func TestPatchRecurrence_InvalidLabelReturns400(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
+// TestCreateRecurrence_InvalidInputsReturn400 covers the
+// ErrInvalidRecurrence → 400 mapping on POST. Without these mappings each
+// case would surface as a 500 — only ErrLabelInvalid was previously bridged
+// to 400.
+func TestCreateRecurrence_InvalidInputsReturn400(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"bad_rrule", `{"actor":"tester","rrule":"NOT-A-VALID-RRULE","dtstart":"2026-05-15","timezone":"UTC","template":{"title":"t"}}`},
+		{"blank_title", `{"actor":"tester","rrule":"FREQ=WEEKLY","dtstart":"2026-05-15","timezone":"UTC","template":{"title":"   "}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testenv.New(t, testenv.WithAuthToken("tok"))
+			p := seedProject(t, env, "src")
+			resp := doPost(t, env,
+				fmt.Sprintf("%s/api/v1/projects/%d/recurrences", env.URL, p.ID), tc.body)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
+}
+
+// TestPatchRecurrence_InvalidInputsReturn400 covers the patch-side
+// ErrInvalidRecurrence → 400 mapping: the effective (rrule, dtstart, tz)
+// triple plus template invariants (non-blank title, object metadata) are
+// validated before write so unparseable state can't persist and explode at
+// materialization time.
+func TestPatchRecurrence_InvalidInputsReturn400(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"bad_rrule", `{"actor":"tester","rrule":"NOT-A-VALID-RRULE"}`},
+		{"blank_title", `{"actor":"tester","template":{"title":"   "}}`},
+		{"non_object_metadata", `{"actor":"tester","template":{"metadata":[1,2,3]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testenv.New(t, testenv.WithAuthToken("tok"))
+			p := seedProject(t, env, "src")
+			rec := seedRecurrence(t, env, p.ID, "FREQ=WEEKLY", "2026-05-15", "UTC", "t")
+			resp := doPatch(t, env,
+				fmt.Sprintf("%s/api/v1/projects/%d/recurrences/%s", env.URL, p.ID, rec.UID),
+				tc.body, `"rev-1"`)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
+}

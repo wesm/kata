@@ -14,6 +14,42 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// ErrInvalidRecurrence wraps every recurrence-input validation failure so
+// handlers can map them to a 400 response. Failures covered: malformed
+// rrule / dtstart / timezone (caught by recurrence.Next), empty
+// template_title after trim, and a template_metadata blob that is not a
+// JSON object.
+var ErrInvalidRecurrence = errors.New("invalid recurrence")
+
+// validateRecurrenceCore checks the (rrule, dtstart, timezone) triple by
+// computing the first occurrence and returns the cursor on success. Wraps
+// any parse failure in ErrInvalidRecurrence.
+func validateRecurrenceCore(rule, dtstart, tz string) (*string, error) {
+	first, err := recurrence.Next(rule, dtstart, tz)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRecurrence, err)
+	}
+	return first, nil
+}
+
+// validateRecurrenceTemplate enforces the invariants the recurrence
+// engine assumes when materializing instances: a non-empty title and a
+// metadata blob that is either absent or a JSON object. Body, owner,
+// priority, and labels are validated elsewhere.
+func validateRecurrenceTemplate(title string, metadata json.RawMessage) error {
+	if strings.TrimSpace(title) == "" {
+		return fmt.Errorf("%w: template_title must be non-empty", ErrInvalidRecurrence)
+	}
+	if len(metadata) > 0 {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(metadata, &obj); err != nil {
+			return fmt.Errorf("%w: template_metadata must be a JSON object: %v",
+				ErrInvalidRecurrence, err)
+		}
+	}
+	return nil
+}
+
 // labelRe is the pattern from the schema CHECK: label must consist only of
 // a-z, 0-9, '.', '_', ':', '-' and be between 1 and 64 bytes long.
 // We validate this at write time so the DB constraint is never surprised.
@@ -126,15 +162,19 @@ func (d *DB) CreateRecurrence(ctx context.Context, in CreateRecurrenceIn) (Recur
 		metaJSON = string(in.Template.Metadata)
 	}
 
+	if err := validateRecurrenceTemplate(in.Template.Title, in.Template.Metadata); err != nil {
+		return rec, err
+	}
+
 	// Compute the first occurrence on or after dtstart. This both validates
 	// the rrule/dtstart/timezone triple at create-time (a malformed input
 	// can't be persisted only to fail later during materialization) and seeds
 	// next_occurrence_key so a freshly-created recurrence does not read as
 	// exhausted (NULL == exhausted is the cursor invariant MaterializeNext
 	// relies on).
-	firstNext, err := recurrence.Next(in.Rule, in.DTStart, in.Timezone)
+	firstNext, err := validateRecurrenceCore(in.Rule, in.DTStart, in.Timezone)
 	if err != nil {
-		return rec, fmt.Errorf("validate recurrence inputs: %w", err)
+		return rec, err
 	}
 
 	res, err := tx.ExecContext(ctx, `
@@ -237,6 +277,47 @@ func (d *DB) PatchRecurrence(ctx context.Context, in PatchRecurrenceIn) (PatchRe
 	}
 	if in.IfMatchRev != cur.Revision {
 		return out, &RevisionConflictError{CurrentRevision: cur.Revision}
+	}
+
+	// Validate any patched template fields up front. Empty titles or
+	// non-object metadata would otherwise persist and break later
+	// materialization.
+	if in.Update.TemplateTitle != nil || in.Update.TemplateMetadata != nil {
+		nextTitle := cur.TemplateTitle
+		if in.Update.TemplateTitle != nil {
+			nextTitle = *in.Update.TemplateTitle
+		}
+		var nextMeta json.RawMessage
+		if in.Update.TemplateMetadata != nil {
+			nextMeta = *in.Update.TemplateMetadata
+		} else {
+			nextMeta = json.RawMessage(cur.TemplateMetadata)
+		}
+		if err := validateRecurrenceTemplate(nextTitle, nextMeta); err != nil {
+			return out, err
+		}
+	}
+
+	// Validate the effective (rrule, dtstart, timezone) triple if any leg
+	// changes. The current row was valid when written, so unchanged values
+	// don't need re-checking — but the new combination might not parse
+	// (e.g. dtstart format swap that the current rule can't iterate from).
+	if in.Update.Rule != nil || in.Update.DTStart != nil || in.Update.Timezone != nil {
+		nextRule := cur.RRule
+		if in.Update.Rule != nil {
+			nextRule = *in.Update.Rule
+		}
+		nextDTStart := cur.DTStart
+		if in.Update.DTStart != nil {
+			nextDTStart = *in.Update.DTStart
+		}
+		nextTZ := cur.Timezone
+		if in.Update.Timezone != nil {
+			nextTZ = *in.Update.Timezone
+		}
+		if _, err := validateRecurrenceCore(nextRule, nextDTStart, nextTZ); err != nil {
+			return out, err
+		}
 	}
 
 	type diffEntry struct {
