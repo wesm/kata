@@ -243,6 +243,7 @@ func TestPatchRecurrence_InvalidInputsReturn400(t *testing.T) {
 		// metadata patch supplied" and the validation branch never runs.
 		// The create-side equivalent IS rejected (see the create test
 		// table) because that field is a value-type json.RawMessage.
+		// TestPatchRecurrence_NullMetadata_NoOp pins the no-op contract.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,4 +257,30 @@ func TestPatchRecurrence_InvalidInputsReturn400(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		})
 	}
+}
+
+// TestPatchRecurrence_NullMetadata_NoOp pins the null-as-absent semantics
+// for the *json.RawMessage Metadata field on RecurrenceTemplateUpdateInput.
+// Sending `{"template":{"metadata":null}}` decodes the pointer to nil, which
+// the handler treats identically to omitting the field — the row is not
+// touched and the revision is not bumped. Codified so a future tri-state
+// refactor cannot silently flip the meaning to "clear the metadata blob".
+func TestPatchRecurrence_NullMetadata_NoOp(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p := seedProject(t, env, "src")
+	seeded := seedRecurrence(t, env, p.ID, "FREQ=WEEKLY", "2026-05-15", "UTC", "t")
+
+	resp := doPatch(t, env,
+		fmt.Sprintf("%s/api/v1/projects/%d/recurrences/%s", env.URL, p.ID, seeded.UID),
+		`{"actor":"tester","template":{"metadata":null}}`, `"rev-1"`)
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+	assert.Equal(t, `"rev-1"`, resp.Header.Get("ETag"))
+	assert.Contains(t, string(raw), `"changed":false`)
+
+	got, err := env.DB.GetRecurrenceByUID(t.Context(), seeded.UID)
+	require.NoError(t, err)
+	assert.Equal(t, seeded.Revision, got.Revision)
+	assert.Equal(t, seeded.TemplateMetadata, got.TemplateMetadata)
 }

@@ -106,6 +106,26 @@ func TestPatchMetadata_HappyPath_200(t *testing.T) {
 	}
 }
 
+// TestPatchMetadata_NullTopLevelPatchRejected pins the wire contract for the
+// patch field on both subjects: it must be a JSON object, never null. The
+// Huma schema validator rejects `"patch":null` upfront with 400 — this test
+// locks that behavior so a future tri-state refactor cannot accidentally
+// loosen the schema and let null reach the handler (where a nil map would
+// silently no-op). Per-key delete is `{"k":null}` inside the object; null at
+// the top level is always invalid.
+func TestPatchMetadata_NullTopLevelPatchRejected(t *testing.T) {
+	for _, subject := range metadataSubjects() {
+		t.Run(subject.name, func(t *testing.T) {
+			env := testenv.New(t, testenv.WithAuthToken("tok"))
+			url, rev := subject.setup(t, env)
+			ifMatch := fmt.Sprintf(`"rev-%d"`, rev)
+			resp := doPostWithIfMatch(t, env, url, `{"actor":"tester","patch":null}`, ifMatch)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
+}
+
 // TestPatchMetadata_StaleIfMatch_412 covers stale If-Match for both subjects.
 func TestPatchMetadata_StaleIfMatch_412(t *testing.T) {
 	cases := []struct {
