@@ -126,16 +126,28 @@ func (d *DB) CreateRecurrence(ctx context.Context, in CreateRecurrenceIn) (Recur
 		metaJSON = string(in.Template.Metadata)
 	}
 
+	// Compute the first occurrence on or after dtstart. This both validates
+	// the rrule/dtstart/timezone triple at create-time (a malformed input
+	// can't be persisted only to fail later during materialization) and seeds
+	// next_occurrence_key so a freshly-created recurrence does not read as
+	// exhausted (NULL == exhausted is the cursor invariant MaterializeNext
+	// relies on).
+	firstNext, err := recurrence.Next(in.Rule, in.DTStart, in.Timezone)
+	if err != nil {
+		return rec, fmt.Errorf("validate recurrence inputs: %w", err)
+	}
+
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO recurrences
 		  (uid, project_id, rrule, dtstart, timezone,
 		   template_title, template_body, template_owner, template_priority,
-		   template_labels, template_metadata, author, revision)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		   template_labels, template_metadata, next_occurrence_key,
+		   author, revision)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		recUID, in.ProjectID, in.Rule, in.DTStart, in.Timezone,
 		in.Template.Title, in.Template.Body,
 		in.Template.Owner, in.Template.Priority,
-		labelsJSON, metaJSON, in.Actor)
+		labelsJSON, metaJSON, firstNext, in.Actor)
 	if err != nil {
 		return rec, err
 	}

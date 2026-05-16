@@ -144,6 +144,13 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Method:      "GET",
 		Path:        "/api/v1/issues",
 	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
+		if in.DeprecatedView != "" || in.DeprecatedArea != "" ||
+			in.DeprecatedOffset != 0 || in.DeprecatedClientTZ != "" {
+			return nil, api.NewError(400, "removed_param",
+				"view, area, offset query params and the X-Kata-Client-TZ header were removed",
+				"assemble named views (today/upcoming/inbox/someday/anytime/logbook) client-side from /api/v1/issues and /api/v1/projects",
+				nil)
+		}
 		if in.ProjectID < 0 {
 			return nil, api.NewError(400, "validation",
 				"project_id must be a positive integer", "", nil)

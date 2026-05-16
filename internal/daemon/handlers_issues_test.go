@@ -1793,6 +1793,41 @@ func TestListAllIssues_ProjectNotFound(t *testing.T) {
 	assertAPIError(t, resp.StatusCode, bs, http.StatusNotFound, "project_not_found")
 }
 
+// TestListAllIssues_RejectsRemovedViewParams guards against silent semantic
+// regressions for stale clients still sending the named-view query params or
+// the X-Kata-Client-TZ header that were removed when server-computed views
+// moved client-side. Returning 200 with the unfiltered feed for ?view=logbook
+// would mislead a stale client; 400 makes the breakage obvious.
+func TestListAllIssues_RejectsRemovedViewParams(t *testing.T) {
+	env := testenv.New(t)
+	for _, q := range []string{
+		"/api/v1/issues?view=today",
+		"/api/v1/issues?view=logbook",
+		"/api/v1/issues?area=Personal",
+		"/api/v1/issues?offset=10",
+	} {
+		t.Run(q, func(t *testing.T) {
+			resp, bs := envGetRaw(t, env, q)
+			assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "removed_param")
+		})
+	}
+}
+
+// TestListAllIssues_RejectsRemovedClientTZHeader covers the header arm of the
+// removed_param guard so a stale client still sending the timezone hint is
+// surfaced as a clear 400 rather than silently honored.
+func TestListAllIssues_RejectsRemovedClientTZHeader(t *testing.T) {
+	env := testenv.New(t)
+	req, err := http.NewRequest(http.MethodGet, env.URL+"/api/v1/issues", nil)
+	require.NoError(t, err)
+	req.Header.Set("X-Kata-Client-TZ", "America/New_York")
+	resp, err := env.HTTP.Do(req) //nolint:gosec // test request to loopback URL
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	bs, _ := io.ReadAll(resp.Body)
+	assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "removed_param")
+}
+
 // TestListAllIssues_HydratesLabelsAcrossProjects pins that labels attach
 // correctly to rows from different projects — the hydration helper groups by
 // project_id internally so labels stay scoped to the right issue.

@@ -230,6 +230,65 @@ func TestCreateRecurrence_RejectsInvalidLabel(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid character")
 }
 
+// TestCreateRecurrence_SeedsNextOccurrenceCursor pins the invariant that a
+// freshly-created recurrence has a populated next_occurrence_key so callers
+// reading the cursor don't see NULL (which MaterializeNext docs as the
+// exhausted-state signal).
+func TestCreateRecurrence_SeedsNextOccurrenceCursor(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
+		ProjectID: p.ID, Actor: "tester",
+		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
+		Template: db.RecurrenceTemplate{Title: "weekly review"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, rec.NextOccurrenceKey, "next_occurrence_key must be set at create time")
+	assert.Equal(t, "2026-05-15", *rec.NextOccurrenceKey)
+}
+
+// TestCreateRecurrence_RejectsBadRecurrenceInputs covers create-time validation
+// of rrule / dtstart / timezone. The validation is a side effect of computing
+// the initial cursor — if recurrence.Next can't evaluate the inputs, the row
+// must not be persisted.
+func TestCreateRecurrence_RejectsBadRecurrenceInputs(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	p, err := d.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	cases := []struct {
+		name string
+		in   db.CreateRecurrenceIn
+	}{
+		{
+			"bad_timezone",
+			db.CreateRecurrenceIn{
+				ProjectID: p.ID, Actor: "tester",
+				Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "Mars/Phobos",
+				Template: db.RecurrenceTemplate{Title: "x"},
+			},
+		},
+		{
+			"malformed_dtstart",
+			db.CreateRecurrenceIn{
+				ProjectID: p.ID, Actor: "tester",
+				Rule: "FREQ=WEEKLY", DTStart: "not-a-date", Timezone: "UTC",
+				Template: db.RecurrenceTemplate{Title: "x"},
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := d.CreateRecurrence(ctx, c.in)
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestMaterializeNext_NormalizesLegacyDuplicateLabels(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()

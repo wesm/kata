@@ -271,6 +271,18 @@ type ListAllIssuesRequest struct {
 	Priority    string `query:"priority,omitempty" doc:"exact priority filter (0..4); empty = no filter"`
 	MaxPriority string `query:"max_priority,omitempty" doc:"include only priority <= this value (0..4); empty = no filter"`
 	Limit       int    `query:"limit,omitempty"`
+
+	// Deprecated query params kept on the struct only to surface a 400 if a
+	// stale client still sends them — the daemon used to honor view= /
+	// area= / offset= and the X-Kata-Client-TZ header for server-computed
+	// named views (today/upcoming/inbox/someday/anytime/logbook). Views were
+	// removed; consumers now assemble them client-side from the unfiltered
+	// /api/v1/issues + /api/v1/projects responses. Silently ignoring these
+	// params would let stale clients get plausible-but-wrong results.
+	DeprecatedView     string `query:"view,omitempty" hidden:"true" doc:"REMOVED — assemble views client-side"`
+	DeprecatedArea     string `query:"area,omitempty" hidden:"true" doc:"REMOVED — filter by project.metadata.area client-side"`
+	DeprecatedOffset   int    `query:"offset,omitempty" hidden:"true" doc:"REMOVED — view pagination is consumer-side"`
+	DeprecatedClientTZ string `header:"X-Kata-Client-TZ" hidden:"true" doc:"REMOVED — compute today_local on the consumer"`
 }
 
 // IssueOut is the wire projection of one row in ListIssuesResponse.
