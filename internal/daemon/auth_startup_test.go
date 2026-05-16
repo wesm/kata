@@ -33,11 +33,41 @@ func TestAuthStartupGuard_UnixSocket_NoTokenOK(t *testing.T) {
 		authPolicy{Token: "", InsecureReadonly: false}))
 }
 
-func TestAuthStartupGuard_TokenConfigured_PermittedEverywhere(t *testing.T) {
+// TestAuthStartupGuard_TokenConfigured_LoopbackOnly verifies the post-fix
+// policy: a configured token is sufficient for Unix-socket and loopback TCP
+// binds (where the token never reaches the wire) but is NOT sufficient for
+// non-loopback TCP, where the token would travel in cleartext.
+func TestAuthStartupGuard_TokenConfigured_LoopbackOnly(t *testing.T) {
 	p := authPolicy{Token: "tok"}
 	require.NoError(t, checkAuthStartup("", p))
 	require.NoError(t, checkAuthStartup("127.0.0.1:0", p))
-	require.NoError(t, checkAuthStartup("100.64.0.5:7777", p))
+}
+
+// TestAuthStartupGuard_TokenOnNonLoopback_Refuses pins the security fix:
+// even with a token configured, plaintext non-loopback binds are rejected
+// at startup. Operators must front the daemon with TLS termination or
+// tunnel via SSH to reach it from another host.
+func TestAuthStartupGuard_TokenOnNonLoopback_Refuses(t *testing.T) {
+	for _, addr := range []string{"100.64.0.5:7777", ":7777", "0.0.0.0:7777", "[::]:7777"} {
+		t.Run(addr, func(t *testing.T) {
+			err := checkAuthStartup(addr, authPolicy{Token: "tok"})
+			require.Error(t, err, "non-loopback bind %q with token must be refused", addr)
+			assert.Contains(t, err.Error(), "plaintext HTTP")
+		})
+	}
+}
+
+// TestAuthStartupGuard_TokenOnNonLoopback_InsecureReadonly_StillRefuses
+// covers the corner case where the operator combines a token with
+// --insecure-readonly on a non-loopback bind. The token would still leak
+// over the wire on every client request, so the guard refuses regardless
+// of the readonly flag — the operator must drop the token (or move to
+// loopback) explicitly.
+func TestAuthStartupGuard_TokenOnNonLoopback_InsecureReadonly_StillRefuses(t *testing.T) {
+	err := checkAuthStartup("100.64.0.5:7777",
+		authPolicy{Token: "tok", InsecureReadonly: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plaintext HTTP")
 }
 
 // TestAuthStartupGuard_WildcardBindWithoutToken_Refuses covers the listen

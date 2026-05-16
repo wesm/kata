@@ -1,7 +1,10 @@
 package daemonclient
 
 import (
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -70,4 +73,38 @@ func withBearer(base http.RoundTripper, token string) http.RoundTripper {
 		base = http.DefaultTransport
 	}
 	return &bearerTransport{base: base, token: token}
+}
+
+// checkBearerTargetSafe refuses to attach a bearer token to a baseURL that
+// would put the token on the wire in cleartext. Safe targets are the
+// Unix-socket sentinel URL, HTTPS schemes, and HTTP loopback addresses
+// (including "localhost", "127.0.0.1", "[::1]"). Defense in depth: the
+// daemon-side guard in internal/daemon/auth.go already refuses to start in
+// the unsafe shape, but a client pointed at an externally-administered
+// daemon could still leak the token without this check.
+func checkBearerTargetSafe(baseURL string) error {
+	if strings.HasPrefix(baseURL, UnixBase) {
+		return nil
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("parse base URL %q for bearer-token safety check: %w", baseURL, err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme != "http" {
+		return fmt.Errorf("unsupported URL scheme %q for bearer-token client", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" || host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("refusing to attach bearer token to plaintext non-loopback URL %q — "+
+		"the daemon does not terminate TLS, so the token would travel in cleartext; "+
+		"use a Unix socket or loopback address, tunnel via SSH, or terminate TLS "+
+		"in a reverse proxy", baseURL)
 }

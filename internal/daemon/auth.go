@@ -74,20 +74,36 @@ func requireBearer(p authPolicy) func(http.Handler) http.Handler {
 	}
 }
 
-// checkAuthStartup refuses startup when the listen address is non-loopback
-// TCP, no token is configured, and the operator has not opted in to
-// --insecure-readonly. listen uses the same convention as runDaemonWithListen:
-// "" means Unix socket; "host:port" means TCP.
+// checkAuthStartup refuses startup when the listen address would expose
+// the daemon to plaintext-on-the-wire access. listen uses the same
+// convention as runDaemonWithListen: "" means Unix socket; "host:port"
+// means TCP. The matrix on non-loopback TCP is:
+//
+//	Token != ""                       -> REFUSE (token would travel in cleartext)
+//	Token == "" &&  InsecureReadonly  -> permit (dev-only GET access)
+//	Token == "" && !InsecureReadonly  -> REFUSE (would expose mutations to the LAN)
+//
+// The daemon does not terminate TLS, so a bearer token on plaintext non-
+// loopback HTTP is a passive-capture risk. Operators wanting cross-host
+// access must either tunnel via SSH (loopback on both ends) or front the
+// daemon with a TLS-terminating reverse proxy and bind the daemon to a
+// Unix socket or 127.0.0.1.
 func checkAuthStartup(listen string, p authPolicy) error {
 	if !isNonLoopbackTCP(listen) {
 		return nil
 	}
-	if p.Token == "" && !p.InsecureReadonly {
-		return fmt.Errorf("non-loopback TCP listen %q requires a token: "+
-			"set KATA_AUTH_TOKEN or [auth].token in <KATA_HOME>/config.toml, "+
-			"or pass --insecure-readonly to opt out (DEV ONLY)", listen)
+	if p.Token != "" {
+		return fmt.Errorf("non-loopback TCP listen %q with a bearer token is not "+
+			"supported — the daemon does not terminate TLS, so the token would "+
+			"travel over plaintext HTTP; bind to a Unix socket or 127.0.0.1 and "+
+			"tunnel via SSH or a TLS-terminating reverse proxy", listen)
 	}
-	return nil
+	if p.InsecureReadonly {
+		return nil
+	}
+	return fmt.Errorf("non-loopback TCP listen %q is not supported — "+
+		"bind to a Unix socket or 127.0.0.1, or pass --insecure-readonly "+
+		"for dev-only GET access (no mutations)", listen)
 }
 
 // CheckAuthStartup is the exported form used by the CLI entry point.
