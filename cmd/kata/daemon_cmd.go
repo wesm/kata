@@ -230,9 +230,6 @@ func runDaemonWithListen(ctx context.Context, listen string, insecureReadonly bo
 	if _, err := daemon.EnsureInbox(ctx, store); err != nil {
 		return fmt.Errorf("ensure Inbox project: %w", err)
 	}
-	if err := daemon.RunRecurrenceSweep(ctx, store); err != nil {
-		return fmt.Errorf("recurrence boot sweep: %w", err)
-	}
 
 	disp, daemonLog, hookCfgPath, err := setupHooks(store, dbPath)
 	if err != nil {
