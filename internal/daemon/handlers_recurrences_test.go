@@ -210,6 +210,7 @@ func TestCreateRecurrence_InvalidInputsReturn400(t *testing.T) {
 	}{
 		{"bad_rrule", `{"actor":"tester","rrule":"NOT-A-VALID-RRULE","dtstart":"2026-05-15","timezone":"UTC","template":{"title":"t"}}`},
 		{"blank_title", `{"actor":"tester","rrule":"FREQ=WEEKLY","dtstart":"2026-05-15","timezone":"UTC","template":{"title":"   "}}`},
+		{"null_metadata", `{"actor":"tester","rrule":"FREQ=WEEKLY","dtstart":"2026-05-15","timezone":"UTC","template":{"title":"t","metadata":null}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,6 +237,12 @@ func TestPatchRecurrence_InvalidInputsReturn400(t *testing.T) {
 		{"bad_rrule", `{"actor":"tester","rrule":"NOT-A-VALID-RRULE"}`},
 		{"blank_title", `{"actor":"tester","template":{"title":"   "}}`},
 		{"non_object_metadata", `{"actor":"tester","template":{"metadata":[1,2,3]}}`},
+		// "metadata":null is intentionally NOT tested here: the patch
+		// shape uses *json.RawMessage, and encoding/json decodes a JSON
+		// null into a nil pointer — so the daemon treats it as "no
+		// metadata patch supplied" and the validation branch never runs.
+		// The create-side equivalent IS rejected (see the create test
+		// table) because that field is a value-type json.RawMessage.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

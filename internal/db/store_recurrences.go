@@ -46,6 +46,13 @@ func validateRecurrenceTemplate(title string, metadata json.RawMessage) error {
 			return fmt.Errorf("%w: template_metadata must be a JSON object: %v",
 				ErrInvalidRecurrence, err)
 		}
+		// json.Unmarshal of the literal `null` into a map sets obj to nil
+		// without error, slipping past the object-only invariant. Reject
+		// it explicitly so MaterializeNext never sees a non-object blob.
+		if obj == nil {
+			return fmt.Errorf("%w: template_metadata must be a JSON object, got null",
+				ErrInvalidRecurrence)
+		}
 	}
 	return nil
 }

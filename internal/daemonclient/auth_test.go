@@ -226,24 +226,15 @@ func TestNewHTTPClient_AllowsBearerOverHTTPS(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestNewHTTPClient_AllowsBearerOnUnixSocketBase verifies the
-// UnixBase sentinel URL passes the safety check (the transport dials a
-// local socket, so the token never leaves the host).
-func TestNewHTTPClient_AllowsBearerOnUnixSocketBase(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("KATA_HOME", tmp)
-	t.Setenv("KATA_AUTH_TOKEN", "secret")
-
-	// Pre-create a usable socket entry so unixClientFromRuntime succeeds.
-	// The actual dial isn't exercised here — we only care that the bearer
-	// safety check passes for the UnixBase URL.
-	_, err := NewHTTPClient(context.Background(), UnixBase, Opts{})
-	if err != nil {
-		// Permit "no runtime file" failures from unixClientFromRuntime —
-		// they fire before bearer-attachment so don't indicate a regression.
-		assert.NotContains(t, err.Error(), "plaintext",
-			"UnixBase must never trip the bearer-safety check")
-	}
+// TestCheckBearerTargetSafe_UnixBase verifies the UnixBase sentinel URL
+// passes the safety check directly. The previous test went through
+// NewHTTPClient, which can fail in unixClientFromRuntime before reaching
+// the bearer-attachment code path — so a regression in the UnixBase
+// branch of checkBearerTargetSafe would have been masked. Hitting the
+// helper directly makes the coverage unambiguous.
+func TestCheckBearerTargetSafe_UnixBase(t *testing.T) {
+	require.NoError(t, checkBearerTargetSafe(UnixBase))
+	require.NoError(t, checkBearerTargetSafe(UnixBase+"/api/v1/ping"))
 }
 
 // TestNewHTTPClient_NoTokenSkipsSafetyCheck verifies the gate is
@@ -256,6 +247,46 @@ func TestNewHTTPClient_NoTokenSkipsSafetyCheck(t *testing.T) {
 
 	_, err := NewHTTPClient(context.Background(), "http://example.invalid:7373", Opts{})
 	require.NoError(t, err)
+}
+
+// TestBearerTransport_RefusesPlaintextNonLoopbackPerRequest pins the
+// per-request guard added to bearerTransport.RoundTrip: even if the
+// client was constructed against a safe base URL, an individual request
+// pointed at a plaintext non-loopback URL must be refused before the
+// token reaches the wire.
+func TestBearerTransport_RefusesPlaintextNonLoopbackPerRequest(t *testing.T) {
+	rt := withBearer(http.DefaultTransport, "secret")
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"http://example.invalid:7373/api/v1/ping", nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plaintext")
+}
+
+// TestBearerTransport_BlocksTokenOnRedirectToPlaintextNonLoopback is the
+// concrete regression test for the per-request guard. The test server
+// 302-redirects to a plaintext non-loopback URL; http.Client follows the
+// redirect through the same transport, and the redirected RoundTrip call
+// must refuse to attach the bearer rather than leaking it in cleartext.
+func TestBearerTransport_BlocksTokenOnRedirectToPlaintextNonLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.invalid:7373/api/v1/ping", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &http.Client{Transport: withBearer(http.DefaultTransport, "secret")}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	require.NoError(t, err)
+	resp, err := c.Do(req) //nolint:gosec // G704: srv.URL is the test's own httptest.Server
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plaintext")
 }
 
 // writeAuthConfig writes a config.toml with [auth].token = tok under home.

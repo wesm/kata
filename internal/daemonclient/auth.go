@@ -55,6 +55,15 @@ func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.token == "" || req.Header.Get("Authorization") != "" {
 		return t.base.RoundTrip(req)
 	}
+	// Per-request safety check: a baseURL-only check at construction can be
+	// bypassed if the server redirects from a safe target (HTTPS / loopback)
+	// to a plaintext non-loopback URL — http.Client follows the redirect via
+	// the same transport, and we would attach the token to the redirected
+	// request. Re-validating req.URL here covers both initial requests and
+	// follow-up redirects without trusting the client redirect policy.
+	if err := checkBearerTargetSafeURL(req.URL); err != nil {
+		return nil, err
+	}
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+t.token)
 	return t.base.RoundTrip(clone)
@@ -76,12 +85,9 @@ func withBearer(base http.RoundTripper, token string) http.RoundTripper {
 }
 
 // checkBearerTargetSafe refuses to attach a bearer token to a baseURL that
-// would put the token on the wire in cleartext. Safe targets are the
-// Unix-socket sentinel URL, HTTPS schemes, and HTTP loopback addresses
-// (including "localhost", "127.0.0.1", "[::1]"). Defense in depth: the
-// daemon-side guard in internal/daemon/auth.go already refuses to start in
-// the unsafe shape, but a client pointed at an externally-administered
-// daemon could still leak the token without this check.
+// would put the token on the wire in cleartext. Thin wrapper over
+// checkBearerTargetSafeURL that accepts a string base URL — used at client
+// construction time to fail fast before any request is built.
 func checkBearerTargetSafe(baseURL string) error {
 	if strings.HasPrefix(baseURL, UnixBase) {
 		return nil
@@ -89,6 +95,26 @@ func checkBearerTargetSafe(baseURL string) error {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return fmt.Errorf("parse base URL %q for bearer-token safety check: %w", baseURL, err)
+	}
+	return checkBearerTargetSafeURL(u)
+}
+
+// unixSentinelHost is the host portion of UnixBase — the synthetic value
+// http.Request sees when daemonclient dials a Unix socket. Treated as safe
+// because the request never leaves the host.
+const unixSentinelHost = "kata.invalid"
+
+// checkBearerTargetSafeURL is the per-request form of the bearer-safety check.
+// Safe targets are the Unix-socket sentinel host, HTTPS schemes, and HTTP
+// loopback addresses (including "localhost", "127.0.0.1", "[::1]"). Defense
+// in depth on top of checkAuthStartup so a redirect-following client cannot
+// leak the token to a plaintext non-loopback URL.
+func checkBearerTargetSafeURL(u *url.URL) error {
+	if u == nil {
+		return fmt.Errorf("nil URL for bearer-token safety check")
+	}
+	if u.Host == unixSentinelHost {
+		return nil
 	}
 	if u.Scheme == "https" {
 		return nil
@@ -106,5 +132,5 @@ func checkBearerTargetSafe(baseURL string) error {
 	return fmt.Errorf("refusing to attach bearer token to plaintext non-loopback URL %q — "+
 		"the daemon does not terminate TLS, so the token would travel in cleartext; "+
 		"use a Unix socket or loopback address, tunnel via SSH, or terminate TLS "+
-		"in a reverse proxy", baseURL)
+		"in a reverse proxy", u.Redacted())
 }
