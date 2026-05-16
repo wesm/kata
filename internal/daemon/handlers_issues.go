@@ -145,7 +145,7 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		Path:        "/api/v1/issues",
 	}, func(ctx context.Context, in *api.ListAllIssuesRequest) (*api.ListIssuesResponse, error) {
 		if in.DeprecatedView != "" || in.DeprecatedArea != "" ||
-			in.DeprecatedOffset != 0 || in.DeprecatedClientTZ != "" {
+			in.DeprecatedOffset != "" || in.DeprecatedClientTZ != "" {
 			return nil, api.NewError(400, "removed_param",
 				"view, area, offset query params and the X-Kata-Client-TZ header were removed",
 				"assemble named views (today/upcoming/inbox/someday/anytime/logbook) client-side from /api/v1/issues and /api/v1/projects",

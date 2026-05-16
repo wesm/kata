@@ -1805,6 +1805,8 @@ func TestListAllIssues_RejectsRemovedViewParams(t *testing.T) {
 		"/api/v1/issues?view=logbook",
 		"/api/v1/issues?area=Personal",
 		"/api/v1/issues?offset=10",
+		// offset=0 must reject too — presence matters, value does not.
+		"/api/v1/issues?offset=0",
 	} {
 		t.Run(q, func(t *testing.T) {
 			resp, bs := envGetRaw(t, env, q)

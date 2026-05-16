@@ -281,7 +281,7 @@ type ListAllIssuesRequest struct {
 	// params would let stale clients get plausible-but-wrong results.
 	DeprecatedView     string `query:"view,omitempty" hidden:"true" doc:"REMOVED — assemble views client-side"`
 	DeprecatedArea     string `query:"area,omitempty" hidden:"true" doc:"REMOVED — filter by project.metadata.area client-side"`
-	DeprecatedOffset   int    `query:"offset,omitempty" hidden:"true" doc:"REMOVED — view pagination is consumer-side"`
+	DeprecatedOffset   string `query:"offset,omitempty" hidden:"true" doc:"REMOVED — view pagination is consumer-side"`
 	DeprecatedClientTZ string `header:"X-Kata-Client-TZ" hidden:"true" doc:"REMOVED — compute today_local on the consumer"`
 }
 
