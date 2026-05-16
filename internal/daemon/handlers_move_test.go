@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,21 +15,11 @@ import (
 	"github.com/wesm/kata/internal/testenv"
 )
 
-// doMovePost builds a POST to /api/v1/projects/{fromPID}/issues/{ref}/actions/move
-// with the auth header set and the optional If-Match header applied.
-func doMovePost(t *testing.T, env *testenv.Env, fromPID int64, ref, ifMatch, body string) *http.Response {
-	t.Helper()
-	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/move", env.URL, fromPID, ref)
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	req.Header.Set("Content-Type", "application/json")
-	if ifMatch != "" {
-		req.Header.Set("If-Match", ifMatch)
-	}
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL
-	require.NoError(t, err)
-	return resp
+// moveURL builds the move action URL for the given source project and issue
+// ref so the test bodies stay focused on the request shape rather than path
+// construction.
+func moveURL(env *testenv.Env, fromPID int64, ref string) string {
+	return fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/move", env.URL, fromPID, ref)
 }
 
 // seedMovePair sets up two projects (src, tgt) and one issue in src.
@@ -53,7 +42,7 @@ func TestMoveIssue_HappyPath(t *testing.T) {
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
 	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), body, ifMatch)
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
@@ -84,51 +73,38 @@ func TestMoveIssue_StaleIfMatch_412(t *testing.T) {
 	src, tgt, iss := seedMovePair(t, env)
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, `"rev-99"`, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), body, `"rev-99"`)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
 }
 
-func TestMoveIssue_MissingActor_400(t *testing.T) {
+// TestMoveIssue_RequestShape_400 collapses the four near-identical request
+// validation tests (missing actor / to_project_uid / If-Match, bad If-Match
+// format). Each subtest builds the request body and headers from a row in
+// the table; the expectation is uniformly 400.
+func TestMoveIssue_RequestShape_400(t *testing.T) {
 	env := testenv.New(t, testenv.WithAuthToken("tok"))
 	src, tgt, iss := seedMovePair(t, env)
+	fullBody := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
+	validIfMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
 
-	body := fmt.Sprintf(`{"to_project_uid":%q}`, tgt.UID)
-	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-func TestMoveIssue_MissingToProjectUID_400(t *testing.T) {
-	env := testenv.New(t, testenv.WithAuthToken("tok"))
-	src, _, iss := seedMovePair(t, env)
-
-	body := `{"actor":"tester"}`
-	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-func TestMoveIssue_MissingIfMatch_400(t *testing.T) {
-	env := testenv.New(t, testenv.WithAuthToken("tok"))
-	src, tgt, iss := seedMovePair(t, env)
-
-	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, "", body)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-func TestMoveIssue_BadIfMatch_400(t *testing.T) {
-	env := testenv.New(t, testenv.WithAuthToken("tok"))
-	src, tgt, iss := seedMovePair(t, env)
-
-	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, `"banana"`, body)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	cases := []struct {
+		name    string
+		body    string
+		ifMatch string
+	}{
+		{"missing_actor", fmt.Sprintf(`{"to_project_uid":%q}`, tgt.UID), validIfMatch},
+		{"missing_to_project_uid", `{"actor":"tester"}`, validIfMatch},
+		{"missing_if_match", fullBody, ""},
+		{"bad_if_match_format", fullBody, `"banana"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), c.body, c.ifMatch)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	}
 }
 
 // TestMoveIssue_SameProject_400 covers the no-op case where to_project_uid
@@ -140,7 +116,7 @@ func TestMoveIssue_SameProject_400(t *testing.T) {
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, src.UID)
 	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), body, ifMatch)
 	defer func() { _ = resp.Body.Close() }()
 	bs, _ := io.ReadAll(resp.Body)
 	assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "same_project")
@@ -153,7 +129,7 @@ func TestMoveIssue_ToProjectUIDNotFound_404(t *testing.T) {
 	// A syntactically valid ULID that doesn't resolve to any project.
 	body := `{"actor":"tester","to_project_uid":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}`
 	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), body, ifMatch)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -170,7 +146,7 @@ func TestMoveIssue_SourceProjectArchived_404(t *testing.T) {
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
 	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), body, ifMatch)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -187,7 +163,7 @@ func TestMoveIssue_TargetProjectArchived_404(t *testing.T) {
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
 	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), body, ifMatch)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -197,7 +173,7 @@ func TestMoveIssue_IssueNotFound_404(t *testing.T) {
 	src, tgt, _ := seedMovePair(t, env)
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
-	resp := doMovePost(t, env, src.ID, "zzzz9", `"rev-1"`, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, "zzzz9"), body, `"rev-1"`)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -223,7 +199,7 @@ func TestMoveIssue_CrossProjectLinks_409_WithBlockers(t *testing.T) {
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
 	ifMatch := fmt.Sprintf(`"rev-%d"`, a.Revision)
-	resp := doMovePost(t, env, src.ID, a.ShortID, ifMatch, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, a.ShortID), body, ifMatch)
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusConflict, resp.StatusCode, "body: %s", raw)
@@ -275,7 +251,7 @@ func TestMoveIssue_RecurrencePinned_409(t *testing.T) {
 
 	body := fmt.Sprintf(`{"actor":"tester","to_project_uid":%q}`, tgt.UID)
 	ifMatch := fmt.Sprintf(`"rev-%d"`, iss.Revision)
-	resp := doMovePost(t, env, src.ID, iss.ShortID, ifMatch, body)
+	resp := doPostWithIfMatch(t, env, moveURL(env, src.ID, iss.ShortID), body, ifMatch)
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusConflict, resp.StatusCode, "body: %s", raw)

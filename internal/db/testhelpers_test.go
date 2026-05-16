@@ -312,3 +312,32 @@ func assertRowCount(ctx context.Context, t *testing.T, d *db.DB, expected int, m
 	require.NoError(t, d.QueryRowContext(ctx, query, args...).Scan(&n))
 	assert.Equal(t, expected, n, msg)
 }
+
+// assertEventCount asserts that the events table holds exactly expected rows
+// of the given event type. Replaces the verbose
+// `SELECT COUNT(*) FROM events WHERE type='X'` pattern that recurred across
+// store_recurrences*_test.go and store_metadata_test.go.
+func assertEventCount(t *testing.T, d *db.DB, eventType string, expected int) {
+	t.Helper()
+	var n int
+	require.NoError(t, d.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type = ?`, eventType,
+	).Scan(&n))
+	assert.Equalf(t, expected, n, "events of type %q", eventType)
+}
+
+// setupRecurrence extends setupTestProject by also creating a recurrence
+// inside the new project. Callers populate only the fields they care about
+// in in (Rule / DTStart / Timezone / Template); ProjectID and a default
+// Actor of "tester" are filled in automatically.
+func setupRecurrence(t *testing.T, in db.CreateRecurrenceIn) (*db.DB, context.Context, db.Project, db.Recurrence) {
+	t.Helper()
+	d, ctx, p := setupTestProject(t)
+	in.ProjectID = p.ID
+	if in.Actor == "" {
+		in.Actor = "tester"
+	}
+	rec, err := d.CreateRecurrence(ctx, in)
+	require.NoError(t, err)
+	return d, ctx, p, rec
+}

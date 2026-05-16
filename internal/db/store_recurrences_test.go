@@ -11,46 +11,28 @@ import (
 )
 
 func TestCreateRecurrence_HappyPath(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID,
-		Actor:     "tester",
-		Rule:      "FREQ=WEEKLY;BYDAY=MO",
-		DTStart:   "2026-05-11",
-		Timezone:  "America/New_York",
+	d, _, _, rec := setupRecurrence(t, db.CreateRecurrenceIn{
+		Rule:     "FREQ=WEEKLY;BYDAY=MO",
+		DTStart:  "2026-05-11",
+		Timezone: "America/New_York",
 		Template: db.RecurrenceTemplate{
 			Title: "Weekly review",
 			Body:  "What got done?",
 		},
 	})
-	require.NoError(t, err)
 	assert.Len(t, rec.UID, 26)
 	assert.Equal(t, "FREQ=WEEKLY;BYDAY=MO", rec.RRule)
 	assert.Equal(t, "Weekly review", rec.TemplateTitle)
 	assert.Equal(t, int64(1), rec.Revision)
 
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM events
-        WHERE type='recurrence.created'`).Scan(&n))
-	assert.Equal(t, 1, n)
+	assertEventCount(t, d, "recurrence.created", 1)
 }
 
 func TestPatchRecurrence_BumpsRevisionAndEmitsDiff(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, _, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "Old"},
 	})
-	require.NoError(t, err)
 
 	res, err := d.PatchRecurrence(ctx, db.PatchRecurrenceIn{
 		RecurrenceID: rec.ID, IfMatchRev: 1, Actor: "tester",
@@ -77,11 +59,7 @@ func TestPatchRecurrence_BumpsRevisionAndEmitsDiff(t *testing.T) {
 }
 
 func TestPatchRecurrence_NoChangeIsNoOp(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p")
-	rec, _ := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, _, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "Same"},
 	})
@@ -95,18 +73,11 @@ func TestPatchRecurrence_NoChangeIsNoOp(t *testing.T) {
 	assert.False(t, res.Changed)
 	assert.Equal(t, int64(1), res.NewRevision)
 
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM events
-        WHERE type='recurrence.updated'`).Scan(&n))
-	assert.Equal(t, 0, n, "no-op patch must not emit recurrence.updated event")
+	assertEventCount(t, d, "recurrence.updated", 0)
 }
 
 func TestPatchRecurrence_RevisionConflict(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p")
-	rec, _ := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, _, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "X"},
 	})
@@ -120,11 +91,7 @@ func TestPatchRecurrence_RevisionConflict(t *testing.T) {
 }
 
 func TestSoftDeleteRecurrence(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p")
-	rec, _ := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "X"},
 	})
@@ -134,10 +101,7 @@ func TestSoftDeleteRecurrence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, list, "soft-deleted recurrence must not appear in listing")
 
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM events
-        WHERE type='recurrence.deleted'`).Scan(&n))
-	assert.Equal(t, 1, n)
+	assertEventCount(t, d, "recurrence.deleted", 1)
 
 	// Fetching by ID still works (soft-delete is preserved).
 	got, err := d.GetRecurrenceByID(ctx, rec.ID)
@@ -146,11 +110,7 @@ func TestSoftDeleteRecurrence(t *testing.T) {
 }
 
 func TestGetRecurrenceByUID(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p")
-	rec, _ := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, _, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "X"},
 	})
@@ -192,20 +152,14 @@ func TestListRecurrencesByProject_ExcludesArchivedProject(t *testing.T) {
 }
 
 func TestCreateRecurrence_DedupesTemplateLabels(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, _ := d.CreateProject(ctx, "p")
-
 	// Labels with duplicates, varied case, and extra whitespace.
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	_, _, _, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{
 			Title:  "dedup",
 			Labels: []string{"foo", "Foo", "  foo  ", "bar"},
 		},
 	})
-	require.NoError(t, err)
 
 	// Stored labels must be normalized and sorted.
 	assert.Equal(t, `["bar","foo"]`, rec.TemplateLabels)
@@ -235,17 +189,10 @@ func TestCreateRecurrence_RejectsInvalidLabel(t *testing.T) {
 // reading the cursor don't see NULL (which MaterializeNext docs as the
 // exhausted-state signal).
 func TestCreateRecurrence_SeedsNextOccurrenceCursor(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	_, _, _, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "weekly review"},
 	})
-	require.NoError(t, err)
 	require.NotNil(t, rec.NextOccurrenceKey, "next_occurrence_key must be set at create time")
 	assert.Equal(t, "2026-05-15", *rec.NextOccurrenceKey)
 }
@@ -290,20 +237,13 @@ func TestCreateRecurrence_RejectsBadRecurrenceInputs(t *testing.T) {
 }
 
 func TestMaterializeNext_NormalizesLegacyDuplicateLabels(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-
 	// Create a recurrence the normal way, then bypass dedupe normalization by
 	// overwriting template_labels directly with a duplicate-containing array.
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-15", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "t"},
 	})
-	require.NoError(t, err)
-	_, err = d.ExecContext(ctx,
+	_, err := d.ExecContext(ctx,
 		`UPDATE recurrences SET template_labels = ? WHERE id = ?`,
 		`["foo","foo","bar"]`, rec.ID)
 	require.NoError(t, err)

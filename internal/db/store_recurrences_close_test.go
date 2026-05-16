@@ -10,19 +10,13 @@ import (
 )
 
 func TestCloseDone_MaterializesNextRecurrence(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "Pay rent"},
 	})
-	require.NoError(t, err)
 	firstID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-11", "Pay rent")
 
-	_, _, _, err = d.CloseIssue(ctx, firstID, "done", "tester", "paid", nil)
+	_, _, _, err := d.CloseIssue(ctx, firstID, "done", "tester", "paid", nil)
 	require.NoError(t, err)
 
 	// Next-week instance must exist.
@@ -34,11 +28,7 @@ func TestCloseDone_MaterializesNextRecurrence(t *testing.T) {
 	).Scan(&n))
 	assert.Equal(t, 1, n, "next-week instance should be auto-created")
 
-	// recurrence.materialized event was emitted.
-	require.NoError(t, d.QueryRow(`
-		SELECT COUNT(*) FROM events WHERE type='recurrence.materialized'
-	`).Scan(&n))
-	assert.Equal(t, 1, n, "recurrence.materialized event should be emitted")
+	assertEventCount(t, d, "recurrence.materialized", 1)
 
 	// issue.created event for the new instance should also exist.
 	require.NoError(t, d.QueryRow(`
@@ -59,28 +49,19 @@ func TestCloseDone_MaterializesNextRecurrence(t *testing.T) {
 }
 
 func TestCloseWontfix_DoesNotMaterialize(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "x"},
 	})
-	require.NoError(t, err)
 	firstID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-11", "x")
 
-	_, _, _, err = d.CloseIssue(ctx, firstID, "wontfix", "tester", "skip", nil)
+	_, _, _, err := d.CloseIssue(ctx, firstID, "wontfix", "tester", "skip", nil)
 	require.NoError(t, err)
 
-	var n int
-	require.NoError(t, d.QueryRow(`
-		SELECT COUNT(*) FROM events WHERE type='recurrence.materialized'
-	`).Scan(&n))
-	assert.Equal(t, 0, n, "wontfix close must not trigger materialization")
+	assertEventCount(t, d, "recurrence.materialized", 0)
 
 	// Confirm no new recurrence instance was created.
+	var n int
 	require.NoError(t, d.QueryRow(`
 		SELECT COUNT(*) FROM issues WHERE recurrence_id = ? AND status='open'`, rec.ID,
 	).Scan(&n))
@@ -110,22 +91,16 @@ func TestCloseDone_NonRecurrenceIssueIsNoOp(t *testing.T) {
 }
 
 func TestCloseDone_LabelsSeededFromTemplate(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{
 			Title:  "Weekly sync",
 			Labels: []string{"recurring", "auto"},
 		},
 	})
-	require.NoError(t, err)
 	firstID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-11", "Weekly sync")
 
-	_, _, _, err = d.CloseIssue(ctx, firstID, "done", "tester", "", nil)
+	_, _, _, err := d.CloseIssue(ctx, firstID, "done", "tester", "", nil)
 	require.NoError(t, err)
 
 	// Retrieve the new instance's ID.
@@ -144,19 +119,13 @@ func TestCloseDone_LabelsSeededFromTemplate(t *testing.T) {
 }
 
 func TestCloseDone_MetadataContainsScheduledOn(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "t"},
 	})
-	require.NoError(t, err)
 	firstID, _ := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-11", "t")
 
-	_, _, _, err = d.CloseIssue(ctx, firstID, "done", "tester", "", nil)
+	_, _, _, err := d.CloseIssue(ctx, firstID, "done", "tester", "", nil)
 	require.NoError(t, err)
 
 	var metadata string
@@ -169,16 +138,10 @@ func TestCloseDone_MetadataContainsScheduledOn(t *testing.T) {
 }
 
 func TestMaterializeNext_UniqueConflict_SkipsAndAdvancesCursor(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "x"},
 	})
-	require.NoError(t, err)
 	// Pre-seed the next instance for 2026-05-18 directly to force a UNIQUE conflict.
 	_, existingUID := seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-18", "x")
 
@@ -216,16 +179,10 @@ func TestMaterializeNext_UniqueConflict_SkipsAndAdvancesCursor(t *testing.T) {
 }
 
 func TestMaterializeNext_AfterConflict_NoRegressionOnReplay(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	p, err := d.CreateProject(ctx, "p")
-	require.NoError(t, err)
-	rec, err := d.CreateRecurrence(ctx, db.CreateRecurrenceIn{
-		ProjectID: p.ID, Actor: "tester",
+	d, ctx, p, rec := setupRecurrence(t, db.CreateRecurrenceIn{
 		Rule: "FREQ=WEEKLY", DTStart: "2026-05-11", Timezone: "UTC",
 		Template: db.RecurrenceTemplate{Title: "x"},
 	})
-	require.NoError(t, err)
 	seedRecurrenceInstance(t, d, p.ID, rec.ID, "2026-05-18", "x")
 
 	// First call: hits the conflict, advances cursor to 2026-05-25.

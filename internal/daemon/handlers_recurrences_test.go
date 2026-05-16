@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,13 +13,6 @@ import (
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/testenv"
 )
-
-func seedProject(t *testing.T, env *testenv.Env, name string) db.Project {
-	t.Helper()
-	p, err := env.DB.CreateProject(t.Context(), name)
-	require.NoError(t, err)
-	return p
-}
 
 func seedRecurrence(t *testing.T, env *testenv.Env, projectID int64, rule, dtstart, tz, title string) db.Recurrence {
 	t.Helper()
@@ -44,15 +36,7 @@ func TestPostRecurrence_HappyPath(t *testing.T) {
 		"timezone":"America/New_York",
 		"template":{"title":"Weekly review"}
 	}`
-	req, err := http.NewRequest(http.MethodPost,
-		fmt.Sprintf("%s/api/v1/projects/%d/recurrences", env.URL, p.ID),
-		strings.NewReader(body))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
+	resp := doPost(t, env, fmt.Sprintf("%s/api/v1/projects/%d/recurrences", env.URL, p.ID), body)
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	require.Equalf(t, http.StatusCreated, resp.StatusCode, "body: %s", raw)
@@ -71,16 +55,10 @@ func TestPatchRecurrence_RequiresIfMatch(t *testing.T) {
 	p := seedProject(t, env, "src")
 	rec := seedRecurrence(t, env, p.ID, "FREQ=WEEKLY", "2026-05-15", "UTC", "old")
 
-	req, err := http.NewRequest(http.MethodPatch,
-		fmt.Sprintf("%s/api/v1/projects/%d/recurrences/%s", env.URL, p.ID, rec.UID),
-		strings.NewReader(`{"actor":"tester","template":{"title":"new"}}`))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	req.Header.Set("Content-Type", "application/json")
 	// No If-Match header — handler must reject with 400.
-
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
+	resp := doPatch(t, env,
+		fmt.Sprintf("%s/api/v1/projects/%d/recurrences/%s", env.URL, p.ID, rec.UID),
+		`{"actor":"tester","template":{"title":"new"}}`, "")
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
@@ -90,16 +68,9 @@ func TestPatchRecurrence_HappyPathReturnsNewETag(t *testing.T) {
 	p := seedProject(t, env, "src")
 	rec := seedRecurrence(t, env, p.ID, "FREQ=WEEKLY", "2026-05-15", "UTC", "old")
 
-	req, err := http.NewRequest(http.MethodPatch,
+	resp := doPatch(t, env,
 		fmt.Sprintf("%s/api/v1/projects/%d/recurrences/%s", env.URL, p.ID, rec.UID),
-		strings.NewReader(`{"actor":"tester","template":{"title":"new"}}`))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("If-Match", `"rev-1"`)
-
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
+		`{"actor":"tester","template":{"title":"new"}}`, `"rev-1"`)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, `"rev-2"`, resp.Header.Get("ETag"))
@@ -124,38 +95,6 @@ func TestDeleteRecurrence_SoftDeletes(t *testing.T) {
 	list, err := env.DB.ListRecurrencesByProject(t.Context(), p.ID)
 	require.NoError(t, err)
 	assert.Empty(t, list)
-}
-
-func doDelete(t *testing.T, env *testenv.Env, url string) *http.Response {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	return resp
-}
-
-func doGet(t *testing.T, env *testenv.Env, url string) *http.Response {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	return resp
-}
-
-func doPatch(t *testing.T, env *testenv.Env, url, body, ifMatch string) *http.Response {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodPatch, url, strings.NewReader(body))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("If-Match", ifMatch)
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	return resp
 }
 
 func TestShowRecurrence_AfterDeleteReturns404(t *testing.T) {
@@ -207,17 +146,6 @@ func TestDeleteRecurrence_AfterDeleteReturns404(t *testing.T) {
 	resp2 := doDelete(t, env, recURL+"?actor=tester")
 	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp2.StatusCode)
-}
-
-func doPost(t *testing.T, env *testenv.Env, url, body string) *http.Response {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer tok")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
-	require.NoError(t, err)
-	return resp
 }
 
 func TestListRecurrences_ByProject(t *testing.T) {

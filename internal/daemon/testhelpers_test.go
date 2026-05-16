@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/wesm/kata/internal/daemon"
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/hooks"
+	"github.com/wesm/kata/internal/testenv"
 	"github.com/wesm/kata/internal/testfix"
 )
 
@@ -462,4 +464,57 @@ func assertChannelClosed(t *testing.T, ch <-chan daemon.StreamMsg, timeout time.
 func broadcastEvent(b *daemon.EventBroadcaster, projectID, eventID int64) {
 	evt := &db.Event{ID: eventID, ProjectID: projectID, Type: "issue.created"}
 	b.Broadcast(daemon.StreamMsg{Kind: "event", Event: evt, ProjectID: projectID})
+}
+
+// doReqEnv is the workhorse for testenv-based HTTP helpers. It sets the
+// auth bearer (the testenv default token), Content-Type when a body is
+// present, and an If-Match header when ifMatch is non-empty.
+func doReqEnv(t *testing.T, env *testenv.Env, method, url, body, ifMatch string) *http.Response {
+	t.Helper()
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, r)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer tok")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	resp, err := env.HTTP.Do(req) //nolint:gosec // G704: test server URL, not user-controlled
+	require.NoError(t, err)
+	return resp
+}
+
+func doGet(t *testing.T, env *testenv.Env, url string) *http.Response {
+	return doReqEnv(t, env, http.MethodGet, url, "", "")
+}
+
+func doPost(t *testing.T, env *testenv.Env, url, body string) *http.Response {
+	return doReqEnv(t, env, http.MethodPost, url, body, "")
+}
+
+func doPostWithIfMatch(t *testing.T, env *testenv.Env, url, body, ifMatch string) *http.Response {
+	return doReqEnv(t, env, http.MethodPost, url, body, ifMatch)
+}
+
+func doPatch(t *testing.T, env *testenv.Env, url, body, ifMatch string) *http.Response {
+	return doReqEnv(t, env, http.MethodPatch, url, body, ifMatch)
+}
+
+func doDelete(t *testing.T, env *testenv.Env, url string) *http.Response {
+	return doReqEnv(t, env, http.MethodDelete, url, "", "")
+}
+
+// seedProject creates a project named name via the DB and asserts no error.
+// Lives here instead of per-file so handler tests in different domains share
+// the same fixture.
+func seedProject(t *testing.T, env *testenv.Env, name string) db.Project {
+	t.Helper()
+	p, err := env.DB.CreateProject(t.Context(), name)
+	require.NoError(t, err)
+	return p
 }
