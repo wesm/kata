@@ -38,7 +38,10 @@ func seedV9SchemaDB(t *testing.T, path string) {
 	// Drop v10 additions so the table shapes match what a v9 binary
 	// would have written. SQLite supports DROP COLUMN since 3.35 (the
 	// modernc.org/sqlite driver bundles a newer engine), but indexes
-	// referencing the dropped columns must be removed first.
+	// referencing the dropped columns must be removed first. The v9
+	// schema lacks: the recurrences table and its issue-side linkage
+	// (recurrence_id / occurrence_key), and the metadata + revision
+	// columns on both issues and projects.
 	_, err = raw.Exec(`DROP INDEX IF EXISTS issues_recurrence_occurrence_uniq`)
 	require.NoError(t, err)
 	_, err = raw.Exec(`ALTER TABLE issues DROP COLUMN recurrence_id`)
@@ -46,6 +49,16 @@ func seedV9SchemaDB(t *testing.T, path string) {
 	_, err = raw.Exec(`ALTER TABLE issues DROP COLUMN occurrence_key`)
 	require.NoError(t, err)
 	_, err = raw.Exec(`DROP TABLE recurrences`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`ALTER TABLE issues DROP COLUMN metadata`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`ALTER TABLE issues DROP COLUMN revision`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`DROP INDEX IF EXISTS projects_area`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`ALTER TABLE projects DROP COLUMN metadata`)
+	require.NoError(t, err)
+	_, err = raw.Exec(`ALTER TABLE projects DROP COLUMN revision`)
 	require.NoError(t, err)
 
 	const projectUID = "01HZZZZZZZZZZZZZZZZZZZZZZZ"
@@ -85,10 +98,12 @@ func TestExport_PreV10_NoMissingColumnError(t *testing.T) {
 
 	records := decodeJSONLLines(t, buf.Bytes())
 
-	// The pre-v10 issue projection must omit recurrence linkage fields.
-	// Confirm the absence so a future schema bump that leaks v10 columns
-	// back into the v8/v9 path fails this test.
-	var sawIssue, sawEvent, sawRecurrence bool
+	// The pre-v10 projections must omit every column added in v10:
+	// recurrence linkage (issue side) and metadata + revision (issue and
+	// project sides). Confirm the absence so a future change that leaks
+	// v10 columns back into the v8/v9 path fails this test — that
+	// regression produced "no such column: metadata" on real v9 sources.
+	var sawIssue, sawProject, sawEvent, sawRecurrence bool
 	for _, rec := range records {
 		data, _ := rec["data"].(map[string]any)
 		switch rec["kind"] {
@@ -97,8 +112,12 @@ func TestExport_PreV10_NoMissingColumnError(t *testing.T) {
 			assert.NotContains(t, data, "recurrence_id", "v9 issue export must omit recurrence_id")
 			assert.NotContains(t, data, "recurrence_uid", "v9 issue export must omit recurrence_uid")
 			assert.NotContains(t, data, "occurrence_key", "v9 issue export must omit occurrence_key")
-			assert.Contains(t, data, "metadata", "v9 issue export must keep metadata (G1)")
-			assert.Contains(t, data, "revision", "v9 issue export must keep revision (G1)")
+			assert.NotContains(t, data, "metadata", "v9 issue export must omit metadata (v10 column)")
+			assert.NotContains(t, data, "revision", "v9 issue export must omit revision (v10 column)")
+		case "project":
+			sawProject = true
+			assert.NotContains(t, data, "metadata", "v9 project export must omit metadata (v10 column)")
+			assert.NotContains(t, data, "revision", "v9 project export must omit revision (v10 column)")
 		case "event":
 			sawEvent = true
 			assert.Contains(t, data, "uid", "v9 event export must keep uid")
@@ -109,6 +128,7 @@ func TestExport_PreV10_NoMissingColumnError(t *testing.T) {
 		}
 	}
 	assert.True(t, sawIssue, "expected at least one issue record")
+	assert.True(t, sawProject, "expected at least one project record")
 	assert.True(t, sawEvent, "expected at least one event record")
 	assert.False(t, sawRecurrence, "v9 export must not emit recurrence records")
 }

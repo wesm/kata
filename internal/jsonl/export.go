@@ -126,6 +126,9 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	if sourceSchemaVersion < 8 {
 		return exportProjectsV7(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 10 {
+		return exportProjectsV8(ctx, d, enc, opts)
+	}
 	type record struct {
 		ID        int64           `json:"id"`
 		UID       string          `json:"uid"`
@@ -160,6 +163,40 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		}
 		rec.Metadata = json.RawMessage(metadata)
 		return rec, nil
+	})
+}
+
+// exportProjectsV8 emits the v8/v9 projects projection: identity and
+// next_issue_number are already gone, but metadata + revision are v10
+// additions that don't exist on the source table yet. Reading them via the
+// current path would fail with "no such column: metadata" on a real v9
+// database, even though the v9 cutover fixture (which keeps the v10
+// physical schema) does not surface this. The import path defaults
+// metadata to {} and revision to 1 when those fields are absent from a
+// record, so omitting them here produces correct v10 rows downstream.
+func exportProjectsV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+	type record struct {
+		ID        int64   `json:"id"`
+		UID       string  `json:"uid"`
+		Name      string  `json:"name"`
+		CreatedAt string  `json:"created_at"`
+		DeletedAt *string `json:"deleted_at,omitempty"`
+	}
+	query := `SELECT id, uid, name, CAST(created_at AS TEXT), CAST(deleted_at AS TEXT) FROM projects`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export projects: %w", err)
+	}
+	return scanRecords(rows, KindProject, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.Name, &rec.CreatedAt, &rec.DeletedAt)
+		return rec, err
 	})
 }
 
@@ -454,35 +491,33 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	})
 }
 
-// exportIssuesV8 emits the schema_version 8..9 issue projection (with
-// metadata + revision but without recurrence linkage). The recurrences
-// table and issues.recurrence_id / issues.occurrence_key columns are v10+
-// additions, so cutover from a v8/v9 source must omit the LEFT JOIN and
-// the recurrence fields to avoid `no such table` / `no such column`.
+// exportIssuesV8 emits the schema_version 8..9 issue projection. Both
+// versions predate the v10 additions: issues.metadata, issues.revision,
+// issues.recurrence_id, and issues.occurrence_key — none of these columns
+// exist on a real v8/v9 source DB. The import path defaults Metadata to
+// {} and Revision to 1 when those fields are absent from a record, so
+// omitting them here lets v9 rows replay cleanly into the v10 schema.
 func exportIssuesV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
-		ID           int64           `json:"id"`
-		UID          string          `json:"uid"`
-		ProjectID    int64           `json:"project_id"`
-		ShortID      string          `json:"short_id"`
-		Title        string          `json:"title"`
-		Body         string          `json:"body"`
-		Status       string          `json:"status"`
-		ClosedReason *string         `json:"closed_reason"`
-		Owner        *string         `json:"owner"`
-		Priority     *int64          `json:"priority,omitempty"`
-		Author       string          `json:"author"`
-		CreatedAt    string          `json:"created_at"`
-		UpdatedAt    string          `json:"updated_at"`
-		ClosedAt     *string         `json:"closed_at"`
-		DeletedAt    *string         `json:"deleted_at"`
-		Metadata     json.RawMessage `json:"metadata"`
-		Revision     int64           `json:"revision"`
+		ID           int64   `json:"id"`
+		UID          string  `json:"uid"`
+		ProjectID    int64   `json:"project_id"`
+		ShortID      string  `json:"short_id"`
+		Title        string  `json:"title"`
+		Body         string  `json:"body"`
+		Status       string  `json:"status"`
+		ClosedReason *string `json:"closed_reason"`
+		Owner        *string `json:"owner"`
+		Priority     *int64  `json:"priority,omitempty"`
+		Author       string  `json:"author"`
+		CreatedAt    string  `json:"created_at"`
+		UpdatedAt    string  `json:"updated_at"`
+		ClosedAt     *string `json:"closed_at"`
+		DeletedAt    *string `json:"deleted_at"`
 	}
 	query := `SELECT id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
 	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
-	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT),
-	                 metadata, revision
+	                 CAST(closed_at AS TEXT), CAST(deleted_at AS TEXT)
 	          FROM issues`
 	where, args := issueExportWhere("issues", opts)
 	query += where + ` ORDER BY id ASC`
@@ -492,18 +527,10 @@ func exportIssuesV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	}
 	return scanRecords(rows, KindIssue, enc, func(rows *sql.Rows) (record, error) {
 		var rec record
-		var metadata string
 		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.ShortID, &rec.Title, &rec.Body,
 			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
-			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt, &metadata, &rec.Revision)
-		if err != nil {
-			return rec, err
-		}
-		if !json.Valid([]byte(metadata)) {
-			return rec, fmt.Errorf("issue %d metadata is invalid JSON", rec.ID)
-		}
-		rec.Metadata = json.RawMessage(metadata)
-		return rec, nil
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt)
+		return rec, err
 	})
 }
 
