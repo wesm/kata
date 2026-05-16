@@ -153,10 +153,31 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 				return nil, err
 			}
 		}
-		if in.View != "" {
-			return listIssuesViewResponse(ctx, cfg, in)
+		priority, err := parsePriorityQuery(in.Priority, "priority")
+		if err != nil {
+			return nil, err
 		}
-		return listIssuesFilteredResponse(ctx, cfg, in)
+		maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
+		if err != nil {
+			return nil, err
+		}
+		issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
+			ProjectID:   in.ProjectID,
+			Status:      in.Status,
+			Priority:    priority,
+			MaxPriority: maxPriority,
+			Limit:       in.Limit,
+		})
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		issueOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, issues)
+		if err != nil {
+			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		}
+		out := &api.ListIssuesResponse{}
+		out.Body.Issues = issueOuts
+		return out, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -931,39 +952,4 @@ func formatDuplicateMessage(matched []map[string]any) string {
 		return "1 open issue matches this title"
 	}
 	return strconv.Itoa(n) + " open issues match this title"
-}
-
-// listIssuesFilteredResponse serves the legacy /api/v1/issues path: filter by
-// project / status / priority / max_priority, hydrate to IssueOut, and return
-// the ListIssuesResponse envelope. The caller (the GET /api/v1/issues entry
-// handler) is responsible for validating project_id before dispatching here,
-// so both this branch and the view branch see the same gate.
-func listIssuesFilteredResponse(
-	ctx context.Context, cfg ServerConfig, in *api.ListAllIssuesRequest,
-) (*api.ListIssuesResponse, error) {
-	priority, err := parsePriorityQuery(in.Priority, "priority")
-	if err != nil {
-		return nil, err
-	}
-	maxPriority, err := parsePriorityQuery(in.MaxPriority, "max_priority")
-	if err != nil {
-		return nil, err
-	}
-	issues, err := cfg.DB.ListAllIssues(ctx, db.ListAllIssuesParams{
-		ProjectID:   in.ProjectID,
-		Status:      in.Status,
-		Priority:    priority,
-		MaxPriority: maxPriority,
-		Limit:       in.Limit,
-	})
-	if err != nil {
-		return nil, api.NewError(500, "internal", err.Error(), "", nil)
-	}
-	issueOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, issues)
-	if err != nil {
-		return nil, api.NewError(500, "internal", err.Error(), "", nil)
-	}
-	out := &api.ListIssuesResponse{}
-	out.Body.Issues = issueOuts
-	return out, nil
 }

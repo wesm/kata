@@ -15,9 +15,6 @@ CREATE TABLE projects (
   CHECK (name NOT GLOB '*#*')
 );
 CREATE INDEX idx_projects_active ON projects(id) WHERE deleted_at IS NULL;
-CREATE INDEX projects_area
-  ON projects(json_extract(metadata, '$.area'))
-  WHERE deleted_at IS NULL;
 
 CREATE TABLE project_aliases (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,18 +69,6 @@ CREATE UNIQUE INDEX uniq_issues_project_short_id
 CREATE UNIQUE INDEX issues_recurrence_occurrence_uniq
   ON issues(recurrence_id, occurrence_key)
   WHERE recurrence_id IS NOT NULL AND occurrence_key IS NOT NULL;
-CREATE INDEX issues_project_scheduled_on_open
-  ON issues(project_id, json_extract(metadata, '$.scheduled_on'))
-  WHERE json_extract(metadata, '$.scheduled_on') IS NOT NULL
-    AND deleted_at IS NULL AND status = 'open';
-CREATE INDEX issues_project_deadline_on_open
-  ON issues(project_id, json_extract(metadata, '$.deadline_on'))
-  WHERE json_extract(metadata, '$.deadline_on') IS NOT NULL
-    AND deleted_at IS NULL AND status = 'open';
-CREATE INDEX issues_project_someday_open
-  ON issues(project_id)
-  WHERE json_extract(metadata, '$.someday') = 1
-    AND deleted_at IS NULL AND status = 'open';
 
 CREATE TABLE comments (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -750,7 +750,7 @@ func TestListProjects_DefaultShape(t *testing.T) {
 	require.Len(t, parsed.Projects, 1)
 	p := parsed.Projects[0]
 
-	for _, key := range []string{"id", "uid", "name", "created_at"} {
+	for _, key := range []string{"id", "uid", "name", "metadata", "created_at"} {
 		_, ok := p[key]
 		assert.True(t, ok, "missing key %q in projects[0]: %s", key, body)
 	}
@@ -762,6 +762,52 @@ func TestListProjects_DefaultShape(t *testing.T) {
 	assert.False(t, hasUpdated, "updated_at must not appear: %s", body)
 	_, hasDeleted := p["deleted_at"]
 	assert.False(t, hasDeleted, "deleted_at must omit on active project: %s", body)
+}
+
+// TestListAndShowProject_SurfaceMetadata pins that the projects list and show
+// responses carry the project's metadata JSON blob verbatim. Consumers
+// assemble client-side views (e.g. by area) from this field, so dropping it
+// silently would break that flow. Mirrors the metadata patch test (which
+// pins persistence): here we verify the wire shape.
+func TestListAndShowProject_SurfaceMetadata(t *testing.T) {
+	h := openTestDB(t)
+	ctx := t.Context()
+	p, err := h.db.CreateProject(ctx, "withmeta")
+	require.NoError(t, err)
+	_, err = h.db.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+		ProjectID:  p.ID,
+		IfMatchRev: p.Revision,
+		Actor:      "tester",
+		Patch:      map[string]json.RawMessage{"area": json.RawMessage(`"Personal"`)},
+	})
+	require.NoError(t, err)
+
+	srv := daemon.NewServer(daemon.ServerConfig{DB: h.db, StartedAt: h.now})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	listBody := getBody(t, ts, "/api/v1/projects")
+	var listParsed struct {
+		Projects []struct {
+			Name     string `json:"name"`
+			Metadata string `json:"metadata"`
+		} `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(listBody), &listParsed))
+	require.Len(t, listParsed.Projects, 1)
+	assert.Equal(t, "withmeta", listParsed.Projects[0].Name)
+	assert.Contains(t, listParsed.Projects[0].Metadata, `"area":"Personal"`,
+		"projects list must carry project metadata so consumers can filter without follow-up fetches")
+
+	showBody := getBody(t, ts, "/api/v1/projects/"+strconv.FormatInt(p.ID, 10))
+	var showParsed struct {
+		Project struct {
+			Metadata string `json:"metadata"`
+		} `json:"project"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(showBody), &showParsed))
+	assert.Contains(t, showParsed.Project.Metadata, `"area":"Personal"`,
+		"project show must carry project metadata")
 }
 
 func TestRenameProject_UpdatesName(t *testing.T) {

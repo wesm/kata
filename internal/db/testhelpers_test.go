@@ -240,34 +240,6 @@ func seedIssueInProject(t *testing.T, d *db.DB, projectID int64, title, author s
 	return issue
 }
 
-// seedIssueWithMetadata creates an issue and then replaces its metadata column
-// with the supplied JSON string. Use this to pre-set scheduled_on, deadline_on,
-// someday, or any other metadata fields without going through a high-level API.
-func seedIssueWithMetadata(t *testing.T, d *db.DB, projectID int64, title, metadataJSON string) db.Issue {
-	t.Helper()
-	iss, _, err := d.CreateIssue(context.Background(), db.CreateIssueParams{
-		ProjectID: projectID, Title: title, Author: "tester",
-	})
-	require.NoError(t, err)
-	_, err = d.ExecContext(context.Background(),
-		`UPDATE issues SET metadata = ? WHERE id = ?`, metadataJSON, iss.ID)
-	require.NoError(t, err)
-	return iss
-}
-
-// seedClosedIssue creates an issue and immediately closes it with the given
-// reason. Useful for populating the logbook view in tests.
-func seedClosedIssue(t *testing.T, d *db.DB, projectID int64, title, reason string) db.Issue {
-	t.Helper()
-	iss, _, err := d.CreateIssue(context.Background(), db.CreateIssueParams{
-		ProjectID: projectID, Title: title, Author: "tester",
-	})
-	require.NoError(t, err)
-	_, _, _, err = d.CloseIssue(context.Background(), iss.ID, reason, "tester", "", nil)
-	require.NoError(t, err)
-	return iss
-}
-
 // seedRecurrenceInstance creates an issue and directly UPDATEs it to link to
 // a recurrence with the given occurrence_key. Returns the issue's row id and
 // UID. Mirrors the raw-UPDATE pattern used in jsonl roundtrip tests.
