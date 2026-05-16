@@ -45,6 +45,7 @@ func dbProjectToOut(p db.Project) api.ProjectOut {
 		UID:       p.UID,
 		Name:      p.Name,
 		Metadata:  p.Metadata,
+		Revision:  p.Revision,
 		CreatedAt: p.CreatedAt,
 		DeletedAt: p.DeletedAt,
 	}

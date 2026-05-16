@@ -750,7 +750,7 @@ func TestListProjects_DefaultShape(t *testing.T) {
 	require.Len(t, parsed.Projects, 1)
 	p := parsed.Projects[0]
 
-	for _, key := range []string{"id", "uid", "name", "metadata", "created_at"} {
+	for _, key := range []string{"id", "uid", "name", "metadata", "revision", "created_at"} {
 		_, ok := p[key]
 		assert.True(t, ok, "missing key %q in projects[0]: %s", key, body)
 	}
@@ -791,11 +791,13 @@ func TestListAndShowProject_SurfaceMetadata(t *testing.T) {
 		Projects []struct {
 			Name     string `json:"name"`
 			Metadata string `json:"metadata"`
+			Revision int64  `json:"revision"`
 		} `json:"projects"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(listBody), &listParsed))
 	require.Len(t, listParsed.Projects, 1)
 	assert.Equal(t, "withmeta", listParsed.Projects[0].Name)
+	assert.Equal(t, int64(2), listParsed.Projects[0].Revision)
 	assert.Contains(t, listParsed.Projects[0].Metadata, `"area":"Personal"`,
 		"projects list must carry project metadata so consumers can filter without follow-up fetches")
 
@@ -803,9 +805,11 @@ func TestListAndShowProject_SurfaceMetadata(t *testing.T) {
 	var showParsed struct {
 		Project struct {
 			Metadata string `json:"metadata"`
+			Revision int64  `json:"revision"`
 		} `json:"project"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(showBody), &showParsed))
+	assert.Equal(t, int64(2), showParsed.Project.Revision)
 	assert.Contains(t, showParsed.Project.Metadata, `"area":"Personal"`,
 		"project show must carry project metadata")
 }
