@@ -26,12 +26,6 @@ func TestValidateBool(t *testing.T) {
 	assert.Error(t, Validate(IssueRegistry, "someday", json.RawMessage(`"true"`)))
 }
 
-func TestValidateEnum(t *testing.T) {
-	assert.NoError(t, Validate(IssueRegistry, "today_bucket", json.RawMessage(`"day"`)))
-	assert.NoError(t, Validate(IssueRegistry, "today_bucket", json.RawMessage(`"evening"`)))
-	assert.Error(t, Validate(IssueRegistry, "today_bucket", json.RawMessage(`"midnight"`)))
-}
-
 func TestValidateChecklist(t *testing.T) {
 	good := json.RawMessage(fmt.Sprintf(`[
 		{"id":%q,"text":"draft","done":false},
@@ -60,9 +54,17 @@ func TestValidateTimezone(t *testing.T) {
 	assert.Error(t, Validate(IssueRegistry, "timezone", json.RawMessage(`"NotAReal/Zone"`)))
 }
 
-func TestValidateUnknownKey(t *testing.T) {
-	err := Validate(IssueRegistry, "definitely_not_a_key", json.RawMessage(`null`))
-	assert.ErrorIs(t, err, ErrUnknownKey)
+// TestValidate_UnknownKeysAcceptedOpaquely covers the contract that anything
+// not in the registry is accepted as a pass-through value: the daemon does
+// not enforce a closed metadata schema. Consumers can write their own keys
+// (UI hints, application-specific data) without coordinating a daemon
+// release.
+func TestValidate_UnknownKeysAcceptedOpaquely(t *testing.T) {
+	assert.NoError(t, Validate(IssueRegistry, "definitely_not_a_key", json.RawMessage(`null`)))
+	assert.NoError(t, Validate(IssueRegistry, "weird_consumer_field", json.RawMessage(`"hi"`)))
+	assert.NoError(t, Validate(IssueRegistry, "extra_bag", json.RawMessage(`{"a":1,"b":[true]}`)))
+	assert.NoError(t, Validate(ProjectRegistry, "sidebar_order", json.RawMessage(`"first"`)),
+		"a previously reserved key now behaves like any unknown key")
 }
 
 func TestValidateNullClears(t *testing.T) {
@@ -71,9 +73,9 @@ func TestValidateNullClears(t *testing.T) {
 }
 
 // TestValidate_AllErrorsWrapErrInvalidValue locks in the invariant that every
-// validator failure is detectable via errors.Is(err, ErrInvalidValue). Handlers
-// translate this to a 400 response; if a validator returns a plain error,
-// invalid client input falls through to a 500.
+// reserved-key validator failure is detectable via errors.Is(err,
+// ErrInvalidValue). Handlers translate this to a 400 response; if a validator
+// returns a plain error, invalid client input falls through to a 500.
 func TestValidate_AllErrorsWrapErrInvalidValue(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -84,12 +86,9 @@ func TestValidate_AllErrorsWrapErrInvalidValue(t *testing.T) {
 		{"date_wrong_type", IssueRegistry, "scheduled_on", json.RawMessage(`123`)},
 		{"date_malformed", IssueRegistry, "scheduled_on", json.RawMessage(`"not-a-date"`)},
 		{"bool_wrong_type", IssueRegistry, "someday", json.RawMessage(`"yes"`)},
-		{"enum_wrong_type", IssueRegistry, "today_bucket", json.RawMessage(`123`)},
-		{"enum_not_in_set", IssueRegistry, "today_bucket", json.RawMessage(`"midnight"`)},
 		{"timezone_wrong_type", IssueRegistry, "timezone", json.RawMessage(`123`)},
 		{"timezone_bogus", IssueRegistry, "timezone", json.RawMessage(`"Not/Real"`)},
 		{"project_string_wrong_type", ProjectRegistry, "area", json.RawMessage(`123`)},
-		{"project_int_wrong_type", ProjectRegistry, "sidebar_order", json.RawMessage(`"first"`)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

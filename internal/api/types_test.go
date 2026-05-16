@@ -286,19 +286,18 @@ func TestActionRequest_RoundTripWithEvidence(t *testing.T) {
 }
 
 // TestMetadataKeyConstantsMirrorRegistry verifies that every api-package
-// metadata key constant resolves to a registered entry, catching any typos
-// or registry/constant skew at test time.
+// metadata key constant resolves to a server-reserved registry entry,
+// catching any typos or registry/constant skew at test time.
 func TestMetadataKeyConstantsMirrorRegistry(t *testing.T) {
 	for _, k := range []string{
 		api.MetadataKeyScheduledOn, api.MetadataKeyDeadlineOn, api.MetadataKeySomeday,
-		api.MetadataKeyTodayBucket, api.MetadataKeyChecklist, api.MetadataKeyTimezone,
+		api.MetadataKeyChecklist, api.MetadataKeyTimezone,
 	} {
 		_, ok := metadata.IssueRegistry[k]
 		assert.True(t, ok, "api constant %q absent from issue registry", k)
 	}
 	for _, k := range []string{
-		api.ProjectMetadataKeyArea, api.ProjectMetadataKeySidebarOrder,
-		api.ProjectMetadataKeyIcon, api.ProjectMetadataKeyTimezone,
+		api.ProjectMetadataKeyArea,
 	} {
 		_, ok := metadata.ProjectRegistry[k]
 		assert.True(t, ok, "api constant %q absent from project registry", k)

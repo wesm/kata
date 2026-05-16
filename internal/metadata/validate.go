@@ -9,22 +9,24 @@ import (
 	_ "time/tzdata" // embed IANA tz database so LoadLocation works without system tzdata
 )
 
-// ErrUnknownKey is returned when a key is not present in the registry.
-var ErrUnknownKey = errors.New("unknown metadata key")
-
-// ErrInvalidValue is returned when a value fails type-specific validation.
+// ErrInvalidValue is returned when a value fails type-specific validation
+// against a server-reserved key.
 var ErrInvalidValue = errors.New("invalid value")
 
 // reULID matches a 26-character Crockford base32 ULID.
 var reULID = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 
-// Validate checks that raw is a valid value for key in the given registry.
-// A JSON null value is always accepted and signals "clear this key".
-// Returns ErrUnknownKey when key is absent from the registry.
+// Validate checks raw against the validator for key, if any. Reserved keys
+// (those present in registry) go through their type-specific validator; any
+// other key is accepted as an opaque pass-through value and Validate returns
+// nil. A JSON null value is always accepted and signals "clear this key".
 func Validate(registry map[string]Entry, key string, raw json.RawMessage) error {
 	entry, ok := registry[key]
 	if !ok {
-		return fmt.Errorf("%w: %q", ErrUnknownKey, key)
+		// Unknown / unreserved keys are accepted opaquely. The daemon stores
+		// them verbatim so consumers can carry their own metadata without a
+		// schema release.
+		return nil
 	}
 	if string(raw) == "null" {
 		return nil
@@ -34,12 +36,8 @@ func Validate(registry map[string]Entry, key string, raw json.RawMessage) error 
 		return validateDate(raw)
 	case TypeBool:
 		return validateBool(raw)
-	case TypeEnum:
-		return validateEnum(raw, entry.Enum)
 	case TypeString:
 		return validateString(raw)
-	case TypeInt:
-		return validateInt(raw)
 	case TypeChecklist:
 		return validateChecklist(raw)
 	case TypeTimezoneIANA:
@@ -68,31 +66,10 @@ func validateBool(raw json.RawMessage) error {
 	return nil
 }
 
-func validateEnum(raw json.RawMessage, allowed []string) error {
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return fmt.Errorf("%w: enum value must be a JSON string: %v", ErrInvalidValue, err)
-	}
-	for _, v := range allowed {
-		if s == v {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: value %q is not one of %v", ErrInvalidValue, s, allowed)
-}
-
 func validateString(raw json.RawMessage) error {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return fmt.Errorf("%w: value must be a JSON string: %v", ErrInvalidValue, err)
-	}
-	return nil
-}
-
-func validateInt(raw json.RawMessage) error {
-	var n int64
-	if err := json.Unmarshal(raw, &n); err != nil {
-		return fmt.Errorf("%w: value must be a JSON integer: %v", ErrInvalidValue, err)
 	}
 	return nil
 }

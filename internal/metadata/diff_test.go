@@ -88,6 +88,21 @@ func TestDiff_NullToValueNormalizesFromAsNil(t *testing.T) {
 	assert.JSONEq(t, `"v"`, string(kd.To))
 }
 
+// TestDiffSurfacesUnknownKey pins that Diff operates on the JSON object, not
+// the registry: opaque keys (not in IssueRegistry / ProjectRegistry) still
+// show up in the per-key diff. This is what lets consumers carry their own
+// metadata and still see change events for it.
+func TestDiffSurfacesUnknownKey(t *testing.T) {
+	old := json.RawMessage(`{}`)
+	newBlob := json.RawMessage(`{"definitely_not_a_key":"yellow"}`)
+	d, err := Diff(old, newBlob)
+	require.NoError(t, err)
+	require.Contains(t, d, "definitely_not_a_key",
+		"Diff must surface unknown keys; it works at the JSON layer, not the registry")
+	assert.Nil(t, d["definitely_not_a_key"].From)
+	assert.JSONEq(t, `"yellow"`, string(d["definitely_not_a_key"].To))
+}
+
 func TestDiffMultipleKeys(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":"2026-05-01","someday":true}`)
 	newBlob := json.RawMessage(`{"scheduled_on":"2026-06-01","deadline_on":"2026-07-01"}`)

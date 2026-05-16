@@ -1047,20 +1047,18 @@ type MoveIssueResponse struct {
 	}
 }
 
-// Whitelisted issue metadata keys (mirrors internal/metadata.IssueRegistry).
+// Server-reserved issue metadata keys (mirrors internal/metadata.IssueRegistry).
+// Keys outside this set are accepted opaquely by the daemon.
 const (
 	MetadataKeyScheduledOn = "scheduled_on"
 	MetadataKeyDeadlineOn  = "deadline_on"
 	MetadataKeySomeday     = "someday"
-	MetadataKeyTodayBucket = "today_bucket"
 	MetadataKeyChecklist   = "checklist"
 	MetadataKeyTimezone    = "timezone"
 )
 
-// Whitelisted project metadata keys (mirrors internal/metadata.ProjectRegistry).
+// Server-reserved project metadata keys (mirrors internal/metadata.ProjectRegistry).
+// Keys outside this set are accepted opaquely by the daemon.
 const (
-	ProjectMetadataKeyArea         = "area"
-	ProjectMetadataKeySidebarOrder = "sidebar_order"
-	ProjectMetadataKeyIcon         = "icon"
-	ProjectMetadataKeyTimezone     = "timezone"
+	ProjectMetadataKeyArea = "area"
 )

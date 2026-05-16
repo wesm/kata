@@ -51,9 +51,6 @@ func patchIssueMetadataHandler(cfg ServerConfig) func(context.Context, *api.Patc
 			return nil, api.NewError(412, "revision_conflict",
 				fmt.Sprintf("issue revision is %d", conflict.CurrentRevision), "", nil)
 		}
-		if errors.Is(err, metadata.ErrUnknownKey) {
-			return nil, api.NewError(400, "unknown_metadata_key", err.Error(), "", nil)
-		}
 		if errors.Is(err, metadata.ErrInvalidValue) {
 			return nil, api.NewError(400, "invalid_metadata_value", err.Error(), "", nil)
 		}
@@ -95,9 +92,6 @@ func patchProjectMetadataHandler(cfg ServerConfig) func(context.Context, *api.Pa
 		if errors.As(err, &conflict) {
 			return nil, api.NewError(412, "revision_conflict",
 				fmt.Sprintf("project revision is %d", conflict.CurrentRevision), "", nil)
-		}
-		if errors.Is(err, metadata.ErrUnknownKey) {
-			return nil, api.NewError(400, "unknown_metadata_key", err.Error(), "", nil)
 		}
 		if errors.Is(err, metadata.ErrInvalidValue) {
 			return nil, api.NewError(400, "invalid_metadata_value", err.Error(), "", nil)

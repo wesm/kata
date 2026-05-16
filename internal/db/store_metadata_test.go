@@ -82,10 +82,26 @@ func TestPatchIssueMetadata_InvalidKeyValueRejected(t *testing.T) {
 	_, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
 		IssueID: iss.ID, IfMatchRev: iss.Revision, Actor: "tester",
 		Patch: map[string]json.RawMessage{
-			"today_bucket": json.RawMessage(`"midnight"`), // not in enum
+			"scheduled_on": json.RawMessage(`123`), // reserved key, wrong JSON type
 		},
 	})
 	require.Error(t, err)
+}
+
+// TestPatchIssueMetadata_UnknownKeyAccepted: keys outside the reserved set
+// are accepted opaquely and persist into the metadata blob.
+func TestPatchIssueMetadata_UnknownKeyAccepted(t *testing.T) {
+	d, ctx, _, iss := setupTestIssue(t)
+
+	res, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
+		IssueID: iss.ID, IfMatchRev: iss.Revision, Actor: "tester",
+		Patch: map[string]json.RawMessage{
+			"definitely_not_a_key": json.RawMessage(`"yellow"`),
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, res.Changed)
+	assert.Contains(t, string(res.Issue.Metadata), `"definitely_not_a_key":"yellow"`)
 }
 
 func TestPatchProjectMetadata_HappyPath(t *testing.T) {
@@ -120,15 +136,19 @@ func TestPatchProjectMetadata_StaleRevisionReturns409(t *testing.T) {
 	require.ErrorAs(t, err, &conflict)
 }
 
-func TestPatchProjectMetadata_UnknownKeyRejected(t *testing.T) {
+// TestPatchProjectMetadata_UnknownKeyAccepted: project metadata accepts
+// unknown keys opaquely, matching the issue side.
+func TestPatchProjectMetadata_UnknownKeyAccepted(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 	p, _ := d.CreateProject(ctx, "p")
-	_, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
+	res, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
 		ProjectID: p.ID, IfMatchRev: p.Revision, Actor: "tester",
-		Patch: map[string]json.RawMessage{"banana": json.RawMessage(`"yellow"`)},
+		Patch: map[string]json.RawMessage{"definitely_not_a_key": json.RawMessage(`"yellow"`)},
 	})
-	require.Error(t, err)
+	require.NoError(t, err)
+	assert.True(t, res.Changed)
+	assert.Contains(t, string(res.Project.Metadata), `"definitely_not_a_key":"yellow"`)
 }
 
 func TestPatchProjectMetadata_EmptyDiffNoEvent(t *testing.T) {

@@ -1,12 +1,16 @@
-// Package metadata defines the whitelisted set of keys allowed inside
-// issues.metadata and projects.metadata JSON blobs, plus their value types.
+// Package metadata defines the server-reserved keys inside issues.metadata
+// and projects.metadata JSON blobs, plus their value types. Reserved keys
+// have semantic load on the daemon side (e.g. scheduled_on participates in
+// view filters) so their values are validated. All other keys are accepted
+// opaquely — the daemon stores and roundtrips them without inspection so
+// consumers can carry their own UI hints without coordinating a release.
 //
-// Adding a new key:
+// Adding a new reserved key:
 //  1. Add an entry below.
 //  2. (Optional) Add an SQLite expression index in internal/db/schema.sql.
 package metadata
 
-// Type describes the expected value type for a metadata key.
+// Type describes the expected value type for a reserved metadata key.
 type Type int
 
 // Valid Type constants. TypeUnknown is the zero value and must not be used
@@ -16,33 +20,28 @@ const (
 	TypeUnknown      Type = iota // zero value — no key should carry this
 	TypeDate                     // "YYYY-MM-DD"
 	TypeBool                     // true / false
-	TypeEnum                     // string limited to a closed set
 	TypeString                   // free-form string
-	TypeInt                      // integer
 	TypeChecklist                // array of {id: ULID, text: string, done: bool}
 	TypeTimezoneIANA             // IANA timezone string
 )
 
-// Entry describes one whitelisted metadata key.
+// Entry describes one server-reserved metadata key.
 type Entry struct {
 	Type Type
-	Enum []string // populated only for TypeEnum
 }
 
-// IssueRegistry is the whitelisted set of keys for issues.metadata.
+// IssueRegistry is the set of server-reserved keys for issues.metadata.
+// Keys outside this set are accepted opaquely by Validate.
 var IssueRegistry = map[string]Entry{
 	"scheduled_on": {Type: TypeDate},
 	"deadline_on":  {Type: TypeDate},
 	"someday":      {Type: TypeBool},
-	"today_bucket": {Type: TypeEnum, Enum: []string{"day", "evening"}},
 	"checklist":    {Type: TypeChecklist},
 	"timezone":     {Type: TypeTimezoneIANA},
 }
 
-// ProjectRegistry is the whitelisted set of keys for projects.metadata.
+// ProjectRegistry is the set of server-reserved keys for projects.metadata.
+// Keys outside this set are accepted opaquely by Validate.
 var ProjectRegistry = map[string]Entry{
-	"area":          {Type: TypeString},
-	"sidebar_order": {Type: TypeInt},
-	"icon":          {Type: TypeString},
-	"timezone":      {Type: TypeTimezoneIANA},
+	"area": {Type: TypeString},
 }
