@@ -305,11 +305,11 @@ func TestImport_RecurrenceUIDAndIDDisagree_Errors(t *testing.T) {
 	body := bytes.NewBufferString("")
 	body.WriteString(`{"kind":"meta","data":{"key":"export_version","value":"10"}}` + "\n")
 	body.WriteString(`{"kind":"meta","data":{"key":"instance_uid","value":"ORIGIN0000000000000000000A"}}` + "\n")
-	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":"{}","revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
-	body.WriteString(`{"kind":"recurrence","data":{"id":1,"uid":"RECA000000000000000000000A","project_id":1,"rrule":"FREQ=WEEKLY","dtstart":"2026-05-15","timezone":"UTC","template_title":"a","template_body":"","template_labels":"[]","template_metadata":"{}","author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
-	body.WriteString(`{"kind":"recurrence","data":{"id":2,"uid":"RECB000000000000000000000A","project_id":1,"rrule":"FREQ=MONTHLY","dtstart":"2026-05-01","timezone":"UTC","template_title":"b","template_body":"","template_labels":"[]","template_metadata":"{}","author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":{},"revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"recurrence","data":{"id":1,"uid":"RECA000000000000000000000A","project_id":1,"rrule":"FREQ=WEEKLY","dtstart":"2026-05-15","timezone":"UTC","template_title":"a","template_body":"","template_labels":[],"template_metadata":{},"author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"recurrence","data":{"id":2,"uid":"RECB000000000000000000000A","project_id":1,"rrule":"FREQ=MONTHLY","dtstart":"2026-05-01","timezone":"UTC","template_title":"b","template_body":"","template_labels":[],"template_metadata":{},"author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
 	// Issue claims recurrence_uid=RECA but recurrence_id=2 (which is RECB).
-	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":"{}","revision":1,"recurrence_id":2,"recurrence_uid":"RECA000000000000000000000A","occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":{},"revision":1,"recurrence_id":2,"recurrence_uid":"RECA000000000000000000000A","occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
 
 	err := jsonl.Import(context.Background(), body, dstDB)
 	require.Error(t, err)
@@ -321,8 +321,8 @@ func TestImport_OccurrenceKeyWithoutRecurrence_Errors(t *testing.T) {
 	body := bytes.NewBufferString("")
 	body.WriteString(`{"kind":"meta","data":{"key":"export_version","value":"10"}}` + "\n")
 	body.WriteString(`{"kind":"meta","data":{"key":"instance_uid","value":"ORIGIN0000000000000000000A"}}` + "\n")
-	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":"{}","revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
-	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":"{}","revision":1,"occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":{},"revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":{},"revision":1,"occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
 
 	err := jsonl.Import(context.Background(), body, dstDB)
 	require.Error(t, err)

@@ -26,6 +26,21 @@ func TestIssuesMetadataRejectsInvalidJSON(t *testing.T) {
 	require.Error(t, err, "json_valid CHECK must reject non-JSON metadata")
 }
 
+// TestIssuesMetadataRejectsNonObjectShapes pins the json_type = 'object'
+// CHECK on issues.metadata. Arrays, scalars, and nulls are rejected so the
+// read path's `json.Unmarshal(meta, &map[string]…)` cannot crash on a row
+// corrupted by direct SQL or an upstream bug.
+func TestIssuesMetadataRejectsNonObjectShapes(t *testing.T) {
+	d, ctx, _, iss := setupTestIssue(t)
+	for _, badShape := range []string{`[]`, `[1,2,3]`, `42`, `"hello"`, `null`, `true`} {
+		_, err := d.ExecContext(ctx,
+			`UPDATE issues SET metadata = ? WHERE id = ?`, badShape, iss.ID,
+		)
+		require.Errorf(t, err,
+			"json_type CHECK must reject non-object metadata: %s", badShape)
+	}
+}
+
 func TestProjectsMetadataAndRevisionColumns(t *testing.T) {
 	d, ctx, p := setupTestProject(t)
 	var meta string
@@ -43,6 +58,59 @@ func TestProjectsMetadataRejectsInvalidJSON(t *testing.T) {
 		`UPDATE projects SET metadata = 'not json' WHERE id = ?`, p.ID,
 	)
 	require.Error(t, err, "json_valid CHECK must reject non-JSON metadata")
+}
+
+// TestProjectsMetadataRejectsNonObjectShapes mirrors the issues check at the
+// projects table — see TestIssuesMetadataRejectsNonObjectShapes for rationale.
+func TestProjectsMetadataRejectsNonObjectShapes(t *testing.T) {
+	d, ctx, p := setupTestProject(t)
+	for _, badShape := range []string{`[]`, `[1,2,3]`, `42`, `"hello"`, `null`, `true`} {
+		_, err := d.ExecContext(ctx,
+			`UPDATE projects SET metadata = ? WHERE id = ?`, badShape, p.ID,
+		)
+		require.Errorf(t, err,
+			"json_type CHECK must reject non-object metadata: %s", badShape)
+	}
+}
+
+// TestRecurrencesTemplateMetadataRejectsNonObjectShapes pins the json_type
+// CHECK on recurrences.template_metadata — same rationale as the issue /
+// project checks.
+func TestRecurrencesTemplateMetadataRejectsNonObjectShapes(t *testing.T) {
+	d, ctx, p, _ := setupTestIssue(t)
+	_, err := d.ExecContext(ctx, `INSERT INTO recurrences
+        (uid, project_id, rrule, dtstart, timezone, template_title, author)
+        VALUES ('01J0000000000000000000RECC', ?, 'FREQ=WEEKLY', '2026-05-15',
+                'UTC', 't', 'tester')`, p.ID)
+	require.NoError(t, err)
+
+	for _, badShape := range []string{`[]`, `42`, `"x"`, `null`} {
+		_, err := d.ExecContext(ctx,
+			`UPDATE recurrences SET template_metadata = ?
+			 WHERE uid = '01J0000000000000000000RECC'`, badShape)
+		require.Errorf(t, err,
+			"json_type CHECK must reject non-object template_metadata: %s", badShape)
+	}
+}
+
+// TestRecurrencesTemplateLabelsRejectsNonArrayShapes pins the json_type
+// CHECK on recurrences.template_labels — labels are always a JSON array of
+// strings, so non-array shapes must be rejected at write time.
+func TestRecurrencesTemplateLabelsRejectsNonArrayShapes(t *testing.T) {
+	d, ctx, p, _ := setupTestIssue(t)
+	_, err := d.ExecContext(ctx, `INSERT INTO recurrences
+        (uid, project_id, rrule, dtstart, timezone, template_title, author)
+        VALUES ('01J0000000000000000000RECL', ?, 'FREQ=WEEKLY', '2026-05-15',
+                'UTC', 't', 'tester')`, p.ID)
+	require.NoError(t, err)
+
+	for _, badShape := range []string{`{}`, `42`, `"x"`, `null`} {
+		_, err := d.ExecContext(ctx,
+			`UPDATE recurrences SET template_labels = ?
+			 WHERE uid = '01J0000000000000000000RECL'`, badShape)
+		require.Errorf(t, err,
+			"json_type CHECK must reject non-array template_labels: %s", badShape)
+	}
 }
 
 func TestEventsCarryOriginInstanceUID(t *testing.T) {

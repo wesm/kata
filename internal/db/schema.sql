@@ -8,7 +8,8 @@ CREATE TABLE projects (
   name       TEXT NOT NULL UNIQUE,
   created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   deleted_at DATETIME,
-  metadata   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+  metadata   TEXT NOT NULL DEFAULT '{}'
+               CHECK (json_valid(metadata) AND json_type(metadata) = 'object'),
   revision   INTEGER NOT NULL DEFAULT 1,
   CHECK (length(uid) = 26),
   CHECK (length(trim(name)) > 0),
@@ -45,7 +46,8 @@ CREATE TABLE issues (
   updated_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   closed_at     DATETIME,
   deleted_at    DATETIME,
-  metadata      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+  metadata      TEXT NOT NULL DEFAULT '{}'
+                  CHECK (json_valid(metadata) AND json_type(metadata) = 'object'),
   revision      INTEGER NOT NULL DEFAULT 1,
   recurrence_id   INTEGER REFERENCES recurrences(id) ON DELETE SET NULL,
   occurrence_key  TEXT,
@@ -177,8 +179,12 @@ CREATE TABLE recurrences (
   template_owner         TEXT,
   template_priority      INTEGER CHECK (template_priority IS NULL
                             OR template_priority BETWEEN 0 AND 4),
-  template_labels        TEXT NOT NULL DEFAULT '[]'  CHECK (json_valid(template_labels)),
-  template_metadata      TEXT NOT NULL DEFAULT '{}'  CHECK (json_valid(template_metadata)),
+  template_labels        TEXT NOT NULL DEFAULT '[]'
+                           CHECK (json_valid(template_labels)
+                                  AND json_type(template_labels) = 'array'),
+  template_metadata      TEXT NOT NULL DEFAULT '{}'
+                           CHECK (json_valid(template_metadata)
+                                  AND json_type(template_metadata) = 'object'),
   next_occurrence_key    TEXT,
   last_materialized_uid  TEXT,
   author                 TEXT NOT NULL CHECK (length(trim(author)) > 0),
