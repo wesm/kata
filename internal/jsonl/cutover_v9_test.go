@@ -17,12 +17,12 @@ import (
 )
 
 // seedV9SchemaDB builds a SQLite DB whose actual on-disk schema matches v9:
-// no events.origin_seq column, no recurrences table, and no recurrence_id /
-// occurrence_key on issues. The meta.schema_version is rewritten to '9' so
-// jsonl.Export's version-dispatch picks the pre-v10 branches. This is the
-// only fixture that exercises the v8/v9 export path against a schema that
-// actually lacks the v10 columns — seedV8DBWithOrphans keeps the on-disk
-// v10 schema and only relabels the meta value.
+// no recurrences table, and no recurrence_id / occurrence_key on issues. The
+// meta.schema_version is rewritten to '9' so jsonl.Export's version-dispatch
+// picks the pre-v10 branches. This is the only fixture that exercises the
+// v8/v9 export path against a schema that actually lacks the v10 columns —
+// seedV8DBWithOrphans keeps the on-disk v10 schema and only relabels the
+// meta value.
 func seedV9SchemaDB(t *testing.T, path string) {
 	t.Helper()
 	ctx := context.Background()
@@ -41,13 +41,9 @@ func seedV9SchemaDB(t *testing.T, path string) {
 	// referencing the dropped columns must be removed first.
 	_, err = raw.Exec(`DROP INDEX IF EXISTS issues_recurrence_occurrence_uniq`)
 	require.NoError(t, err)
-	_, err = raw.Exec(`DROP INDEX IF EXISTS events_origin_seq_uniq`)
-	require.NoError(t, err)
 	_, err = raw.Exec(`ALTER TABLE issues DROP COLUMN recurrence_id`)
 	require.NoError(t, err)
 	_, err = raw.Exec(`ALTER TABLE issues DROP COLUMN occurrence_key`)
-	require.NoError(t, err)
-	_, err = raw.Exec(`ALTER TABLE events DROP COLUMN origin_seq`)
 	require.NoError(t, err)
 	_, err = raw.Exec(`DROP TABLE recurrences`)
 	require.NoError(t, err)
@@ -70,11 +66,10 @@ func seedV9SchemaDB(t *testing.T, path string) {
 }
 
 // TestExport_PreV10_NoMissingColumnError pins the fix for the v8/v9 export
-// path. Before this fix, jsonl.Export against a v9 schema DB selected
-// events.origin_seq (added in v10) and joined issues against the
-// recurrences table (added in v10), producing "no such column" / "no
-// such table" failures during JSONL cutover. The fix gates both
-// projections on sourceSchemaVersion >= 10.
+// path. Before this fix, jsonl.Export against a v9 schema DB joined issues
+// against the recurrences table (added in v10), producing "no such table"
+// failures during JSONL cutover. The fix gates the recurrence projection
+// on sourceSchemaVersion >= 10.
 func TestExport_PreV10_NoMissingColumnError(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "kata.db")
@@ -91,9 +86,8 @@ func TestExport_PreV10_NoMissingColumnError(t *testing.T) {
 	records := decodeJSONLLines(t, buf.Bytes())
 
 	// The pre-v10 issue projection must omit recurrence linkage fields.
-	// The pre-v10 event projection must omit origin_seq. Confirm the
-	// absence so a future schema bump that leaks v10 columns back into
-	// the v8/v9 path fails this test.
+	// Confirm the absence so a future schema bump that leaks v10 columns
+	// back into the v8/v9 path fails this test.
 	var sawIssue, sawEvent, sawRecurrence bool
 	for _, rec := range records {
 		data, _ := rec["data"].(map[string]any)
@@ -107,7 +101,6 @@ func TestExport_PreV10_NoMissingColumnError(t *testing.T) {
 			assert.Contains(t, data, "revision", "v9 issue export must keep revision (G1)")
 		case "event":
 			sawEvent = true
-			assert.NotContains(t, data, "origin_seq", "v9 event export must omit origin_seq")
 			assert.Contains(t, data, "uid", "v9 event export must keep uid")
 			assert.Contains(t, data, "origin_instance_uid",
 				"v9 event export must keep origin_instance_uid")

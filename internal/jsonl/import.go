@@ -326,16 +326,16 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			return err
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO events(id, uid, origin_instance_uid, origin_seq, project_id, project_name, issue_id, issue_uid, related_issue_id, related_issue_uid,
+			`INSERT INTO events(id, uid, origin_instance_uid, project_id, project_name, issue_id, issue_uid, related_issue_id, related_issue_uid,
 			                    type, actor, payload, created_at)
 			 VALUES(
-			   ?, ?, ?, ?, ?, ?, ?,
+			   ?, ?, ?, ?, ?, ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   ?,
 			   COALESCE(?, (SELECT uid FROM issues WHERE id = ?)),
 			   ?, ?, ?, ?
 			)`,
-			rec.ID, rec.UID, rec.OriginInstanceUID, rec.OriginSeq,
+			rec.ID, rec.UID, rec.OriginInstanceUID,
 			rec.ProjectID, projectName, rec.IssueID,
 			stringPtrValue(rec.IssueUID), rec.IssueID,
 			rec.RelatedIssueID,
@@ -685,14 +685,9 @@ type importMappingRecord struct {
 }
 
 type eventRecord struct {
-	ID                int64  `json:"id"`
-	UID               string `json:"uid"`
-	OriginInstanceUID string `json:"origin_instance_uid"`
-	// OriginSeq lands in v10 envelopes; pre-v10 sources omit the field and
-	// the importer passes NULL to the INSERT — the partial unique index on
-	// (origin_instance_uid, origin_seq) admits NULL rows, so federation-
-	// replay paths that never stamp origin_seq remain valid.
-	OriginSeq         *int64  `json:"origin_seq,omitempty"`
+	ID                int64   `json:"id"`
+	UID               string  `json:"uid"`
+	OriginInstanceUID string  `json:"origin_instance_uid"`
 	ProjectID         int64   `json:"project_id"`
 	ProjectName       string  `json:"project_name"`
 	LegacyProjectName string  `json:"project_identity,omitempty"`

@@ -195,7 +195,6 @@ CREATE TABLE events (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   uid                 TEXT NOT NULL UNIQUE,
   origin_instance_uid TEXT NOT NULL,
-  origin_seq          INTEGER,   -- nullable; partial unique index below
   project_id          INTEGER NOT NULL REFERENCES projects(id),
   project_name    TEXT NOT NULL,
   issue_id            INTEGER REFERENCES issues(id),
@@ -217,13 +216,6 @@ CREATE INDEX idx_events_related ON events(related_issue_id, id) WHERE related_is
 CREATE INDEX idx_events_issue_uid ON events(issue_uid) WHERE issue_uid IS NOT NULL;
 CREATE INDEX idx_events_related_issue_uid ON events(related_issue_uid) WHERE related_issue_uid IS NOT NULL;
 CREATE INDEX idx_events_origin_instance ON events(origin_instance_uid);
--- origin_seq is stamped to id in the same tx as the INSERT (queries.go,
--- insertEventTx). The partial WHERE keeps newly-inserted rows that transiently
--- have origin_seq IS NULL from colliding before they're stamped, and lets
--- federation-replay paths that legitimately leave origin_seq NULL coexist.
-CREATE UNIQUE INDEX events_origin_seq_uniq
-  ON events(origin_instance_uid, origin_seq)
-  WHERE origin_seq IS NOT NULL;
 CREATE INDEX idx_events_idempotency
   ON events(project_id, json_extract(payload, '$.idempotency_key'), created_at)
   WHERE type = 'issue.created' AND json_extract(payload, '$.idempotency_key') IS NOT NULL;

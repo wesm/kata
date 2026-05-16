@@ -793,14 +793,10 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 8 {
 		return exportEventsV3(ctx, d, enc, opts, projectNameExpr, joinProjects)
 	}
-	if sourceSchemaVersion < 10 {
-		return exportEventsV8(ctx, d, enc, opts, projectNameExpr, joinProjects)
-	}
 	type record struct {
 		ID                int64           `json:"id"`
 		UID               string          `json:"uid"`
 		OriginInstanceUID string          `json:"origin_instance_uid"`
-		OriginSeq         *int64          `json:"origin_seq,omitempty"`
 		ProjectID         int64           `json:"project_id"`
 		ProjectName       string          `json:"project_name"`
 		IssueID           *int64          `json:"issue_id"`
@@ -824,62 +820,6 @@ func exportEvents(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	// issue.links_changed peer is soft-deleted (kata#1 history-
 	// preservation rule). Peer-missing must be checked first so
 	// `peer.deleted_at` doesn't dereference a NULL row.
-	scrubCondition := `(peer.id IS NULL AND events.related_issue_id IS NOT NULL)`
-	if !opts.IncludeDeleted {
-		scrubCondition += ` OR (events.type = 'issue.links_changed' AND peer.deleted_at IS NOT NULL)`
-	}
-	relatedIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_id END`
-	relatedUIDExpr := `CASE WHEN ` + scrubCondition + ` THEN NULL ELSE events.related_issue_uid END`
-	query := fmt.Sprintf(`SELECT events.id, events.uid, events.origin_instance_uid, events.origin_seq, events.project_id, %s, events.issue_id, events.issue_uid,
-	                 `+relatedIDExpr+`, `+relatedUIDExpr+`,
-	                 events.type, events.actor, events.payload, CAST(events.created_at AS TEXT)
-	          FROM events%s
-	          LEFT JOIN issues subject_issue ON subject_issue.id = events.issue_id
-	          LEFT JOIN issues peer ON peer.id = events.related_issue_id`, projectNameExpr, joinProjects)
-	clauses, args := eventExportWhereClauses(opts)
-	clauses = append([]string{`(events.issue_id IS NULL OR subject_issue.id IS NOT NULL)`}, clauses...)
-	query += whereClause(clauses) + ` ORDER BY events.id ASC`
-	rows, err := d.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("export events: %w", err)
-	}
-	return scanRecords(rows, KindEvent, enc, func(rows *sql.Rows) (record, error) {
-		var rec record
-		var payload string
-		err := rows.Scan(&rec.ID, &rec.UID, &rec.OriginInstanceUID, &rec.OriginSeq, &rec.ProjectID, &rec.ProjectName, &rec.IssueID,
-			&rec.IssueUID, &rec.RelatedIssueID, &rec.RelatedIssueUID,
-			&rec.Type, &rec.Actor, &payload, &rec.CreatedAt)
-		if err != nil {
-			return rec, err
-		}
-		if !json.Valid([]byte(payload)) {
-			return rec, fmt.Errorf("event %d payload is invalid JSON", rec.ID)
-		}
-		rec.Payload = json.RawMessage(payload)
-		return rec, nil
-	})
-}
-
-// exportEventsV8 emits the schema_version 8..9 events projection (with uid
-// and origin_instance_uid but without origin_seq). The events.origin_seq
-// column is a v10 addition, so cutover from a v8/v9 source must omit it to
-// avoid `no such column: events.origin_seq` at SELECT time.
-func exportEventsV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, projectNameExpr, joinProjects string) error {
-	type record struct {
-		ID                int64           `json:"id"`
-		UID               string          `json:"uid"`
-		OriginInstanceUID string          `json:"origin_instance_uid"`
-		ProjectID         int64           `json:"project_id"`
-		ProjectName       string          `json:"project_name"`
-		IssueID           *int64          `json:"issue_id"`
-		IssueUID          *string         `json:"issue_uid"`
-		RelatedIssueID    *int64          `json:"related_issue_id"`
-		RelatedIssueUID   *string         `json:"related_issue_uid"`
-		Type              string          `json:"type"`
-		Actor             string          `json:"actor"`
-		Payload           json.RawMessage `json:"payload"`
-		CreatedAt         string          `json:"created_at"`
-	}
 	scrubCondition := `(peer.id IS NULL AND events.related_issue_id IS NOT NULL)`
 	if !opts.IncludeDeleted {
 		scrubCondition += ` OR (events.type = 'issue.links_changed' AND peer.deleted_at IS NOT NULL)`

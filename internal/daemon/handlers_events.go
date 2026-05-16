@@ -142,7 +142,6 @@ func eventToEnvelope(e db.Event) api.EventEnvelope {
 		EventID:           e.ID,
 		EventUID:          e.UID,
 		OriginInstanceUID: e.OriginInstanceUID,
-		OriginSeq:         e.OriginSeq,
 		Type:              e.Type,
 		ProjectID:         e.ProjectID,
 		ProjectUID:        e.ProjectUID,

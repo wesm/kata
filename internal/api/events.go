@@ -45,7 +45,6 @@ type EventEnvelope struct {
 	EventID             int64   `json:"event_id"`
 	EventUID            string  `json:"event_uid"`
 	OriginInstanceUID   string  `json:"origin_instance_uid"`
-	OriginSeq           *int64  `json:"origin_seq,omitempty"`
 	Type                string  `json:"type"`
 	ProjectID           int64   `json:"project_id"`
 	ProjectUID          string  `json:"project_uid"`

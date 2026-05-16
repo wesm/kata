@@ -41,7 +41,6 @@ func TestSchemaUIDColumnsIndexesAndTriggers(t *testing.T) {
 	assertColumn(t, d, "links", "to_issue_uid", "TEXT", true)
 	assertColumn(t, d, "events", "uid", "TEXT", true)
 	assertColumn(t, d, "events", "origin_instance_uid", "TEXT", true)
-	assertColumn(t, d, "events", "origin_seq", "INTEGER", false)
 	assertColumn(t, d, "events", "issue_uid", "TEXT", false)
 	assertColumn(t, d, "events", "related_issue_uid", "TEXT", false)
 	assertColumn(t, d, "purge_log", "uid", "TEXT", true)
