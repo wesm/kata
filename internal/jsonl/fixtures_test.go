@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,33 @@ import (
 	"github.com/wesm/kata/internal/db"
 	"github.com/wesm/kata/internal/jsonl"
 )
+
+// assertTableShape pins a fixture's table to an exact column set. Older-
+// version fixtures (seedV8DBWithOrphans, seedV9SchemaDB) build the current
+// schema and then DROP the v-N+1 additions by hand; without this check, a
+// future schema bump that adds a column will silently slip through every
+// older fixture's drop list and surface as "no such column: <col>" only on
+// a real source DB. Tables are fixture-controlled, so the unparameterized
+// pragma_table_info call is safe.
+func assertTableShape(t *testing.T, raw *sql.DB, table string, expected []string) {
+	t.Helper()
+	rows, err := raw.Query(`SELECT name FROM pragma_table_info('` + table + `')`) //nolint:gosec // table is a test-controlled literal
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var got []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		got = append(got, name)
+	}
+	require.NoError(t, rows.Err())
+	sort.Strings(got)
+	want := append([]string(nil), expected...)
+	sort.Strings(want)
+	assert.Equal(t, want, got,
+		"%s columns drifted from the expected v-N shape — if a recent schema bump "+
+			"added a column, also drop it from this fixture", table)
+}
 
 // validExportVersion is the standard export_version meta envelope tests
 // prepend to bypass the decoder's initial version check.
@@ -388,14 +416,55 @@ func seedV3DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 	require.NoError(t, err)
 }
 
+// dropV10Additions trims a freshly-bootstrapped current-schema DB back to
+// the v8/v9 column shape: removes the recurrences table, the issues
+// recurrence linkage, and metadata + revision on both issues and projects.
+// SQLite supports DROP COLUMN since 3.35 (modernc.org/sqlite bundles a
+// newer engine), but indexes referencing dropped columns must be removed
+// first.
+func dropV10Additions(t *testing.T, raw *sql.DB) {
+	t.Helper()
+	stmts := []string{
+		`DROP INDEX IF EXISTS issues_recurrence_occurrence_uniq`,
+		`ALTER TABLE issues DROP COLUMN recurrence_id`,
+		`ALTER TABLE issues DROP COLUMN occurrence_key`,
+		`DROP TABLE recurrences`,
+		`ALTER TABLE issues DROP COLUMN metadata`,
+		`ALTER TABLE issues DROP COLUMN revision`,
+		`DROP INDEX IF EXISTS projects_area`,
+		`ALTER TABLE projects DROP COLUMN metadata`,
+		`ALTER TABLE projects DROP COLUMN revision`,
+	}
+	for _, sql := range stmts {
+		_, err := raw.Exec(sql)
+		require.NoErrorf(t, err, "drop v10 additions: %s", sql)
+	}
+}
+
+// assertV8V9Shape verifies a fixture matches the real v8/v9 column set on
+// the tables that diverge from current. Called after dropV10Additions so a
+// future v11 column added without a corresponding drop fails loudly here
+// rather than passing tests and crashing real-source cutover.
+func assertV8V9Shape(t *testing.T, raw *sql.DB) {
+	t.Helper()
+	assertTableShape(t, raw, "projects", []string{
+		"id", "uid", "name", "created_at", "deleted_at",
+	})
+	assertTableShape(t, raw, "issues", []string{
+		"id", "uid", "project_id", "short_id", "title", "body", "status",
+		"closed_reason", "owner", "priority", "author",
+		"created_at", "updated_at", "closed_at", "deleted_at",
+	})
+}
+
 // seedV8DBWithOrphans builds a source DB at meta.schema_version='8'
 // containing a valid baseline (1 project, 3 issues, 1 link, 1 comment,
 // 1 issue_label, 4 import_mappings) plus the orphan rows requested by
-// spec. The on-disk schema is the binary's current schema (v9) — we
-// rewrite meta.schema_version to '8' so AutoCutover proceeds and the
-// V8+ export branches run, since v8 and v9 share the same column
-// shape. This is the only fixture that exercises the v5+
-// import_mappings code path; the v3 fixture cannot reach it.
+// spec. The on-disk schema is bootstrapped from the binary's current
+// schema and then trimmed back to the real v8 shape (no metadata /
+// revision / recurrence linkage / recurrences table), since v8 and v9
+// share the same column set. This is the only fixture that exercises
+// the v5+ import_mappings code path; the v3 fixture cannot reach it.
 func seedV8DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 	t.Helper()
 	ctx := context.Background()
@@ -410,6 +479,9 @@ func seedV8DBWithOrphans(t *testing.T, path string, spec orphanSpec) {
 	raw, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
 	defer func() { _ = raw.Close() }()
+
+	dropV10Additions(t, raw)
+	assertV8V9Shape(t, raw)
 
 	// Phase 2: seed the valid baseline via raw SQL. Fixed UIDs keep the
 	// fixture deterministic; short_ids satisfy the issues CHECK that
