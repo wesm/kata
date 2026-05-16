@@ -126,26 +126,16 @@ func (d *DB) CreateRecurrence(ctx context.Context, in CreateRecurrenceIn) (Recur
 		metaJSON = string(in.Template.Metadata)
 	}
 
-	// Compute the initial cursor: the first occurrence on or after dtstart.
-	// recurrence.Next returns nil for trivially-empty rules (e.g. UNTIL in the
-	// past); in that case the recurrence is born "exhausted" with cursor=NULL.
-	firstNext, err := recurrence.Next(in.Rule, in.DTStart, in.Timezone)
-	if err != nil {
-		return rec, fmt.Errorf("compute first occurrence: %w", err)
-	}
-
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO recurrences
 		  (uid, project_id, rrule, dtstart, timezone,
 		   template_title, template_body, template_owner, template_priority,
-		   template_labels, template_metadata, next_occurrence_key,
-		   author, revision)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		   template_labels, template_metadata, author, revision)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		recUID, in.ProjectID, in.Rule, in.DTStart, in.Timezone,
 		in.Template.Title, in.Template.Body,
 		in.Template.Owner, in.Template.Priority,
-		labelsJSON, metaJSON, firstNext, // *string → NULL when nil
-		in.Actor)
+		labelsJSON, metaJSON, in.Actor)
 	if err != nil {
 		return rec, err
 	}
@@ -523,8 +513,9 @@ type MaterializeNextOut struct {
 // (recurrence_id, occurrence_key) collides with an existing row (race with
 // another writer), it emits recurrence.materialization_skipped instead and
 // advances next_occurrence_key one step past the duplicate so future
-// materializations don't loop on the same key. When the rule is exhausted on
-// transition, emits recurrence.exhausted.
+// materializations don't loop on the same key. When the rule is exhausted,
+// next_occurrence_key is set to NULL — consumers derive "exhausted" state
+// from that NULL rather than a dedicated event.
 func (d *DB) MaterializeNext(
 	ctx context.Context, tx *sql.Tx, recurrenceID int64, afterKey, actor string,
 ) (MaterializeNextOut, error) {
@@ -562,7 +553,9 @@ func (d *DB) MaterializeNext(
 	}
 
 	if next == nil {
-		// Exhausted — emit transition event only when previously non-empty.
+		// Rule is exhausted — clear the cursor so consumers can derive
+		// "exhausted" state from next_occurrence_key IS NULL. Only update when
+		// the cursor was previously non-null to avoid spurious revision bumps.
 		if r.NextOccurrenceKey != nil && *r.NextOccurrenceKey != "" {
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE recurrences
@@ -571,19 +564,6 @@ func (d *DB) MaterializeNext(
 				        updated_at           = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 				  WHERE id = ?`, recurrenceID,
 			); err != nil {
-				return out, err
-			}
-			payload, mErr := json.Marshal(map[string]string{"recurrence_uid": r.UID})
-			if mErr != nil {
-				return out, fmt.Errorf("marshal exhausted payload: %w", mErr)
-			}
-			if _, err := d.insertEventTx(ctx, tx, eventInsert{
-				ProjectID:   r.ProjectID,
-				ProjectName: projectName,
-				Type:        "recurrence.exhausted",
-				Actor:       actor,
-				Payload:     string(payload),
-			}); err != nil {
 				return out, err
 			}
 		}
@@ -725,27 +705,6 @@ func (d *DB) MaterializeNext(
 		return out, err
 	}
 
-	// If we just materialized the LAST occurrence (cursor transitioned to NULL),
-	// emit recurrence.exhausted in the same tx — this is the only opportunity:
-	// subsequent close attempts will see cursor=NULL and skip the no-next guard.
-	if r.NextOccurrenceKey != nil && *r.NextOccurrenceKey != "" && nextNext == nil {
-		exhPayload, mErr := json.Marshal(map[string]string{"recurrence_uid": r.UID})
-		if mErr != nil {
-			return out, fmt.Errorf("marshal exhausted payload: %w", mErr)
-		}
-		if _, err := d.insertEventTx(ctx, tx, eventInsert{
-			ProjectID:   r.ProjectID,
-			ProjectName: projectName,
-			IssueID:     &newIssueID,
-			IssueUID:    &newUID,
-			Type:        "recurrence.exhausted",
-			Actor:       actor,
-			Payload:     string(exhPayload),
-		}); err != nil {
-			return out, err
-		}
-	}
-
 	out.NewIssueID = newIssueID
 	out.NewIssueUID = newUID
 	out.OccurrenceKey = nextKey
@@ -753,9 +712,10 @@ func (d *DB) MaterializeNext(
 }
 
 // handleMaterializeCollision handles the race where (recurrence_id, occurrence_key)
-// already exists. It advances next_occurrence_key one step past the duplicate,
-// emits recurrence.materialization_skipped, and (if exhausted) recurrence.exhausted.
-// Returns a MaterializeNextOut with Skipped=true, or an error.
+// already exists. It advances next_occurrence_key one step past the duplicate
+// (or sets it to NULL when the rule is now exhausted) and emits
+// recurrence.materialization_skipped. Returns a MaterializeNextOut with
+// Skipped=true, or an error.
 func (d *DB) handleMaterializeCollision(
 	ctx context.Context, tx *sql.Tx, r Recurrence, projectName, nextKey, actor string,
 ) (MaterializeNextOut, error) {
@@ -809,22 +769,6 @@ func (d *DB) handleMaterializeCollision(
 		Payload:     string(skipPayload),
 	}); err != nil {
 		return out, err
-	}
-
-	if afterNext == nil {
-		exhPayload, mErr := json.Marshal(map[string]string{"recurrence_uid": r.UID})
-		if mErr != nil {
-			return out, fmt.Errorf("marshal exhausted payload: %w", mErr)
-		}
-		if _, err := d.insertEventTx(ctx, tx, eventInsert{
-			ProjectID:   r.ProjectID,
-			ProjectName: projectName,
-			Type:        "recurrence.exhausted",
-			Actor:       actor,
-			Payload:     string(exhPayload),
-		}); err != nil {
-			return out, err
-		}
 	}
 
 	out.Skipped = true
