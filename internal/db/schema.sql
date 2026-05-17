@@ -8,6 +8,9 @@ CREATE TABLE projects (
   name       TEXT NOT NULL UNIQUE,
   created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   deleted_at DATETIME,
+  metadata   TEXT NOT NULL DEFAULT '{}'
+               CHECK (json_valid(metadata) AND json_type(metadata) = 'object'),
+  revision   INTEGER NOT NULL DEFAULT 1,
   CHECK (length(uid) = 26),
   CHECK (length(trim(name)) > 0),
   CHECK (name NOT GLOB '*#*')
@@ -43,6 +46,11 @@ CREATE TABLE issues (
   updated_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   closed_at     DATETIME,
   deleted_at    DATETIME,
+  metadata      TEXT NOT NULL DEFAULT '{}'
+                  CHECK (json_valid(metadata) AND json_type(metadata) = 'object'),
+  revision      INTEGER NOT NULL DEFAULT 1,
+  recurrence_id   INTEGER REFERENCES recurrences(id) ON DELETE SET NULL,
+  occurrence_key  TEXT,
   CHECK (length(uid) = 26),
   CHECK (length(trim(title))  > 0),
   CHECK (length(trim(author)) > 0),
@@ -60,6 +68,9 @@ CREATE INDEX idx_issues_owner
   ON issues(owner) WHERE owner IS NOT NULL AND deleted_at IS NULL;
 CREATE UNIQUE INDEX uniq_issues_project_short_id
   ON issues(project_id, short_id);
+CREATE UNIQUE INDEX issues_recurrence_occurrence_uniq
+  ON issues(recurrence_id, occurrence_key)
+  WHERE recurrence_id IS NOT NULL AND occurrence_key IS NOT NULL;
 
 CREATE TABLE comments (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +165,37 @@ CREATE TABLE issue_labels (
   CHECK (length(trim(author)) > 0)
 );
 CREATE INDEX idx_issue_labels_label ON issue_labels(label);
+
+CREATE TABLE recurrences (
+  id                     INTEGER PRIMARY KEY,
+  uid                    TEXT NOT NULL UNIQUE CHECK (length(uid) = 26),
+  project_id             INTEGER NOT NULL
+                           REFERENCES projects(id) ON DELETE CASCADE,
+  rrule                  TEXT NOT NULL,
+  dtstart                TEXT NOT NULL,
+  timezone               TEXT NOT NULL,
+  template_title         TEXT NOT NULL,
+  template_body          TEXT NOT NULL DEFAULT '',
+  template_owner         TEXT,
+  template_priority      INTEGER CHECK (template_priority IS NULL
+                            OR template_priority BETWEEN 0 AND 4),
+  template_labels        TEXT NOT NULL DEFAULT '[]'
+                           CHECK (json_valid(template_labels)
+                                  AND json_type(template_labels) = 'array'),
+  template_metadata      TEXT NOT NULL DEFAULT '{}'
+                           CHECK (json_valid(template_metadata)
+                                  AND json_type(template_metadata) = 'object'),
+  next_occurrence_key    TEXT,
+  last_materialized_uid  TEXT,
+  author                 TEXT NOT NULL CHECK (length(trim(author)) > 0),
+  revision               INTEGER NOT NULL DEFAULT 1,
+  created_at             DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at             DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  deleted_at             DATETIME
+);
+
+CREATE INDEX recurrences_project ON recurrences(project_id)
+  WHERE deleted_at IS NULL;
 
 CREATE TABLE events (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,

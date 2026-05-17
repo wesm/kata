@@ -2,6 +2,7 @@
 package api //nolint:revive // package name "api" is fixed by Plan 1 §4 wire-types layout.
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/wesm/kata/internal/db"
@@ -31,10 +32,14 @@ type HealthResponse struct {
 
 // InstanceResponse mirrors /api/v1/instance. Surfaces the local kata
 // installation's stable identifier so a future spoke client can discover the
-// peer it is connecting to.
+// peer it is connecting to. Version and SchemaVersion let the spoke decide
+// whether it speaks the same wire and storage contracts before issuing
+// further calls.
 type InstanceResponse struct {
 	Body struct {
-		InstanceUID string `json:"instance_uid"`
+		InstanceUID   string `json:"instance_uid"`
+		Version       string `json:"version"`
+		SchemaVersion int64  `json:"schema_version"`
 	}
 }
 
@@ -47,13 +52,19 @@ type ProjectStatsOut struct {
 	LastEventAt *time.Time `json:"last_event_at"`
 }
 
-// ProjectOut is the API-shape of a project.
+// ProjectOut is the API-shape of a project. Metadata carries the project's
+// metadata JSON blob verbatim (e.g. {"area":"Personal"}) so consumers can
+// read fields like `area` without a per-project follow-up fetch. The type
+// is db.JSONBlob, which marshals on the wire as a raw JSON object — not as
+// a JSON-encoded string.
 type ProjectOut struct {
-	ID        int64      `json:"id"`
-	UID       string     `json:"uid"`
-	Name      string     `json:"name"`
-	CreatedAt time.Time  `json:"created_at"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	ID        int64       `json:"id"`
+	UID       string      `json:"uid"`
+	Name      string      `json:"name"`
+	Metadata  db.JSONBlob `json:"metadata"`
+	Revision  int64       `json:"revision"`
+	CreatedAt time.Time   `json:"created_at"`
+	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
 
 	// Stats is populated only when the request carries ?include=stats.
 	// Wired in Task 3.
@@ -263,6 +274,18 @@ type ListAllIssuesRequest struct {
 	Priority    string `query:"priority,omitempty" doc:"exact priority filter (0..4); empty = no filter"`
 	MaxPriority string `query:"max_priority,omitempty" doc:"include only priority <= this value (0..4); empty = no filter"`
 	Limit       int    `query:"limit,omitempty"`
+
+	// Deprecated query params kept on the struct only to surface a 400 if a
+	// stale client still sends them — the daemon used to honor view= /
+	// area= / offset= and the X-Kata-Client-TZ header for server-computed
+	// named views (today/upcoming/inbox/someday/anytime/logbook). Views were
+	// removed; consumers now assemble them client-side from the unfiltered
+	// /api/v1/issues + /api/v1/projects responses. Silently ignoring these
+	// params would let stale clients get plausible-but-wrong results.
+	DeprecatedView     string `query:"view,omitempty" hidden:"true" doc:"REMOVED — assemble views client-side"`
+	DeprecatedArea     string `query:"area,omitempty" hidden:"true" doc:"REMOVED — filter by project.metadata.area client-side"`
+	DeprecatedOffset   string `query:"offset,omitempty" hidden:"true" doc:"REMOVED — view pagination is consumer-side"`
+	DeprecatedClientTZ string `header:"X-Kata-Client-TZ" hidden:"true" doc:"REMOVED — compute today_local on the consumer"`
 }
 
 // IssueOut is the wire projection of one row in ListIssuesResponse.
@@ -857,3 +880,193 @@ type AuditClosesResponse struct {
 		Rows []AuditCloseRow `json:"rows"`
 	}
 }
+
+// RecurrenceTemplateInput is the JSON wire shape for the template fields
+// embedded in a CreateRecurrenceRequest. Mirrors db.RecurrenceTemplate but
+// stays in the api package so the public surface doesn't leak db-package
+// types into request bodies. Labels are accepted as a JSON array of strings;
+// metadata is an opaque JSON object.
+type RecurrenceTemplateInput struct {
+	Title    string          `json:"title" required:"true"`
+	Body     string          `json:"body,omitempty"`
+	Owner    *string         `json:"owner,omitempty"`
+	Priority *int64          `json:"priority,omitempty"`
+	Labels   []string        `json:"labels,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+}
+
+// CreateRecurrenceRequest is POST /api/v1/projects/{project_id}/recurrences.
+type CreateRecurrenceRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+	Body      struct {
+		Actor    string                  `json:"actor" required:"true"`
+		RRule    string                  `json:"rrule" required:"true"`
+		DTStart  string                  `json:"dtstart" required:"true"`
+		Timezone string                  `json:"timezone" required:"true"`
+		Template RecurrenceTemplateInput `json:"template"`
+	}
+}
+
+// CreateRecurrenceResponse returns the new recurrence row.
+type CreateRecurrenceResponse struct {
+	Body struct {
+		Recurrence db.Recurrence `json:"recurrence"`
+	}
+}
+
+// ListRecurrencesRequest is GET /api/v1/projects/{project_id}/recurrences.
+type ListRecurrencesRequest struct {
+	ProjectID int64 `path:"project_id" required:"true"`
+}
+
+// ListRecurrencesResponse wraps the recurrence list.
+type ListRecurrencesResponse struct {
+	Body struct {
+		Recurrences []db.Recurrence `json:"recurrences"`
+	}
+}
+
+// ShowRecurrenceRequest is GET /api/v1/projects/{project_id}/recurrences/{recurrence_uid}.
+type ShowRecurrenceRequest struct {
+	ProjectID     int64  `path:"project_id" required:"true"`
+	RecurrenceUID string `path:"recurrence_uid" required:"true"`
+}
+
+// ShowRecurrenceResponse returns a single recurrence row.
+type ShowRecurrenceResponse struct {
+	Body struct {
+		Recurrence db.Recurrence `json:"recurrence"`
+	}
+}
+
+// RecurrenceTemplateUpdateInput carries the partial-update shape for the
+// recurrence template. All fields are optional pointers; nil means "no change".
+type RecurrenceTemplateUpdateInput struct {
+	Title    *string          `json:"title,omitempty"`
+	Body     *string          `json:"body,omitempty"`
+	Owner    *string          `json:"owner,omitempty"`
+	Priority *int64           `json:"priority,omitempty"`
+	Labels   *[]string        `json:"labels,omitempty"`
+	Metadata *json.RawMessage `json:"metadata,omitempty"`
+}
+
+// PatchRecurrenceRequest is PATCH /api/v1/projects/{project_id}/recurrences/{recurrence_uid}.
+// If-Match is required and carries the current "rev-N" ETag for optimistic concurrency.
+type PatchRecurrenceRequest struct {
+	ProjectID     int64  `path:"project_id" required:"true"`
+	RecurrenceUID string `path:"recurrence_uid" required:"true"`
+	IfMatch       string `header:"If-Match"`
+	Body          struct {
+		Actor    string                         `json:"actor" required:"true"`
+		RRule    *string                        `json:"rrule,omitempty"`
+		DTStart  *string                        `json:"dtstart,omitempty"`
+		Timezone *string                        `json:"timezone,omitempty"`
+		Template *RecurrenceTemplateUpdateInput `json:"template,omitempty"`
+	}
+}
+
+// PatchRecurrenceResponse returns the patched recurrence and the new ETag.
+type PatchRecurrenceResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Recurrence db.Recurrence `json:"recurrence"`
+		Changed    bool          `json:"changed"`
+	}
+}
+
+// DeleteRecurrenceRequest is DELETE /api/v1/projects/{project_id}/recurrences/{recurrence_uid}.
+type DeleteRecurrenceRequest struct {
+	ProjectID     int64  `path:"project_id" required:"true"`
+	RecurrenceUID string `path:"recurrence_uid" required:"true"`
+	Actor         string `query:"actor" required:"true"`
+}
+
+// DeleteRecurrenceResponse is the 204 No Content envelope for soft-delete.
+// The 204 status is set via DefaultStatus in the huma.Operation; no body is returned.
+type DeleteRecurrenceResponse struct{}
+
+// PatchIssueMetadataRequest is POST /api/v1/projects/{project_id}/issues/{ref}/metadata.
+type PatchIssueMetadataRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
+	IfMatch   string `header:"If-Match"`
+	Body      struct {
+		Actor string                     `json:"actor" required:"true"`
+		Patch map[string]json.RawMessage `json:"patch"`
+	}
+}
+
+// PatchIssueMetadataResponse is the response for POST .../issues/{ref}/metadata.
+type PatchIssueMetadataResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Issue   db.Issue  `json:"issue"`
+		Event   *db.Event `json:"event,omitempty"`
+		Changed bool      `json:"changed"`
+	}
+}
+
+// PatchProjectMetadataRequest is POST /api/v1/projects/{project_id}/metadata.
+type PatchProjectMetadataRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	IfMatch   string `header:"If-Match"`
+	Body      struct {
+		Actor string                     `json:"actor" required:"true"`
+		Patch map[string]json.RawMessage `json:"patch"`
+	}
+}
+
+// PatchProjectMetadataResponse is the response for POST .../projects/{project_id}/metadata.
+type PatchProjectMetadataResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Project db.Project `json:"project"`
+		Event   *db.Event  `json:"event,omitempty"`
+		Changed bool       `json:"changed"`
+	}
+}
+
+// MoveIssueRequest is POST /api/v1/projects/{project_id}/issues/{ref}/actions/move.
+// project_id names the source project; the target project is identified by
+// its stable UID in the body. The If-Match header carries the issue's
+// expected revision in the standard `"rev-N"` form.
+type MoveIssueRequest struct {
+	ProjectID int64  `path:"project_id" required:"true"`
+	Ref       string `path:"ref" required:"true"`
+	IfMatch   string `header:"If-Match"`
+	Body      struct {
+		Actor        string `json:"actor" required:"true"`
+		ToProjectUID string `json:"to_project_uid" required:"true"`
+	}
+}
+
+// MoveIssueResponse is the response for the move action. ETag carries the
+// new revision in the standard `"rev-N"` form. NewShortID surfaces the
+// short_id freshly allocated in the target project (which may differ from
+// the issue's previous short_id when the two projects collide on
+// numbering).
+type MoveIssueResponse struct {
+	ETag string `header:"ETag"`
+	Body struct {
+		Issue      db.Issue `json:"issue"`
+		EventID    int64    `json:"event_id"`
+		NewShortID string   `json:"new_short_id"`
+		Changed    bool     `json:"changed"`
+	}
+}
+
+// Server-reserved issue metadata keys (mirrors internal/metadata.IssueRegistry).
+// Keys outside this set are accepted opaquely by the daemon.
+const (
+	MetadataKeyScheduledOn = "scheduled_on"
+	MetadataKeyDeadlineOn  = "deadline_on"
+	MetadataKeySomeday     = "someday"
+	MetadataKeyChecklist   = "checklist"
+	MetadataKeyTimezone    = "timezone"
+)
+
+// Server-reserved project metadata keys (mirrors internal/metadata.ProjectRegistry).
+// Keys outside this set are accepted opaquely by the daemon.
+const (
+	ProjectMetadataKeyArea = "area"
+)

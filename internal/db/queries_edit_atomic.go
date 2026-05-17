@@ -652,8 +652,9 @@ func lookupIssueByNumberTxOpts(ctx context.Context, tx *sql.Tx, projectID, numbe
 	// int64 until Task 10). Until the daemon migrates to short_id refs we
 	// resolve the int64 ref against the issue's row id.
 	const base = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
-		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
-		       i.closed_at, i.deleted_at
+		       i.closed_reason, i.owner, i.priority, i.author, i.metadata, i.revision,
+		       i.recurrence_id, i.occurrence_key,
+		       i.created_at, i.updated_at, i.closed_at, i.deleted_at
 		FROM issues i JOIN projects p ON p.id = i.project_id
 		WHERE i.project_id = ? AND i.id = ?`
 	q := base + ` AND i.deleted_at IS NULL`
@@ -670,8 +671,9 @@ func lookupIssueByNumberTxOpts(ctx context.Context, tx *sql.Tx, projectID, numbe
 // been soft-deleted.
 func lookupIssueByIDTxIncludingDeleted(ctx context.Context, tx *sql.Tx, id int64) (Issue, error) {
 	const q = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
-		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
-		       i.closed_at, i.deleted_at
+		       i.closed_reason, i.owner, i.priority, i.author, i.metadata, i.revision,
+		       i.recurrence_id, i.occurrence_key,
+		       i.created_at, i.updated_at, i.closed_at, i.deleted_at
 		FROM issues i JOIN projects p ON p.id = i.project_id
 		WHERE i.id = ?`
 	row := tx.QueryRowContext(ctx, q, id)

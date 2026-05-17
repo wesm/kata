@@ -228,6 +228,68 @@ func insertLegacyEvent(ctx context.Context, t *testing.T, d *db.DB, p db.Project
 // string parameter (e.g. issue owner) by address.
 func strPtr(s string) *string { return &s }
 
+// seedIssueInProject creates an issue in projectID with the given title and
+// author, returning the created issue. Mirrors makeIssue but uses t as the
+// first parameter to match the plan's helper signature.
+func seedIssueInProject(t *testing.T, d *db.DB, projectID int64, title, author string) db.Issue {
+	t.Helper()
+	issue, _, err := d.CreateIssue(context.Background(), db.CreateIssueParams{
+		ProjectID: projectID, Title: title, Author: author,
+	})
+	require.NoError(t, err)
+	return issue
+}
+
+// seedRecurrenceInstance creates an issue and directly UPDATEs it to link to
+// a recurrence with the given occurrence_key. Returns the issue's row id and
+// UID. Mirrors the raw-UPDATE pattern used in jsonl roundtrip tests.
+func seedRecurrenceInstance(
+	t *testing.T, d *db.DB, projectID, recurrenceID int64, occurrenceKey, title string,
+) (int64, string) {
+	t.Helper()
+	iss, _, err := d.CreateIssue(context.Background(), db.CreateIssueParams{
+		ProjectID: projectID, Title: title, Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = d.ExecContext(context.Background(),
+		`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+		recurrenceID, occurrenceKey, iss.ID)
+	require.NoError(t, err)
+	return iss.ID, iss.UID
+}
+
+// seedLink creates a directed link of the given type between fromID and toID
+// under projectID, authored by the given actor.
+func seedLink(t *testing.T, d *db.DB, projectID, fromID, toID int64, linkType, actor string) {
+	t.Helper()
+	_, err := d.CreateLink(context.Background(), db.CreateLinkParams{
+		ProjectID:   projectID,
+		FromIssueID: fromID,
+		ToIssueID:   toID,
+		Type:        linkType,
+		Author:      actor,
+	})
+	require.NoError(t, err)
+}
+
+// seedRecurrence inserts a recurrences row directly via SQL and returns its id.
+// Each test that calls seedRecurrence opens a fresh DB via openTestDB, so the
+// hardcoded UID does not collide across test runs.
+func seedRecurrence(t *testing.T, d *db.DB, projectID int64, rule, dtstart, tz, title string) int64 {
+	t.Helper()
+	res, err := d.ExecContext(context.Background(), `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"REC00000000000000000000001", projectID, rule, dtstart, tz, title, "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	rid, err := res.LastInsertId()
+	require.NoError(t, err)
+	return rid
+}
+
 // injectIdempotencyKey rewrites the issue.created event payload for issueID
 // to include the given idempotency key and fingerprint. Used by
 // LookupIdempotency tests to seed idempotency state directly, in isolation
@@ -249,4 +311,33 @@ func assertRowCount(ctx context.Context, t *testing.T, d *db.DB, expected int, m
 	var n int
 	require.NoError(t, d.QueryRowContext(ctx, query, args...).Scan(&n))
 	assert.Equal(t, expected, n, msg)
+}
+
+// assertEventCount asserts that the events table holds exactly expected rows
+// of the given event type. Replaces the verbose
+// `SELECT COUNT(*) FROM events WHERE type='X'` pattern that recurred across
+// store_recurrences*_test.go and store_metadata_test.go.
+func assertEventCount(t *testing.T, d *db.DB, eventType string, expected int) {
+	t.Helper()
+	var n int
+	require.NoError(t, d.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type = ?`, eventType,
+	).Scan(&n))
+	assert.Equalf(t, expected, n, "events of type %q", eventType)
+}
+
+// setupRecurrence extends setupTestProject by also creating a recurrence
+// inside the new project. Callers populate only the fields they care about
+// in in (Rule / DTStart / Timezone / Template); ProjectID and a default
+// Actor of "tester" are filled in automatically.
+func setupRecurrence(t *testing.T, in db.CreateRecurrenceIn) (*db.DB, context.Context, db.Project, db.Recurrence) {
+	t.Helper()
+	d, ctx, p := setupTestProject(t)
+	in.ProjectID = p.ID
+	if in.Actor == "" {
+		in.Actor = "tester"
+	}
+	rec, err := d.CreateRecurrence(ctx, in)
+	require.NoError(t, err)
+	return d, ctx, p, rec
 }

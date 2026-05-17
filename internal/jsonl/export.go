@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/wesm/kata/internal/db"
 )
@@ -40,6 +41,11 @@ func Export(ctx context.Context, d *db.DB, w io.Writer, opts ExportOptions) erro
 	}
 	if err := exportProjectAliases(ctx, d, enc, opts); err != nil {
 		return err
+	}
+	if sourceSchemaVersion >= 10 {
+		if err := exportRecurrences(ctx, d, enc, opts); err != nil {
+			return err
+		}
 	}
 	if err := exportIssues(ctx, d, enc, opts, sourceSchemaVersion); err != nil {
 		return err
@@ -120,6 +126,55 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 	if sourceSchemaVersion < 8 {
 		return exportProjectsV7(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 10 {
+		return exportProjectsV8(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID        int64           `json:"id"`
+		UID       string          `json:"uid"`
+		Name      string          `json:"name"`
+		CreatedAt string          `json:"created_at"`
+		DeletedAt *string         `json:"deleted_at,omitempty"`
+		Metadata  json.RawMessage `json:"metadata"`
+		Revision  int64           `json:"revision"`
+	}
+	query := `SELECT id, uid, name, CAST(created_at AS TEXT),
+	                 CAST(deleted_at AS TEXT), metadata, revision FROM projects`
+	args := []any{}
+	if opts.ProjectID > 0 {
+		query += ` WHERE id = ?`
+		args = append(args, opts.ProjectID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export projects: %w", err)
+	}
+	return scanRecords(rows, KindProject, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var metadata string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.Name, &rec.CreatedAt, &rec.DeletedAt,
+			&metadata, &rec.Revision)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(metadata)) {
+			return rec, fmt.Errorf("project %d metadata is invalid JSON", rec.ID)
+		}
+		rec.Metadata = json.RawMessage(metadata)
+		return rec, nil
+	})
+}
+
+// exportProjectsV8 emits the v8/v9 projects projection: identity and
+// next_issue_number are already gone, but metadata + revision are v10
+// additions that don't exist on the source table yet. Reading them via the
+// current path would fail with "no such column: metadata" on a real v9
+// database, even though the v9 cutover fixture (which keeps the v10
+// physical schema) does not surface this. The import path defaults
+// metadata to {} and revision to 1 when those fields are absent from a
+// record, so omitting them here produces correct v10 rows downstream.
+func exportProjectsV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID        int64   `json:"id"`
 		UID       string  `json:"uid"`
@@ -127,8 +182,7 @@ func exportProjects(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOpti
 		CreatedAt string  `json:"created_at"`
 		DeletedAt *string `json:"deleted_at,omitempty"`
 	}
-	query := `SELECT id, uid, name, CAST(created_at AS TEXT),
-	                 CAST(deleted_at AS TEXT) FROM projects`
+	query := `SELECT id, uid, name, CAST(created_at AS TEXT), CAST(deleted_at AS TEXT) FROM projects`
 	args := []any{}
 	if opts.ProjectID > 0 {
 		query += ` WHERE id = ?`
@@ -294,6 +348,82 @@ func exportProjectAliases(ctx context.Context, d *db.DB, enc *Encoder, opts Expo
 	})
 }
 
+func exportRecurrences(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
+	type record struct {
+		ID                  int64           `json:"id"`
+		UID                 string          `json:"uid"`
+		ProjectID           int64           `json:"project_id"`
+		RRule               string          `json:"rrule"`
+		DTStart             string          `json:"dtstart"`
+		Timezone            string          `json:"timezone"`
+		TemplateTitle       string          `json:"template_title"`
+		TemplateBody        string          `json:"template_body"`
+		TemplateOwner       *string         `json:"template_owner,omitempty"`
+		TemplatePriority    *int64          `json:"template_priority,omitempty"`
+		TemplateLabels      json.RawMessage `json:"template_labels"`
+		TemplateMetadata    json.RawMessage `json:"template_metadata"`
+		NextOccurrenceKey   *string         `json:"next_occurrence_key,omitempty"`
+		LastMaterializedUID *string         `json:"last_materialized_uid,omitempty"`
+		Author              string          `json:"author"`
+		Revision            int64           `json:"revision"`
+		CreatedAt           string          `json:"created_at"`
+		UpdatedAt           string          `json:"updated_at"`
+		DeletedAt           *string         `json:"deleted_at,omitempty"`
+	}
+	query := `SELECT id, uid, project_id, rrule, dtstart, timezone,
+	                 template_title, template_body, template_owner, template_priority,
+	                 template_labels, template_metadata,
+	                 next_occurrence_key, last_materialized_uid,
+	                 author, revision,
+	                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT),
+	                 CAST(deleted_at AS TEXT)
+	          FROM recurrences`
+	var where []string
+	var args []any
+	if opts.ProjectID > 0 {
+		where = append(where, "project_id = ?")
+		args = append(args, opts.ProjectID)
+	}
+	if !opts.IncludeDeleted {
+		where = append(where, `(deleted_at IS NULL
+		                        OR id IN (SELECT DISTINCT recurrence_id FROM issues
+		                                   WHERE recurrence_id IS NOT NULL
+		                                     AND deleted_at IS NULL))`)
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY id ASC"
+
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export recurrences: %w", err)
+	}
+	return scanRecords(rows, KindRecurrence, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var labels, metadata string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.RRule, &rec.DTStart,
+			&rec.Timezone, &rec.TemplateTitle, &rec.TemplateBody,
+			&rec.TemplateOwner, &rec.TemplatePriority,
+			&labels, &metadata,
+			&rec.NextOccurrenceKey, &rec.LastMaterializedUID,
+			&rec.Author, &rec.Revision,
+			&rec.CreatedAt, &rec.UpdatedAt, &rec.DeletedAt)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(labels)) {
+			return rec, fmt.Errorf("recurrence %d template_labels is invalid JSON", rec.ID)
+		}
+		if !json.Valid([]byte(metadata)) {
+			return rec, fmt.Errorf("recurrence %d template_metadata is invalid JSON", rec.ID)
+		}
+		rec.TemplateLabels = json.RawMessage(labels)
+		rec.TemplateMetadata = json.RawMessage(metadata)
+		return rec, nil
+	})
+}
+
 func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions, sourceSchemaVersion int) error {
 	if sourceSchemaVersion < 2 {
 		return exportIssuesV1(ctx, d, enc, opts)
@@ -304,6 +434,70 @@ func exportIssues(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOption
 	if sourceSchemaVersion < 8 {
 		return exportIssuesV6(ctx, d, enc, opts)
 	}
+	if sourceSchemaVersion < 10 {
+		return exportIssuesV8(ctx, d, enc, opts)
+	}
+	type record struct {
+		ID            int64           `json:"id"`
+		UID           string          `json:"uid"`
+		ProjectID     int64           `json:"project_id"`
+		ShortID       string          `json:"short_id"`
+		Title         string          `json:"title"`
+		Body          string          `json:"body"`
+		Status        string          `json:"status"`
+		ClosedReason  *string         `json:"closed_reason"`
+		Owner         *string         `json:"owner"`
+		Priority      *int64          `json:"priority,omitempty"`
+		Author        string          `json:"author"`
+		CreatedAt     string          `json:"created_at"`
+		UpdatedAt     string          `json:"updated_at"`
+		ClosedAt      *string         `json:"closed_at"`
+		DeletedAt     *string         `json:"deleted_at"`
+		Metadata      json.RawMessage `json:"metadata"`
+		Revision      int64           `json:"revision"`
+		RecurrenceID  *int64          `json:"recurrence_id,omitempty"`
+		RecurrenceUID *string         `json:"recurrence_uid,omitempty"`
+		OccurrenceKey *string         `json:"occurrence_key,omitempty"`
+	}
+	query := `SELECT i.id, i.uid, i.project_id, i.short_id, i.title, i.body,
+	                 i.status, i.closed_reason, i.owner, i.priority, i.author,
+	                 CAST(i.created_at AS TEXT), CAST(i.updated_at AS TEXT),
+	                 CAST(i.closed_at AS TEXT), CAST(i.deleted_at AS TEXT),
+	                 i.metadata, i.revision,
+	                 i.recurrence_id, r.uid, i.occurrence_key
+	          FROM issues i
+	          LEFT JOIN recurrences r ON r.id = i.recurrence_id`
+	where, args := issueExportWhere("i", opts)
+	query += where + ` ORDER BY i.id ASC`
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("export issues: %w", err)
+	}
+	return scanRecords(rows, KindIssue, enc, func(rows *sql.Rows) (record, error) {
+		var rec record
+		var metadata string
+		err := rows.Scan(&rec.ID, &rec.UID, &rec.ProjectID, &rec.ShortID, &rec.Title, &rec.Body,
+			&rec.Status, &rec.ClosedReason, &rec.Owner, &rec.Priority, &rec.Author, &rec.CreatedAt,
+			&rec.UpdatedAt, &rec.ClosedAt, &rec.DeletedAt, &metadata, &rec.Revision,
+			&rec.RecurrenceID, &rec.RecurrenceUID, &rec.OccurrenceKey)
+		if err != nil {
+			return rec, err
+		}
+		if !json.Valid([]byte(metadata)) {
+			return rec, fmt.Errorf("issue %d metadata is invalid JSON", rec.ID)
+		}
+		rec.Metadata = json.RawMessage(metadata)
+		return rec, nil
+	})
+}
+
+// exportIssuesV8 emits the schema_version 8..9 issue projection. Both
+// versions predate the v10 additions: issues.metadata, issues.revision,
+// issues.recurrence_id, and issues.occurrence_key — none of these columns
+// exist on a real v8/v9 source DB. The import path defaults Metadata to
+// {} and Revision to 1 when those fields are absent from a record, so
+// omitting them here lets v9 rows replay cleanly into the v10 schema.
+func exportIssuesV8(ctx context.Context, d *db.DB, enc *Encoder, opts ExportOptions) error {
 	type record struct {
 		ID           int64   `json:"id"`
 		UID          string  `json:"uid"`

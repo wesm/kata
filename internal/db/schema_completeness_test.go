@@ -20,7 +20,7 @@ func TestAllSchemaTablesExist(t *testing.T) {
 	wanted := []string{
 		"projects", "project_aliases", "issues", "comments",
 		"links", "issue_labels", "events", "purge_log",
-		"meta", "issues_fts", "import_mappings",
+		"meta", "issues_fts", "import_mappings", "recurrences",
 	}
 	for _, name := range wanted {
 		assertSchemaObject(t, d, name)
@@ -30,7 +30,13 @@ func TestAllSchemaTablesExist(t *testing.T) {
 func TestSchemaUIDColumnsIndexesAndTriggers(t *testing.T) {
 	d := openTestDB(t)
 	assertColumn(t, d, "projects", "uid", "TEXT", true)
+	assertColumn(t, d, "projects", "metadata", "TEXT", true)
+	assertColumn(t, d, "projects", "revision", "INTEGER", true)
 	assertColumn(t, d, "issues", "uid", "TEXT", true)
+	assertColumn(t, d, "issues", "metadata", "TEXT", true)
+	assertColumn(t, d, "issues", "revision", "INTEGER", true)
+	assertColumn(t, d, "issues", "recurrence_id", "INTEGER", false) // nullable
+	assertColumn(t, d, "issues", "occurrence_key", "TEXT", false)   // nullable
 	assertColumn(t, d, "links", "from_issue_uid", "TEXT", true)
 	assertColumn(t, d, "links", "to_issue_uid", "TEXT", true)
 	assertColumn(t, d, "events", "uid", "TEXT", true)

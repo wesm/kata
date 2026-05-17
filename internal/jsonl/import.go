@@ -168,10 +168,17 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if renamed {
 			fmt.Fprintf(os.Stderr, "note: project #%d renamed from %q to %q during cutover\n", rec.ID, rec.OriginalName, rec.Name)
 		}
+		if len(rec.Metadata) == 0 {
+			rec.Metadata = json.RawMessage(`{}`)
+		}
+		if rec.Revision == 0 {
+			rec.Revision = 1
+		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO projects(id, uid, name, created_at, deleted_at)
-			 VALUES(?, ?, ?, ?, ?)`,
-			rec.ID, rec.UID, rec.Name, rec.CreatedAt, rec.DeletedAt)
+			`INSERT INTO projects(id, uid, name, created_at, deleted_at, metadata, revision)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.Name, rec.CreatedAt, rec.DeletedAt,
+			string(rec.Metadata), rec.Revision)
 		return wrapImportErr(env.Kind, err)
 	case KindProjectAlias:
 		var rec projectAliasRecord
@@ -182,6 +189,31 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 			`INSERT INTO project_aliases(id, project_id, alias_identity, alias_kind, root_path, created_at, last_seen_at)
 			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, rec.ProjectID, rec.AliasIdentity, rec.AliasKind, rec.RootPath, rec.CreatedAt, rec.LastSeenAt)
+		return wrapImportErr(env.Kind, err)
+	case KindRecurrence:
+		var rec recurrenceRecord
+		if err := decodeData(env, &rec); err != nil {
+			return err
+		}
+		if len(rec.TemplateLabels) == 0 {
+			rec.TemplateLabels = json.RawMessage(`[]`)
+		}
+		if len(rec.TemplateMetadata) == 0 {
+			rec.TemplateMetadata = json.RawMessage(`{}`)
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO recurrences
+			   (id, uid, project_id, rrule, dtstart, timezone,
+			    template_title, template_body, template_owner, template_priority,
+			    template_labels, template_metadata,
+			    next_occurrence_key, last_materialized_uid,
+			    author, revision, created_at, updated_at, deleted_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.UID, rec.ProjectID, rec.RRule, rec.DTStart, rec.Timezone,
+			rec.TemplateTitle, rec.TemplateBody, rec.TemplateOwner, rec.TemplatePriority,
+			string(rec.TemplateLabels), string(rec.TemplateMetadata),
+			rec.NextOccurrenceKey, rec.LastMaterializedUID,
+			rec.Author, rec.Revision, rec.CreatedAt, rec.UpdatedAt, rec.DeletedAt)
 		return wrapImportErr(env.Kind, err)
 	case KindIssue:
 		var rec issueRecord
@@ -197,12 +229,40 @@ func importEnvelope(ctx context.Context, tx *sql.Tx, env Envelope, exportVersion
 		if rec.ShortID == "" {
 			return fmt.Errorf("import issue %d: missing short_id (older envelopes must go through cutover)", rec.ID)
 		}
+		if len(rec.Metadata) == 0 {
+			rec.Metadata = json.RawMessage(`{}`)
+		}
+		if rec.Revision == 0 {
+			rec.Revision = 1
+		}
+		// Co-field validation: occurrence_key requires recurrence linkage.
+		if rec.OccurrenceKey != nil && rec.RecurrenceUID == nil && rec.RecurrenceID == nil {
+			return fmt.Errorf("import issue %d (uid=%s): occurrence_key set without recurrence_uid",
+				rec.ID, rec.UID)
+		}
+		if rec.RecurrenceUID != nil {
+			var resolvedID int64
+			if qErr := tx.QueryRowContext(ctx,
+				`SELECT id FROM recurrences WHERE uid = ?`, *rec.RecurrenceUID,
+			).Scan(&resolvedID); qErr != nil {
+				return fmt.Errorf("import issue %d: recurrence_uid %q not found: %w",
+					rec.ID, *rec.RecurrenceUID, qErr)
+			}
+			if rec.RecurrenceID != nil && *rec.RecurrenceID != resolvedID {
+				return fmt.Errorf("import issue %d: recurrence_uid %q resolves to id %d, but record carries recurrence_id %d",
+					rec.ID, *rec.RecurrenceUID, resolvedID, *rec.RecurrenceID)
+			}
+			rec.RecurrenceID = &resolvedID
+		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO issues(id, uid, project_id, short_id, title, body, status, closed_reason, owner, priority, author,
-			                    created_at, updated_at, closed_at, deleted_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                    created_at, updated_at, closed_at, deleted_at, metadata, revision,
+			                    recurrence_id, occurrence_key)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, rec.UID, rec.ProjectID, rec.ShortID, rec.Title, rec.Body, rec.Status, rec.ClosedReason,
-			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt)
+			rec.Owner, rec.Priority, rec.Author, rec.CreatedAt, rec.UpdatedAt, rec.ClosedAt, rec.DeletedAt,
+			string(rec.Metadata), rec.Revision,
+			rec.RecurrenceID, rec.OccurrenceKey)
 		return wrapImportErr(env.Kind, err)
 	case KindComment:
 		var rec commentRecord
@@ -508,6 +568,10 @@ type projectRecord struct {
 	// the current version's exports (v8+) — see export.go.
 	NextIssueNumber int64   `json:"next_issue_number,omitempty"`
 	DeletedAt       *string `json:"deleted_at,omitempty"`
+	// Metadata and Revision land in v10 envelopes; pre-v10 sources omit
+	// the fields and the importer defaults them to '{}'/1 before INSERT.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Revision int64           `json:"revision,omitempty"`
 }
 
 type projectAliasRecord struct {
@@ -518,6 +582,28 @@ type projectAliasRecord struct {
 	RootPath      string `json:"root_path"`
 	CreatedAt     string `json:"created_at"`
 	LastSeenAt    string `json:"last_seen_at"`
+}
+
+type recurrenceRecord struct {
+	ID                  int64           `json:"id"`
+	UID                 string          `json:"uid"`
+	ProjectID           int64           `json:"project_id"`
+	RRule               string          `json:"rrule"`
+	DTStart             string          `json:"dtstart"`
+	Timezone            string          `json:"timezone"`
+	TemplateTitle       string          `json:"template_title"`
+	TemplateBody        string          `json:"template_body"`
+	TemplateOwner       *string         `json:"template_owner,omitempty"`
+	TemplatePriority    *int64          `json:"template_priority,omitempty"`
+	TemplateLabels      json.RawMessage `json:"template_labels"`
+	TemplateMetadata    json.RawMessage `json:"template_metadata"`
+	NextOccurrenceKey   *string         `json:"next_occurrence_key,omitempty"`
+	LastMaterializedUID *string         `json:"last_materialized_uid,omitempty"`
+	Author              string          `json:"author"`
+	Revision            int64           `json:"revision"`
+	CreatedAt           string          `json:"created_at"`
+	UpdatedAt           string          `json:"updated_at"`
+	DeletedAt           *string         `json:"deleted_at,omitempty"`
 }
 
 type issueRecord struct {
@@ -543,6 +629,18 @@ type issueRecord struct {
 	UpdatedAt    string  `json:"updated_at"`
 	ClosedAt     *string `json:"closed_at"`
 	DeletedAt    *string `json:"deleted_at"`
+	// Metadata and Revision land in v10 envelopes; pre-v10 sources omit
+	// the fields and the importer defaults them to '{}'/1 before INSERT.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Revision int64           `json:"revision,omitempty"`
+	// Recurrence linkage fields land in v10+ envelopes. RecurrenceUID is the
+	// portable identifier joined from recurrences.uid at export; RecurrenceID
+	// is the source-side row id (echoed for diagnostics). Import resolves
+	// RecurrenceUID against the target DB and validates against RecurrenceID
+	// when both are present.
+	RecurrenceID  *int64  `json:"recurrence_id,omitempty"`
+	RecurrenceUID *string `json:"recurrence_uid,omitempty"`
+	OccurrenceKey *string `json:"occurrence_key,omitempty"`
 }
 
 type commentRecord struct {

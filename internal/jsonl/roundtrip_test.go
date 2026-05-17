@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -167,4 +169,448 @@ func TestRoundtrip_IssueEnvelopeCarriesShortID(t *testing.T) {
 	assert.Equal(t, created.ShortID, issuePayload["short_id"])
 	_, hasNumber := issuePayload["number"]
 	assert.False(t, hasNumber, "issue envelope should not carry 'number'")
+}
+
+func TestRoundtrip_IssuePreservesMetadataAndRevision(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE issues SET metadata = ?, revision = ? WHERE id = ?`,
+		`{"scheduled_on":"2026-05-20","someday":false}`, int64(7), iss.ID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var meta string
+	var rev int64
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT metadata, revision FROM issues LIMIT 1`).Scan(&meta, &rev))
+	assert.JSONEq(t, `{"scheduled_on":"2026-05-20","someday":false}`, meta)
+	assert.Equal(t, int64(7), rev)
+}
+
+func TestRoundtrip_ProjectPreservesMetadataAndRevision(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "Personal")
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE projects SET metadata = ?, revision = ? WHERE id = ?`,
+		`{"area":"Personal","sidebar_order":2}`, int64(4), p.ID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var meta string
+	var rev int64
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT metadata, revision FROM projects WHERE name = 'Personal'`,
+	).Scan(&meta, &rev))
+	assert.JSONEq(t, `{"area":"Personal","sidebar_order":2}`, meta)
+	assert.Equal(t, int64(4), rev)
+}
+
+func TestRoundtrip_RecurrenceFullFields(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"REC00000000000000000000001", p.ID, "FREQ=WEEKLY;BYDAY=MO", "2026-05-11",
+		"America/New_York", "Weekly review", "What got done?",
+		`["chore","weekly"]`, `{}`, "tester")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var rule, dtstart, tz, title, labels string
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT rrule, dtstart, timezone, template_title, template_labels
+		   FROM recurrences LIMIT 1`,
+	).Scan(&rule, &dtstart, &tz, &title, &labels))
+	assert.Equal(t, "FREQ=WEEKLY;BYDAY=MO", rule)
+	assert.Equal(t, "2026-05-11", dtstart)
+	assert.Equal(t, "America/New_York", tz)
+	assert.Equal(t, "Weekly review", title)
+	assert.JSONEq(t, `["chore","weekly"]`, labels)
+}
+
+func TestRoundtrip_IssueRecurrenceLinkagePreserved(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	// Insert a recurrence directly.
+	recUID := "REC00000000000000000000001"
+	res, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "Weekly", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	recID, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	// Create an issue that references this recurrence via raw UPDATE.
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "Weekly", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+		recID, "2026-05-11", iss.ID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+	require.Contains(t, buf.String(), `"recurrence_uid":"`+recUID+`"`)
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	var gotRecID int64
+	var gotOccKey string
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT recurrence_id, occurrence_key FROM issues WHERE id = ?`, iss.ID,
+	).Scan(&gotRecID, &gotOccKey))
+	assert.Equal(t, recID, gotRecID)
+	assert.Equal(t, "2026-05-11", gotOccKey)
+}
+
+func TestImport_RecurrenceUIDAndIDDisagree_Errors(t *testing.T) {
+	dstDB := openImportTargetDB(t)
+	body := bytes.NewBufferString("")
+	body.WriteString(`{"kind":"meta","data":{"key":"export_version","value":"10"}}` + "\n")
+	body.WriteString(`{"kind":"meta","data":{"key":"instance_uid","value":"ORIGIN0000000000000000000A"}}` + "\n")
+	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":{},"revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"recurrence","data":{"id":1,"uid":"RECA000000000000000000000A","project_id":1,"rrule":"FREQ=WEEKLY","dtstart":"2026-05-15","timezone":"UTC","template_title":"a","template_body":"","template_labels":[],"template_metadata":{},"author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"recurrence","data":{"id":2,"uid":"RECB000000000000000000000A","project_id":1,"rrule":"FREQ=MONTHLY","dtstart":"2026-05-01","timezone":"UTC","template_title":"b","template_body":"","template_labels":[],"template_metadata":{},"author":"t","revision":1,"created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	// Issue claims recurrence_uid=RECA but recurrence_id=2 (which is RECB).
+	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":{},"revision":1,"recurrence_id":2,"recurrence_uid":"RECA000000000000000000000A","occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+
+	err := jsonl.Import(context.Background(), body, dstDB)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "recurrence_uid")
+}
+
+func TestImport_OccurrenceKeyWithoutRecurrence_Errors(t *testing.T) {
+	dstDB := openImportTargetDB(t)
+	body := bytes.NewBufferString("")
+	body.WriteString(`{"kind":"meta","data":{"key":"export_version","value":"10"}}` + "\n")
+	body.WriteString(`{"kind":"meta","data":{"key":"instance_uid","value":"ORIGIN0000000000000000000A"}}` + "\n")
+	body.WriteString(`{"kind":"project","data":{"id":1,"uid":"PROJ000000000000000000000A","name":"p","metadata":{},"revision":1,"created_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+	body.WriteString(`{"kind":"issue","data":{"id":1,"uid":"ISS00000000000000000000A00","project_id":1,"short_id":"0a00","title":"t","body":"","status":"open","author":"t","metadata":{},"revision":1,"occurrence_key":"2026-05-15","created_at":"2026-05-15T00:00:00.000Z","updated_at":"2026-05-15T00:00:00.000Z"}}` + "\n")
+
+	err := jsonl.Import(context.Background(), body, dstDB)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "occurrence_key")
+}
+
+func TestExport_RecurrencesAppearBeforeIssuesInStream(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	_, _, err = srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"REC00000000000000000000002", p.ID, "FREQ=WEEKLY", "2026-05-11",
+		"UTC", "x", "tester")
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	lines := strings.Split(buf.String(), "\n")
+	firstRecurrence, firstIssue := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, `"kind":"recurrence"`) && firstRecurrence == -1 {
+			firstRecurrence = i
+		}
+		if strings.Contains(l, `"kind":"issue"`) && firstIssue == -1 {
+			firstIssue = i
+		}
+	}
+	require.NotEqual(t, -1, firstRecurrence)
+	require.NotEqual(t, -1, firstIssue)
+	assert.Less(t, firstRecurrence, firstIssue,
+		"recurrence records must appear before issue records — issues reference recurrences via FK")
+}
+
+func TestExport_SoftDeletedRecurrenceReferencedByIssueIsIncluded(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, _ := srcDB.CreateProject(ctx, "p")
+
+	recUID := "REC00000000000000000000005"
+	res, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "x", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	recID, _ := res.LastInsertId()
+
+	// Live issue referencing the recurrence.
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "instance", Author: "tester",
+	})
+	require.NoError(t, err)
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+		recID, "2026-05-11", iss.ID)
+	require.NoError(t, err)
+
+	// Soft-delete the recurrence directly.
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE recurrences SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		recID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf,
+		jsonl.ExportOptions{IncludeDeleted: false}))
+	assert.Contains(t, buf.String(), `"kind":"recurrence"`,
+		"soft-deleted recurrence referenced by a live issue must be included")
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+	var n int
+	require.NoError(t, dstDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM issues WHERE recurrence_id IS NOT NULL`).Scan(&n))
+	assert.Equal(t, 1, n)
+}
+
+func TestExport_SoftDeletedRecurrenceWithNoLiveIssues_Excluded(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, _ := srcDB.CreateProject(ctx, "p")
+
+	recUID := "REC00000000000000000000006"
+	res, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "x", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	recID, _ := res.LastInsertId()
+
+	_, err = srcDB.ExecContext(ctx,
+		`UPDATE recurrences SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+		recID)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf,
+		jsonl.ExportOptions{IncludeDeleted: false}))
+	assert.NotContains(t, buf.String(), `"kind":"recurrence"`,
+		"soft-deleted recurrence with no live referrer must be excluded")
+}
+
+// TestRoundtrip_NewEventPayloadBytesAreExact locks in that the JSONL pipeline
+// preserves event payload bytes verbatim — key order, whitespace, the lot.
+// New event types (issue.metadata_updated, issue.moved, recurrence.materialized)
+// rely on this so consumers reading raw payloads see exactly what the producer
+// wrote. The guarantee depends on the export-side eventRecord using
+// json.RawMessage (not interface{} / map[string]any, which would re-marshal
+// and reorder keys).
+// TestRoundtrip_MultipleRecurrencesAndInstances locks in the multi-row
+// UID→ID resolution path: two recurrences (Weekly + Monthly) with five
+// instances spread across them must each land with the correct recurrence_id
+// FK and occurrence_key after a JSONL roundtrip.
+func TestRoundtrip_MultipleRecurrencesAndInstances(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+
+	// Insert two recurrences with distinct UIDs and template titles.
+	weeklyUID := "RECW00000000000000000000A1"
+	monthlyUID := "RECM00000000000000000000A1"
+
+	resW, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		weeklyUID, p.ID, "FREQ=WEEKLY", "2026-05-11", "UTC", "Weekly", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	weeklyID, err := resW.LastInsertId()
+	require.NoError(t, err)
+
+	resM, err := srcDB.ExecContext(ctx, `
+		INSERT INTO recurrences
+		  (uid, project_id, rrule, dtstart, timezone, template_title, template_body,
+		   template_labels, template_metadata, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		monthlyUID, p.ID, "FREQ=MONTHLY", "2026-05-01", "UTC", "Monthly", "",
+		`[]`, `{}`, "tester")
+	require.NoError(t, err)
+	monthlyID, err := resM.LastInsertId()
+	require.NoError(t, err)
+
+	// Weekly instances: 2026-05-11, 2026-05-18, 2026-05-25.
+	weeklyKeys := []string{"2026-05-11", "2026-05-18", "2026-05-25"}
+	for _, key := range weeklyKeys {
+		iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: "Weekly " + key, Author: "tester",
+		})
+		require.NoError(t, err)
+		_, err = srcDB.ExecContext(ctx,
+			`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+			weeklyID, key, iss.ID)
+		require.NoError(t, err)
+	}
+
+	// Monthly instances: 2026-05-01, 2026-06-01.
+	monthlyKeys := []string{"2026-05-01", "2026-06-01"}
+	for _, key := range monthlyKeys {
+		iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+			ProjectID: p.ID, Title: "Monthly " + key, Author: "tester",
+		})
+		require.NoError(t, err)
+		_, err = srcDB.ExecContext(ctx,
+			`UPDATE issues SET recurrence_id = ?, occurrence_key = ? WHERE id = ?`,
+			monthlyID, key, iss.ID)
+		require.NoError(t, err)
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	// Assert 3 issues link to the Weekly recurrence.
+	var weeklyCount int
+	require.NoError(t, dstDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM issues i
+		JOIN recurrences r ON r.id = i.recurrence_id
+		WHERE r.template_title = 'Weekly'`).Scan(&weeklyCount))
+	assert.Equal(t, 3, weeklyCount)
+
+	// Assert 2 issues link to the Monthly recurrence.
+	var monthlyCount int
+	require.NoError(t, dstDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM issues i
+		JOIN recurrences r ON r.id = i.recurrence_id
+		WHERE r.template_title = 'Monthly'`).Scan(&monthlyCount))
+	assert.Equal(t, 2, monthlyCount)
+
+	// Assert occurrence_keys land under the *correct* recurrence — not just
+	// that the right counts and key set survive globally. A bug that swapped
+	// one weekly key with one monthly key while preserving cardinalities
+	// would pass the counts above but fail this per-recurrence check.
+	rows, err := dstDB.QueryContext(ctx, `
+		SELECT r.template_title, i.occurrence_key
+		  FROM issues i JOIN recurrences r ON r.id = i.recurrence_id
+		 WHERE i.occurrence_key IS NOT NULL
+		 ORDER BY r.template_title ASC, i.occurrence_key ASC`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	keysByRecurrence := map[string][]string{}
+	for rows.Next() {
+		var title, key string
+		require.NoError(t, rows.Scan(&title, &key))
+		keysByRecurrence[title] = append(keysByRecurrence[title], key)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, map[string][]string{
+		"Monthly": {"2026-05-01", "2026-06-01"},
+		"Weekly":  {"2026-05-11", "2026-05-18", "2026-05-25"},
+	}, keysByRecurrence)
+}
+
+func TestRoundtrip_NewEventPayloadBytesAreExact(t *testing.T) {
+	srcDB := openExportTestDB(t)
+	ctx := context.Background()
+	p, err := srcDB.CreateProject(ctx, "p")
+	require.NoError(t, err)
+	iss, _, err := srcDB.CreateIssue(ctx, db.CreateIssueParams{
+		ProjectID: p.ID, Title: "x", Author: "tester",
+	})
+	require.NoError(t, err)
+
+	// Inject events with specific payloads. We're testing the JSONL layer, not
+	// the producer code paths (§C / §F), so raw SQL is fine — the schema check
+	// is json_valid only and the importer passes payload bytes through.
+	cases := []struct {
+		eventType string
+		payload   string
+	}{
+		{
+			"issue.metadata_updated",
+			`{"diff":{"scheduled_on":{"from":null,"to":"2026-05-20"},"someday":{"from":null,"to":true}},"revision_new":2}`,
+		},
+		{
+			"issue.moved",
+			`{"from_project_id":1,"to_project_id":2,"new_short_id":"abc"}`,
+		},
+		{
+			"recurrence.materialized",
+			`{"recurrence_uid":"REC00000000000000000000001","occurrence_key":"2026-05-18","new_issue_uid":"ISS00000000000000000000A00"}`,
+		},
+	}
+	for i, c := range cases {
+		eventUID := fmt.Sprintf("EVT0000000000000000000%03d0", i+1)
+		require.Equal(t, 26, len(eventUID), "test fixture event UID must be 26 chars")
+		_, err := srcDB.ExecContext(ctx, `
+			INSERT INTO events
+			  (uid, origin_instance_uid, project_id, project_name,
+			   issue_id, issue_uid, type, actor, payload)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			eventUID, srcDB.InstanceUID(), p.ID, "p",
+			iss.ID, iss.UID, c.eventType, "tester", c.payload)
+		require.NoError(t, err)
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, jsonl.Export(ctx, srcDB, &buf, jsonl.ExportOptions{}))
+
+	dstDB := openImportTargetDB(t)
+	require.NoError(t, jsonl.Import(ctx, &buf, dstDB))
+
+	// Byte-exact equality (not JSONEq) — key reordering would cause a
+	// mismatch, which is the regression we're guarding against.
+	for _, c := range cases {
+		var gotPayload string
+		require.NoError(t, dstDB.QueryRowContext(ctx,
+			`SELECT payload FROM events WHERE type = ? LIMIT 1`, c.eventType,
+		).Scan(&gotPayload))
+		assert.Equal(t, c.payload, gotPayload,
+			"payload bytes for %s must roundtrip exactly (key order, whitespace preserved)", c.eventType)
+	}
 }

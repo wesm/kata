@@ -35,13 +35,17 @@ func activeProjectByID(ctx context.Context, store *db.DB, id int64) (db.Project,
 }
 
 // dbProjectToOut maps a db.Project (internal row) to the API-shape
-// ProjectOut. Stats stays nil — that field is populated only by the
-// list-projects handler when ?include=stats is set (Task 3).
+// ProjectOut. Metadata carries the JSON blob verbatim so consumers can
+// read keys like `area` without a follow-up fetch. Stats stays nil —
+// that field is populated only by the list-projects handler when
+// ?include=stats is set (Task 3).
 func dbProjectToOut(p db.Project) api.ProjectOut {
 	return api.ProjectOut{
 		ID:        p.ID,
 		UID:       p.UID,
 		Name:      p.Name,
+		Metadata:  p.Metadata,
+		Revision:  p.Revision,
 		CreatedAt: p.CreatedAt,
 		DeletedAt: p.DeletedAt,
 	}

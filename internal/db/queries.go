@@ -68,6 +68,15 @@ func (d *DB) ProjectByNameIncludingArchived(ctx context.Context, name string) (P
 	return scanProject(row)
 }
 
+// ProjectByUID fetches one project by its stable UID. Archived
+// (deleted_at != NULL) projects are returned as-is so callers can decide
+// how to surface the archived state; surface-level handlers should
+// inspect DeletedAt themselves. Returns ErrNotFound when no row matches.
+func (d *DB) ProjectByUID(ctx context.Context, uid string) (Project, error) {
+	row := d.QueryRowContext(ctx, projectSelect+` WHERE uid = ?`, uid)
+	return scanProject(row)
+}
+
 // RenameProject updates a project's canonical name without changing aliases or
 // issue numbering.
 func (d *DB) RenameProject(ctx context.Context, id int64, name string) (Project, error) {
@@ -288,7 +297,7 @@ func (d *DB) ProjectAliases(ctx context.Context, projectID int64) ([]ProjectAlia
 }
 
 // projectSelect is the canonical SELECT list for projects rows.
-const projectSelect = `SELECT id, uid, name, created_at, deleted_at FROM projects`
+const projectSelect = `SELECT id, uid, name, metadata, revision, created_at, deleted_at FROM projects`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows used by scan helpers.
 type rowScanner interface {
@@ -297,7 +306,7 @@ type rowScanner interface {
 
 func scanProject(r rowScanner) (Project, error) {
 	var p Project
-	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.CreatedAt, &p.DeletedAt)
+	err := r.Scan(&p.ID, &p.UID, &p.Name, &p.Metadata, &p.Revision, &p.CreatedAt, &p.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
@@ -1057,6 +1066,12 @@ func (d *DB) CloseIssue(
 	if err != nil {
 		return Issue{}, nil, false, err
 	}
+	if reason == "done" && issue.RecurrenceID != nil && issue.OccurrenceKey != nil {
+		if _, err := d.MaterializeNext(ctx, tx, *issue.RecurrenceID,
+			*issue.OccurrenceKey, actor); err != nil {
+			return Issue{}, nil, false, fmt.Errorf("materialize next recurrence: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return Issue{}, nil, false, err
 	}
@@ -1264,15 +1279,16 @@ func joinComma(parts []string) string {
 func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue, string, error) {
 	const q = `
 		SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status,
-		       i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at,
-		       i.closed_at, i.deleted_at, p.name
+		       i.closed_reason, i.owner, i.priority, i.author, i.metadata, i.revision,
+		       i.recurrence_id, i.occurrence_key,
+		       i.created_at, i.updated_at, i.closed_at, i.deleted_at, p.name
 		FROM issues i
 		JOIN projects p ON p.id = i.project_id
 		WHERE i.id = ? AND i.deleted_at IS NULL`
 	var i Issue
 	var projectName string
 	err := tx.QueryRowContext(ctx, q, issueID).
-		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &projectName)
+		Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.Metadata, &i.Revision, &i.RecurrenceID, &i.OccurrenceKey, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt, &projectName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, "", ErrNotFound
 	}
@@ -1282,11 +1298,11 @@ func lookupIssueForEvent(ctx context.Context, tx *sql.Tx, issueID int64) (Issue,
 	return i, projectName, nil
 }
 
-const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
+const issueSelect = `SELECT i.id, i.uid, i.project_id, p.uid, i.short_id, i.title, i.body, i.status, i.closed_reason, i.owner, i.priority, i.author, i.metadata, i.revision, i.recurrence_id, i.occurrence_key, i.created_at, i.updated_at, i.closed_at, i.deleted_at FROM issues i JOIN projects p ON p.id = i.project_id`
 
 func scanIssue(r rowScanner) (Issue, error) {
 	var i Issue
-	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
+	err := r.Scan(&i.ID, &i.UID, &i.ProjectID, &i.ProjectUID, &i.ShortID, &i.Title, &i.Body, &i.Status, &i.ClosedReason, &i.Owner, &i.Priority, &i.Author, &i.Metadata, &i.Revision, &i.RecurrenceID, &i.OccurrenceKey, &i.CreatedAt, &i.UpdatedAt, &i.ClosedAt, &i.DeletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, ErrNotFound
 	}

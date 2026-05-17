@@ -26,6 +26,19 @@ type DaemonConfig struct {
 	TUI TUIConfig `toml:"tui"`
 	// Close carries daemon-wide close-flow policy knobs.
 	Close CloseConfig `toml:"close"`
+	// Auth carries the daemon's bearer-auth token, if any.
+	Auth AuthConfig `toml:"auth"`
+}
+
+// AuthConfig is the [auth] block of <KATA_HOME>/config.toml. An empty
+// Token disables bearer auth — appropriate for Unix-socket and loopback-TCP
+// deployments; non-loopback TCP requires a token unless the daemon is
+// started with --insecure-readonly.
+//
+// KATA_AUTH_TOKEN, when set, overrides the TOML value. Use it for
+// ephemeral or CI-only tokens that should never be persisted to disk.
+type AuthConfig struct {
+	Token string `toml:"token"`
 }
 
 // TUIConfig holds TUI user preferences from <KATA_HOME>/config.toml.
@@ -90,5 +103,9 @@ func ReadDaemonConfig() (*DaemonConfig, error) {
 		return nil, fmt.Errorf("parse %s: unknown key(s): %s", path, strings.Join(keys, ", "))
 	}
 	cfg.Listen = strings.TrimSpace(cfg.Listen)
+	cfg.Auth.Token = strings.TrimSpace(cfg.Auth.Token)
+	if v := strings.TrimSpace(os.Getenv("KATA_AUTH_TOKEN")); v != "" {
+		cfg.Auth.Token = v
+	}
 	return &cfg, nil
 }

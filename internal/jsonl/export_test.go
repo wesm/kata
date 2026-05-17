@@ -24,7 +24,7 @@ func TestExportWritesOrderedRecordsWithSequenceLast(t *testing.T) {
 
 	require.NotEmpty(t, records)
 	assert.Equal(t, "meta", records[0]["kind"])
-	assert.Equal(t, map[string]any{"key": "export_version", "value": "9"}, records[0]["data"])
+	assert.Equal(t, map[string]any{"key": "export_version", "value": "10"}, records[0]["data"])
 	assert.Equal(t, "sqlite_sequence", records[len(records)-1]["kind"])
 
 	assertKindOrder(t, records)
@@ -412,9 +412,9 @@ func decodeJSONLLines(t *testing.T, bs []byte) []map[string]any {
 func assertKindOrder(t *testing.T, records []map[string]any) {
 	t.Helper()
 	order := map[string]int{
-		"meta": 0, "project": 1, "project_alias": 2, "issue": 3,
-		"comment": 4, "issue_label": 5, "link": 6, "import_mapping": 7,
-		"event": 8, "purge_log": 9, "sqlite_sequence": 10,
+		"meta": 0, "project": 1, "project_alias": 2, "recurrence": 3,
+		"issue": 4, "comment": 5, "issue_label": 6, "link": 7,
+		"import_mapping": 8, "event": 9, "purge_log": 10, "sqlite_sequence": 11,
 	}
 	last := -1
 	for _, rec := range records {

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wesm/kata/internal/api"
+	"github.com/wesm/kata/internal/metadata"
 )
 
 // TestShowIssueResponseHasShortIDAndNoNumber pins the wire-side rename:
@@ -282,4 +283,23 @@ func TestActionRequest_RoundTripWithEvidence(t *testing.T) {
 	assert.Equal(t, "Fixed Safari callback double-submit.", req.Body.Message)
 	require.Len(t, req.Body.Evidence, 1)
 	assert.Equal(t, api.EvidenceCommit, req.Body.Evidence[0].Type)
+}
+
+// TestMetadataKeyConstantsMirrorRegistry verifies that every api-package
+// metadata key constant resolves to a server-reserved registry entry,
+// catching any typos or registry/constant skew at test time.
+func TestMetadataKeyConstantsMirrorRegistry(t *testing.T) {
+	for _, k := range []string{
+		api.MetadataKeyScheduledOn, api.MetadataKeyDeadlineOn, api.MetadataKeySomeday,
+		api.MetadataKeyChecklist, api.MetadataKeyTimezone,
+	} {
+		_, ok := metadata.IssueRegistry[k]
+		assert.True(t, ok, "api constant %q absent from issue registry", k)
+	}
+	for _, k := range []string{
+		api.ProjectMetadataKeyArea,
+	} {
+		_, ok := metadata.ProjectRegistry[k]
+		assert.True(t, ok, "api constant %q absent from project registry", k)
+	}
 }
