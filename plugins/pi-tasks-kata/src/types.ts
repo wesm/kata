@@ -2,14 +2,24 @@ export type TaskStatus = "pending" | "in_progress" | "completed";
 
 export type TaskUpdateStatus = TaskStatus | "deleted";
 
+export interface KataLinkPeer {
+  uid?: string;
+  short_id: string;
+}
+
 export interface KataIssue {
-  number: number;
+  id?: number;
+  uid?: string;
+  short_id?: string;
+  qualified_id?: string;
+  number?: number;
   title: string;
   body?: string;
   status: "open" | "closed" | string;
   owner?: string | null;
   labels?: string[];
-  blockedBy?: number[];
+  blockedBy?: string[];
+  blocked_by?: KataLinkPeer[];
 }
 
 export interface KataComment {
@@ -19,8 +29,10 @@ export interface KataComment {
 
 export interface KataLink {
   type: "parent" | "blocks" | "related" | string;
-  from_number: number;
-  to_number: number;
+  from: KataLinkPeer;
+  to: KataLinkPeer;
+  from_number?: number;
+  to_number?: number;
 }
 
 export interface KataIssueDetail {

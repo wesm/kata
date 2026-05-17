@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { formatTaskDetail, formatTaskList } from "./format.js";
+import { formatTaskDetail, formatTaskList, issueRef } from "./format.js";
 import { KataClient, type KataRunner } from "./kata.js";
 import { textResult } from "./result.js";
 import { spawnSubagent } from "./subagents.js";
@@ -37,7 +37,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       const issue = await kata.createTask(params);
-      return textResult(`Task #${issue.number} created successfully: ${issue.title}`);
+      return textResult(`Task ${issueRef(issue)} created successfully: ${issue.title}`);
     },
   });
 
@@ -57,7 +57,7 @@ export default function (pi: ExtensionAPI) {
     label: "TaskGet",
     description: "Get full details for a Kata-backed task.",
     parameters: Type.Object({
-      taskId: Type.String({ description: "Kata issue number" }),
+      taskId: Type.String({ description: "Kata issue ref (short_id, qualified ref, or ULID)" }),
     }),
     async execute(_toolCallId, params) {
       const detail = await kata.showTask(params.taskId);
@@ -70,7 +70,7 @@ export default function (pi: ExtensionAPI) {
     label: "TaskUpdate",
     description: "Update a Kata-backed task. Status in_progress adds the in_progress label; completed closes the issue.",
     parameters: Type.Object({
-      taskId: Type.String({ description: "Kata issue number" }),
+      taskId: Type.String({ description: "Kata issue ref (short_id, qualified ref, or ULID)" }),
       status: Type.Optional(Type.Unsafe<UpdateTaskInput["status"]>({
         type: "string",
         enum: ["pending", "in_progress", "completed", "deleted"],
@@ -86,7 +86,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       const { taskId, ...fields } = params;
       const changed = await kata.updateTask(taskId, fields);
-      return textResult(changed.length > 0 ? `Updated task #${taskId} ${changed.join(", ")}` : `Task #${taskId} unchanged`);
+      return textResult(changed.length > 0 ? `Updated task ${taskId} ${changed.join(", ")}` : `Task ${taskId} unchanged`);
     },
   });
 
@@ -95,7 +95,7 @@ export default function (pi: ExtensionAPI) {
     label: "TaskExecute",
     description: "Claim one or more Kata tasks, mark them in progress, and execute them as pi subagents.",
     parameters: Type.Object({
-      task_ids: Type.Array(Type.String(), { description: "Kata issue numbers to execute" }),
+      task_ids: Type.Array(Type.String(), { description: "Kata issue refs to execute" }),
       agent_type: Type.Optional(Type.String({ description: "Override agent type; otherwise label agent:<type> is used" })),
       additional_context: Type.Optional(Type.String({ description: "Extra context appended to each subagent prompt" })),
       model: Type.Optional(Type.String({ description: "Model override for subagents" })),
@@ -125,12 +125,12 @@ export default function (pi: ExtensionAPI) {
             await kata.recordAgentSpawn(taskId, agentId);
           } catch (error) {
             console.error(
-              `[pi-tasks-kata] failed to record spawn comment for ${agentId} / task #${taskId}:`,
+              `[pi-tasks-kata] failed to record spawn comment for ${agentId} / task ${taskId}:`,
               errorMessage(error),
             );
           }
           await releaseClaimLock(kata, claim);
-          launched.push(`#${taskId} -> agent ${agentId}`);
+          launched.push(`${taskId} -> agent ${agentId}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (claimed) {
@@ -138,14 +138,14 @@ export default function (pi: ExtensionAPI) {
               await kata.failExecution(taskId, "spawn", message, { releaseOwner: claim?.assignedByClaim });
             } catch (cleanupError) {
               console.error(
-                `[pi-tasks-kata] failed to record spawn failure for task #${taskId}:`,
+                `[pi-tasks-kata] failed to record spawn failure for task ${taskId}:`,
                 errorMessage(cleanupError),
               );
             } finally {
               if (claim) await releaseClaimLock(kata, claim);
             }
           }
-          failures.push(`#${taskId}: ${message}`);
+          failures.push(`${taskId}: ${message}`);
         }
       }
       const lines = [];
@@ -199,7 +199,7 @@ export default function (pi: ExtensionAPI) {
       agentTaskMap.delete(agentId);
     } catch (error) {
       console.error(
-        `[pi-tasks-kata] failed to record subagent ${kind} for ${agentId} / task #${taskId}:`,
+        `[pi-tasks-kata] failed to record subagent ${kind} for ${agentId} / task ${taskId}:`,
         errorMessage(error),
       );
     }
@@ -210,7 +210,7 @@ export default function (pi: ExtensionAPI) {
       await kata.releaseExecutionClaim(claim);
     } catch (error) {
       console.error(
-        `[pi-tasks-kata] failed to release claim lock for task #${claim.issue.number}:`,
+        `[pi-tasks-kata] failed to release claim lock for task ${issueRef(claim.issue)}:`,
         errorMessage(error),
       );
     }

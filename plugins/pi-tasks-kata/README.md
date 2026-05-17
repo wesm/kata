@@ -18,14 +18,16 @@ initialized with `kata init`.
 
 ## Tools
 
-- `TaskCreate`: creates a Kata issue. `agentType` is stored as label
-  `agent:<type>`.
+- `TaskCreate`: creates a Kata issue and returns its `short_id`. `agentType`
+  is stored as label `agent:<type>`.
 - `TaskList`: lists Kata issues as `pending`, `in_progress`, or `completed`.
 - `TaskGet`: renders `kata show --json` as a pi-tasks style detail view.
-- `TaskUpdate`: edits title/body/owner, adds dependency links, adds or removes
-  the `in_progress` label, and closes issues for `completed`.
-- `TaskExecute`: claims open unblocked issues, assigns the owner, adds
-  `in_progress`, comments that execution started, and spawns a pi subagent.
+- `TaskUpdate`: accepts Kata issue refs (`short_id`, qualified ref, or ULID),
+  edits title/body/owner, adds dependency links, adds or removes the
+  `in_progress` label, and closes issues for `completed`.
+- `TaskExecute`: accepts Kata issue refs, claims open unblocked issues, assigns
+  the owner, adds `in_progress`, comments that execution started, and spawns a
+  pi subagent.
 
 `TaskExecute` listens for `subagents:completed` and `subagents:failed`. On
 success it closes the Kata issue with `reason=done` and comments with the

@@ -75,15 +75,15 @@ describe("pi-tasks-kata extension", () => {
     });
     plugin(pi);
 
-    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["9"] });
+    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["ab19"] });
     handlers.get("subagents:completed")?.({ id: "agent-123", result: "done" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(result.content[0].text).toContain("#9 -> agent agent-123");
-    expect(calls).toContainEqual(["assign", "9", "pi-agent", "--json"]);
-    expect(calls).toContainEqual(["label", "add", "9", "in_progress", "--json"]);
-    expect(calls).toContainEqual(["close", "9", "--reason", "done", "--json"]);
-    expect(calls).toContainEqual(["comment", "9", "--body", "TaskExecute completed via agent agent-123.\n\nResult:\ndone", "--json"]);
+    expect(result.content[0].text).toContain("ab19 -> agent agent-123");
+    expect(calls).toContainEqual(["assign", "ab19", "pi-agent", "--json"]);
+    expect(calls).toContainEqual(["label", "add", "ab19", "in_progress", "--json"]);
+    expect(calls).toContainEqual(["close", "ab19", "--reason", "done", "--json"]);
+    expect(calls).toContainEqual(["comment", "ab19", "--body", "TaskExecute completed via agent agent-123.\n\nResult:\ndone", "--json"]);
   });
 
   it("TaskExecute records failure when spawn fails after claim", async () => {
@@ -102,14 +102,14 @@ describe("pi-tasks-kata extension", () => {
     }, { spawnError: "subagents unavailable" });
     plugin(pi);
 
-    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["10"] });
+    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["ab10"] });
 
-    expect(result.content[0].text).toContain("#10: subagents unavailable");
-    expect(calls).toContainEqual(["label", "rm", "10", "in_progress", "--json"]);
-    expect(calls).toContainEqual(["unassign", "10", "--json"]);
+    expect(result.content[0].text).toContain("ab10: subagents unavailable");
+    expect(calls).toContainEqual(["label", "rm", "ab10", "in_progress", "--json"]);
+    expect(calls).toContainEqual(["unassign", "ab10", "--json"]);
     expect(calls).toContainEqual([
       "comment",
-      "10",
+      "ab10",
       "--body",
       "TaskExecute failed via agent spawn.\n\nError:\nsubagents unavailable",
       "--json",
@@ -132,11 +132,11 @@ describe("pi-tasks-kata extension", () => {
     }, { completeDuringSpawnReply: true });
     plugin(pi);
 
-    await tools.get("TaskExecute").execute("call-1", { task_ids: ["11"] });
+    await tools.get("TaskExecute").execute("call-1", { task_ids: ["ab11"] });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(calls).toContainEqual(["close", "11", "--reason", "done", "--json"]);
-    expect(calls).toContainEqual(["comment", "11", "--body", "TaskExecute completed via agent agent-123.\n\nResult:\nfast", "--json"]);
+    expect(calls).toContainEqual(["close", "ab11", "--reason", "done", "--json"]);
+    expect(calls).toContainEqual(["comment", "ab11", "--body", "TaskExecute completed via agent agent-123.\n\nResult:\nfast", "--json"]);
   });
 
   it("logs lifecycle mutation failures instead of dropping unhandled rejections", async () => {
@@ -162,14 +162,14 @@ describe("pi-tasks-kata extension", () => {
     });
     plugin(pi);
 
-    await tools.get("TaskExecute").execute("call-1", { task_ids: ["12"] });
+    await tools.get("TaskExecute").execute("call-1", { task_ids: ["ab12"] });
     handlers.get("subagents:completed")?.({ id: "agent-123", result: "done" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     process.off("unhandledRejection", onUnhandled);
 
     expect(errors).toEqual([]);
     expect(consoleError).toHaveBeenCalledWith(
-      "[pi-tasks-kata] failed to record subagent completion for agent-123 / task #12:",
+      "[pi-tasks-kata] failed to record subagent completion for agent-123 / task ab12:",
       "kata close failed",
     );
   });
@@ -194,22 +194,22 @@ describe("pi-tasks-kata extension", () => {
     });
     plugin(pi);
 
-    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["13"] });
+    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["ab13"] });
     handlers.get("subagents:completed")?.({ id: "agent-123", result: "done" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(result.content[0].text).toContain("#13 -> agent agent-123");
+    expect(result.content[0].text).toContain("ab13 -> agent agent-123");
     expect(result.content[0].text).not.toContain("Failed");
-    expect(calls).toContainEqual(["close", "13", "--reason", "done", "--json"]);
+    expect(calls).toContainEqual(["close", "ab13", "--reason", "done", "--json"]);
     expect(calls).not.toContainEqual([
       "comment",
-      "13",
+      "ab13",
       "--body",
       "TaskExecute failed via agent spawn.\n\nError:\nspawn comment failed",
       "--json",
     ]);
     expect(consoleError).toHaveBeenCalledWith(
-      "[pi-tasks-kata] failed to record spawn comment for agent-123 / task #13:",
+      "[pi-tasks-kata] failed to record spawn comment for agent-123 / task ab13:",
       "spawn comment failed",
     );
   });
@@ -221,26 +221,26 @@ describe("pi-tasks-kata extension", () => {
       calls.push(args);
       if (args[0] === "show") {
         return json({
-          issue: { number: Number(args[1]), title: `Task ${args[1]}`, body: "Run it", status: "open", owner: null },
+          issue: { short_id: String(args[1]), title: `Task ${args[1]}`, body: "Run it", status: "open", owner: null },
           labels: [{ label: "agent:worker" }],
           links: [],
           comments: [],
         });
       }
-      if (args[0] === "label" && args[1] === "rm" && args[2] === "14") {
+      if (args[0] === "label" && args[1] === "rm" && args[2] === "ab14") {
         throw new Error("cleanup failed");
       }
-      return json({ issue: { number: Number(args[1] ?? args[2]), title: "Task", status: "open" }, changed: true });
+      return json({ issue: { short_id: String(args[1] ?? args[2]), title: "Task", status: "open" }, changed: true });
     }, { spawnError: "subagents unavailable" });
     plugin(pi);
 
-    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["14", "15"] });
+    const result = await tools.get("TaskExecute").execute("call-1", { task_ids: ["ab14", "ab15"] });
 
-    expect(result.content[0].text).toContain("#14: subagents unavailable");
-    expect(result.content[0].text).toContain("#15: subagents unavailable");
-    expect(calls).toContainEqual(["show", "15", "--json"]);
+    expect(result.content[0].text).toContain("ab14: subagents unavailable");
+    expect(result.content[0].text).toContain("ab15: subagents unavailable");
+    expect(calls).toContainEqual(["show", "ab15", "--json"]);
     expect(consoleError).toHaveBeenCalledWith(
-      "[pi-tasks-kata] failed to record spawn failure for task #14:",
+      "[pi-tasks-kata] failed to record spawn failure for task ab14:",
       "cleanup failed",
     );
   });

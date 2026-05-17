@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { blockersFor } from "./format.js";
+import { blockersFor, issueRef } from "./format.js";
 import type {
   ClaimOptions,
   CreateTaskInput,
@@ -54,7 +54,7 @@ export class KataClient {
     if (!env.issue) throw new Error("kata create did not return an issue");
     if (input.activeForm || (input.metadata && Object.keys(input.metadata).length > 0)) {
       const metadata = JSON.stringify({ activeForm: input.activeForm, ...input.metadata });
-      await this.comment(String(env.issue.number), `Task metadata: ${metadata}`);
+      await this.comment(issueRef(env.issue), `Task metadata: ${metadata}`);
     }
     return env.issue;
   }
@@ -67,7 +67,7 @@ export class KataClient {
   async showTask(taskId: string): Promise<KataIssueDetail> {
     assertIssueId(taskId);
     const env = await this.runJSON(["show", taskId, "--json"]);
-    if (!env.issue) throw new Error(`Task #${taskId} not found`);
+    if (!env.issue) throw new Error(`Task ${taskId} not found`);
     return {
       issue: env.issue,
       comments: env.comments ?? [],
@@ -88,7 +88,7 @@ export class KataClient {
     const current = await this.showTask(taskId);
     this.assertCanMutate(taskId, current.issue);
     if (input.owner !== undefined && input.owner !== this.author) {
-      throw new Error(`Task #${taskId} owner can only be changed to ${this.author}`);
+      throw new Error(`Task ${taskId} owner can only be changed to ${this.author}`);
     }
 
     const editArgs = ["edit", taskId];
@@ -158,23 +158,23 @@ export class KataClient {
 
   private async claimForExecutionLocked(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
     const detail = await this.showTask(taskId);
-    if (detail.issue.status === "closed") throw new Error(`Task #${taskId} is already completed`);
-    if (detail.labels.includes("in_progress")) throw new Error(`Task #${taskId} is already in progress`);
+    if (detail.issue.status === "closed") throw new Error(`Task ${taskId} is already completed`);
+    if (detail.labels.includes("in_progress")) throw new Error(`Task ${taskId} is already in progress`);
     if (detail.issue.owner && detail.issue.owner !== this.author) {
-      throw new Error(`Task #${taskId} is already owned by ${detail.issue.owner}`);
+      throw new Error(`Task ${taskId} is already owned by ${detail.issue.owner}`);
     }
 
-    const openBlockers: number[] = [];
-    for (const blocker of blockersFor(detail.issue.number, detail.links)) {
-      const blockerDetail = await this.showTask(String(blocker));
+    const openBlockers: string[] = [];
+    for (const blocker of blockersFor(detail.issue, detail.links)) {
+      const blockerDetail = await this.showTask(blocker);
       if (blockerDetail.issue.status !== "closed") openBlockers.push(blocker);
     }
     if (openBlockers.length > 0) {
-      throw new Error(`Task #${taskId} is blocked by ${openBlockers.map((id) => `#${id}`).join(", ")}`);
+      throw new Error(`Task ${taskId} is blocked by ${openBlockers.join(", ")}`);
     }
 
     const agentType = options.agentType ?? agentTypeFromLabels(detail.labels);
-    if (!agentType) throw new Error(`Task #${taskId} has no agent type; add label agent:<type> or pass agent_type.`);
+    if (!agentType) throw new Error(`Task ${taskId} has no agent type; add label agent:<type> or pass agent_type.`);
 
     let assignedByClaim = false;
     let labeled = false;
@@ -292,7 +292,7 @@ export class KataClient {
       await mkdir(lockPath);
     } catch (error) {
       if (isAlreadyExistsError(error)) {
-        throw new Error(`Task #${taskId} claim lock is already held`);
+        throw new Error(`Task ${taskId} claim lock is already held`);
       }
       throw error;
     }
@@ -306,7 +306,7 @@ export class KataClient {
 
   private assertCanMutate(taskId: string, issue: KataIssue): void {
     if (issue.owner && issue.owner !== this.author) {
-      throw new Error(`Task #${taskId} is already owned by ${issue.owner}`);
+      throw new Error(`Task ${taskId} is already owned by ${issue.owner}`);
     }
   }
 
@@ -389,6 +389,7 @@ function normalizeIssues(issues: KataIssue[]): KataIssue[] {
   return issues.map((issue) => ({
     ...issue,
     labels: normalizeLabels(issue.labels as unknown as KataEnvelope["labels"]),
+    blockedBy: issue.blockedBy ?? issue.blocked_by?.map((peer) => peer.short_id),
   }));
 }
 
@@ -407,8 +408,12 @@ function safeLockName(taskId: string): string {
 }
 
 function assertIssueId(issueId: string): void {
-  if (!/^[1-9]\d*$/.test(issueId)) {
-    throw new Error(`Kata issue id must be a positive integer, got ${JSON.stringify(issueId)}`);
+  const ref = issueId.trim();
+  if (ref.length === 0 || ref.startsWith("-")) {
+    throw new Error(`Kata issue id must be a valid Kata issue ref, got ${JSON.stringify(issueId)}`);
+  }
+  if (/^\d{1,3}$/.test(ref)) {
+    throw new Error(`${JSON.stringify(issueId)} looks like a legacy issue number; use a short_id (e.g. ab12) or kata#ab12`);
   }
 }
 
@@ -419,7 +424,7 @@ function agentTypeFromLabels(labels: string[]): string | undefined {
 
 function buildExecutionPrompt(detail: KataIssueDetail, additionalContext?: string): string {
   const parts = [
-    `Work on Kata task #${detail.issue.number}: ${detail.issue.title}`,
+    `Work on Kata task ${issueRef(detail.issue)}: ${detail.issue.title}`,
     "",
     detail.issue.body ? `Description:\n${detail.issue.body}` : "Description: (none)",
     "",
